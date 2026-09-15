@@ -143,6 +143,9 @@ full-text search, rebuilt/updated on writes.
 
 ### Pull (server → local)
 
+- **Ordering within a sync run: push first, then pull.** Pending local ops
+  reach the server before any remote state is merged, which is what makes the
+  LWW window small (see Conflicts).
 - Full pull: `GET /api/checklists`, `GET /api/notes`, `GET /api/categories`.
 - Upsert by UUID when server `updatedAt` > local `updatedAt`, or entity missing
   locally. Server copy wins only per-LWW rule below; entities with pending
@@ -172,9 +175,9 @@ full-text search, rebuilt/updated on writes.
 ### Conflicts
 
 - Note/checklist level: **last-write-wins by `updatedAt`** (personal-scale,
-  single-user assumption; a conflicting remote edit replaces the local copy on
-  pull — local edits that already reached the outbox are pushed first, so the
-  window is small and the losing copy is the one that never got queued).
+  single-user assumption). Because pending ops push before pull, a remote edit
+  only wins if its `updatedAt` is newer than ours at the moment of
+  reconciliation; the older write is the one that loses.
 - Item level: an op whose target cannot be resolved on the re-fetched checklist
   (deleted remotely, or moved beyond text+position recognition) → op and item
   marked `state='conflict'`; UI offers keep-mine / take-server. Nothing is
