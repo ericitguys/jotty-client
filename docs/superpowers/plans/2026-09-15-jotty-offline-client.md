@@ -1481,6 +1481,14 @@ cd /coding/jotty && git add -A && git commit -m "feat(db): checklists+items DAO,
 
 ### Task 6: jotty API models + serde round-trip fixtures
 
+> **Binding note (Task 4 review carry-forward, 2026-09-15):** (1) LWW timestamps compare as raw
+> strings and `now()` is chrono `to_rfc3339()` (`+00:00`, variable fractional digits) while server
+> values are `.000Z`-style — lexicographic compare is only correct when formats align. Task 7 sync
+> comparisons must normalize both sides (parse to DateTime, or emit a fixed-format UTC string)
+> before comparing — do not rely on string ordering across mixed formats. (2) `notes::update_local`
+> was the only untested Task 4 fn and carries the E0507 clone-fix deviation — **Task 6 must include
+> an `update_local` test** (patch-merge of title/content/category, `dirty=1`, FTS refreshed).
+
 **Files:**
 - Create: `src-tauri/src/jotty/mod.rs`, `src-tauri/src/jotty/models.rs`
 - Modify: `src-tauri/src/lib.rs` (`pub mod jotty;`)
