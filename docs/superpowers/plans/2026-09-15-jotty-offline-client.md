@@ -2962,6 +2962,15 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 
 ### Task 14: AppState + Tauri commands (connect, CRUD, search, conflicts, settings, sync trigger)
 
+> **Binding note (Task 5 review resolution R1, 2026-09-15):** item-mutation commands
+> (`add_item`, `set_item_text`, `set_item_checked`, `delete_item`, `reorder_items`) MUST
+> enqueue with `entity="checklist_item"` and `entity_id=<item local_id>` (NOT the
+> checklist id) so `items::reconcile`'s pending-op guard
+> (`outbox::has_pending_for(conn, "checklist_item", local_id)`) matches. Reorder
+> enqueues `entity="checklist"`, `entity_id=<checklist id>` — one op per rebuild.
+> Conflict label lookups for `item_*` ops join via `checklist_items.local_id`.
+> (Task 12's own test enqueues bypass this — they are mock-level seeds.)
+
 **Files:**
 - Create: `src-tauri/src/state.rs`, `src-tauri/src/commands/mod.rs`, `src-tauri/src/commands/dto.rs`
 - Modify: `src-tauri/src/lib.rs` (register commands, manage state, scheduler spawn)
