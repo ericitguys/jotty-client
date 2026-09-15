@@ -2527,6 +2527,14 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): push engine for not
 
 ---
 
+> **Controller pre-flight ruling (binding):** the loop skeleton above is superseded —
+> `push_pending` processes **one op per fetch** (`outbox::next_batch(conn, 1)` in a
+> `loop`), so a create-remap is visible to every subsequent op; transient error →
+> `record_attempt` + return; 404/409/410 → `mark_conflict` + continue; loop ends when
+> the batch is empty. The `note_create_remaps_temp_id_and_pending_ops` test gains a
+> `PUT /api/notes/srv-1` mock (returns the note with `updatedAt 2026-01-03`) and
+> asserts `pushed == 2`, remapped row, and `pending_count == 0`.
+
 ### Task 12: Sync — item-op replay with index resolution + reorder rebuild
 
 **Files:**
@@ -2726,6 +2734,15 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): item-op replay with
 ```
 
 ---
+
+> **Controller pre-flight ruling (binding):** the reorder test's `GET /api/checklists`
+> mock must be **call-counted** (e.g. `AtomicUsize` in a `respond_with` handler):
+> call 1 returns the original order `[a(false), b(true)]`; calls 2+ return the
+> rebuilt order `[b(completed=true), a(false)]` — the post-rebuild reconcile fetch
+> must see the new server state. The rebuild replay sequence is: DELETE items/1,
+> DELETE items/0, then POST items in local order (b, a), then a re-check call
+> (`PUT items/0/check`) for the recreated completed item. Reconcile then adopts
+> local rows by text (stale `server_path` values must not duplicate rows).
 
 ### Task 13: Sync orchestration (run = push→pull) + scheduler
 
