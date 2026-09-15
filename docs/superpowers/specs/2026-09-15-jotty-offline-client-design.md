@@ -169,6 +169,13 @@ full-text search, rebuilt/updated on writes.
   tiebreaker; parent paths composed in dot notation). Apply ops against the
   fresh indices; after the checklist's ops are replayed, re-pull that
   checklist to reconcile local positions with server state.
+- Reorder: the REST API has **no reorder/move endpoint** (checked against
+  upstream API docs at v1.22.0). A queued `item_reorder` op therefore replays
+  as a **list rebuild**: delete the checklist's server items in reverse index
+  order, then re-create them in the new local order with their completed
+  states. Safe and deterministic for simple checklists (v1 supports only
+  simple checklists); item-level history is lost on rebuild — acceptable v1
+  trade-off, documented here.
 - New local items created offline get a server ID from the create response
   where available; otherwise they are matched on re-pull by text+position.
 
