@@ -1085,13 +1085,19 @@ pub fn list_for_checklist(conn: &Connection, checklist_id: &str) -> AppResult<Ve
 pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerItemFlat]) -> AppResult<()> {
     let local = list_for_checklist(conn, checklist_id)?;
     let mut claimed: Vec<String> = Vec::new(); // local_ids matched to server
+    // pending ops shield items from adoption/deletion until their op resolves (Task 7 push-then-pull)
+    let pending: Vec<String> = local
+        .iter()
+        .filter(|l| matches!(outbox::has_pending_for(conn, "checklist_item", &l.local_id), Ok(true)))
+        .map(|l| l.local_id.clone())
+        .collect();
     for (order, s) in server_items.iter().enumerate() {
         // 1) match by server_path
         let mut target = local.iter().find(|l| l.server_path.as_deref() == Some(s.path.as_str()) && !claimed.contains(&l.local_id));
-        // 2) fallback: unclaimed, non-dirty local with same text
+        // 2) fallback: unclaimed, no pending op, same text (never-synced dirty locals are adoptable)
         if target.is_none() {
             target = local.iter().find(|l| {
-                l.server_path.is_none() && !l.dirty && !claimed.contains(&l.local_id) && l.text == s.text
+                l.server_path.is_none() && !claimed.contains(&l.local_id) && !pending.contains(&l.local_id) && l.text == s.text
             });
         }
         match target {
@@ -1162,6 +1168,10 @@ pub fn set_checked(conn: &Connection, local_id: &str, checked: bool) -> AppResul
 }
 
 pub fn delete_local(conn: &Connection, local_id: &str) -> AppResult<()> {
+    use rusqlite::OptionalExtension;
+    let list_id: Option<String> = conn
+        .query_row("SELECT checklist_id FROM checklist_items WHERE local_id=?1", [local_id], |r| r.get(0))
+        .optional()?;
     // collect descendants (BFS) then delete children-first
     let mut to_delete = vec![local_id.to_string()];
     let mut i = 0;
@@ -1175,7 +1185,6 @@ pub fn delete_local(conn: &Connection, local_id: &str) -> AppResult<()> {
     for id in to_delete.iter().rev() {
         conn.execute("DELETE FROM checklist_items WHERE local_id=?1", [id])?;
     }
-    let list_id: Option<String> = conn.query_row("SELECT checklist_id FROM checklist_items WHERE local_id=?1", [local_id], |r| r.get(0)).optional()?;
     if let Some(l) = list_id { fts_refresh(conn, &l)?; }
     Ok(())
 }
@@ -1215,7 +1224,7 @@ mod tests {
             completed: Some(completed),
             status: None,
             description: None,
-            children: Some(children),
+            children,
             priority: None,
             score: None,
             start_date: None,
@@ -1355,6 +1364,7 @@ pub fn list_checklists(conn: &Connection, include_deleted: bool) -> AppResult<Ve
 }
 
 pub fn upsert_list_from_server(conn: &Connection, c: &ServerChecklist) -> AppResult<bool> {
+    use rusqlite::OptionalExtension;
     let existing = conn
         .query_row("SELECT dirty, updated_at FROM checklists WHERE id=?1", [&c.id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
