@@ -1,3 +1,5 @@
+pub mod checklists;
+pub mod items;
 pub mod migrations;
 pub mod notes;
 pub mod outbox;
