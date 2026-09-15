@@ -1,4 +1,5 @@
 pub mod migrations;
+pub mod outbox;
 
 use std::path::Path;
 use crate::error::AppResult;
