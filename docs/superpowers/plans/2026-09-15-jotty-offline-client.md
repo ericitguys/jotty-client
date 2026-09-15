@@ -1677,7 +1677,9 @@ pub struct Created<T> {
 
 pub fn flatten_items(items: &[ServerItem]) -> Vec<(String, &ServerItem)> {
     let mut out = Vec::new();
-    fn walk(prefix: &str, items: &[ServerItem], out: &mut Vec<(String, &ServerItem)>) {
+    // NB: explicit 'a on items + the element type — elision + &mut invariance make the
+    // one-verbatim-line version a hard rustc error (proven in Task 5, ruling in ledger).
+    fn walk<'a>(prefix: &str, items: &'a [ServerItem], out: &mut Vec<(String, &'a ServerItem)>) {
         for (i, it) in items.iter().enumerate() {
             let path = if prefix.is_empty() { i.to_string() } else { format!("{prefix}.{i}") };
             out.push((path.clone(), it));
