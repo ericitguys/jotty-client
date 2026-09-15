@@ -264,6 +264,14 @@ option: poll or reuse jotty's WS with a session-based login), mobile builds.
 
 ## 13. v2 options (documented, not built)
 
+- **Voice notes (user-requested 2026-09-15):** capture audio in the client,
+  transcribe (STT), optionally process (summarize/structure), save as a jotty
+  note through the normal local-store + outbox sync path. Open design
+  questions for a future spec: local STT (whisper.cpp) vs cloud API (user
+  prefers local/Ollama-style to save tokens), where audio files live (jotty
+  uploads vs client-only), processing pipeline shape, editor UX for
+  review-before-save.
+
 - Live updates via jotty's WebSocket (needs session-cookie login; API-key-only
   clients can't use it today — upstream may add key-auth'd WS).
 - Delta protocol via upstream contribution (`updatedSince`, stable item IDs).
