@@ -209,4 +209,40 @@ mod tests {
         assert_eq!(list(&conn, false).unwrap().len(), 0);
         assert_eq!(list(&conn, true).unwrap().len(), 1);
     }
+
+    #[test]
+    fn update_local_patch_merges_marks_dirty_and_refreshes_fts() {
+        let conn = db();
+        let n = insert_local(&conn, &NewNote { title: "Old Title".into(), content: "stale bread".into(), category: "Home".into() }).unwrap();
+        // partial patch: only content provided — title/category must be left untouched
+        let merged = update_local(
+            &conn,
+            &n.id,
+            &NotePatch { title: None, content: Some("fresh mango".into()), category: None },
+        ).unwrap();
+        assert!(merged.dirty);
+        assert_eq!(merged.title, "Old Title");
+        assert_eq!(merged.content, "fresh mango");
+        assert_eq!(merged.category, "Home");
+        // full patch: all three fields replaced
+        let full = update_local(
+            &conn,
+            &n.id,
+            &NotePatch { title: Some("New Title".into()), content: Some("ripe mango".into()), category: Some("Work".into()) },
+        ).unwrap();
+        assert!(full.dirty);
+        assert_eq!(full.title, "New Title");
+        assert_eq!(full.content, "ripe mango");
+        assert_eq!(full.category, "Work");
+        // FTS refreshed: new content matches, replaced content is gone
+        let hits: Vec<String> = conn
+            .prepare("SELECT id FROM notes_fts WHERE notes_fts MATCH 'mango'")
+            .unwrap().query_map([], |r| r.get(0)).unwrap()
+            .map(Result::unwrap).collect();
+        assert_eq!(hits, vec![n.id]);
+        let stale_count: i64 = conn
+            .query_row("SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'stale'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stale_count, 0, "FTS must not retain replaced content");
+    }
 }

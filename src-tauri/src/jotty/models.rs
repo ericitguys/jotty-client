@@ -79,3 +79,87 @@ pub fn flatten_items(items: &[ServerItem]) -> Vec<(String, &ServerItem)> {
     walk("", items, &mut out);
     out
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Health {
+    pub status: String,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryNode {
+    pub name: String,
+    pub path: String,
+    pub count: i64,
+    pub level: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Categories {
+    #[serde(default)]
+    pub notes: Vec<CategoryNode>,
+    #[serde(default)]
+    pub checklists: Vec<CategoryNode>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Created<T> {
+    #[serde(default)]
+    pub success: bool,
+    pub data: Option<T>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_note_list_payload_from_api_doc() {
+        let raw = r#"{"notes":[{"id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","title":"My Note","category":"Personal","content":"Note content here...","createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z","owner":"fccview"}]}"#;
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let notes: Vec<ServerNote> = serde_json::from_value(v["notes"].clone()).unwrap();
+        assert_eq!(notes[0].updated_at, "2024-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn parses_checklist_with_nested_items_and_sparse_fields() {
+        let raw = r#"{
+          "id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","title":"Project Tasks","category":"Work","type":"task",
+          "items":[
+            {"id":"list-123","index":0,"text":"Parent Task","completed":false,"status":"in_progress",
+             "children":[{"id":"list-sub-456","index":0,"text":"Sub-task 1","completed":false},
+                         {"id":"list-sub-789","index":1,"text":"Sub-task 2","completed":true}]},
+            {"index":1,"text":"Bare item"}
+          ],
+          "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z"}"#;
+        let c: ServerChecklist = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.items.len(), 2);
+        assert_eq!(c.items[0].children.len(), 2);
+        assert!(c.items[1].id.is_none(), "sparse payload must parse");
+    }
+
+    #[test]
+    fn flatten_paths_are_dot_notation_dfs() {
+        let child1 = ServerItem { text: "s1".into(), ..ServerItem::simple("s1") };
+        let child2 = ServerItem { text: "s2".into(), ..ServerItem::simple("s2") };
+        let mut parent = ServerItem::simple("p");
+        parent.children = vec![child1, child2];
+        let third = ServerItem::simple("t");
+        let input = [parent, third];
+        let flat = flatten_items(&input);
+        let paths: Vec<String> = flat.iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(paths, vec!["0", "0.0", "0.1", "1"]);
+    }
+
+    #[test]
+    fn parses_created_wrapper() {
+        let raw = r#"{"success":true,"data":{"id":"note-123","title":"My New Note","content":"","category":"Personal","createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z","owner":"fccview"}}"#;
+        let created: Created<ServerNote> = serde_json::from_str(raw).unwrap();
+        assert_eq!(created.data.unwrap().id, "note-123");
+    }
+}
