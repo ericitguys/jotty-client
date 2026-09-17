@@ -2851,7 +2851,7 @@ Implementation notes for `push.rs`:
 - RULING (pre-dispatch scan, reorder): after the rebuild's HTTP ops and BEFORE the reconcile(empty) → re-fetch → reconcile(new), the reorder arm MUST clear dirty on that checklist's items: `conn.execute("UPDATE checklist_items SET dirty=0 WHERE checklist_id=?1", [&list_id])?`. Why: reconcile step-3 deletes only clean non-pending rows and step-2 adoption requires `server_path` IS NULL — production reorder marks items dirty=1 (T5 reorder_local), so dirty rows with stale server_paths are skipped by step-2 and duplicated by fresh INSERTs. Test-neutral (the reorder test's rows are pre-forced clean).
 
 Run: `cd /coding/jotty/src-tauri && cargo test resolve push`
-Expected: all PASS (3 resolve + 3 new push + 4 from Task 11).
+Expected: all PASS (3 resolve + 3 new push + 5 from Task 11 = 11); full suite 36 → 42.
 
 - [ ] **Step 4: Commit**
 
