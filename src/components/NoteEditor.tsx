@@ -47,6 +47,16 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
         onChange={(e) => autosave.setValue({ title: e.target.value, content: autosave.value?.content ?? '', category })}
         placeholder="Note title"
       />
+      <input
+        id="note-category"
+        value={category}
+        onChange={(e) => {
+          const c = e.target.value;
+          setCategory(c);
+          autosave.setValue({ title: autosave.value?.title ?? '', content: autosave.value?.content ?? '', category: c });
+        }}
+        placeholder="Category"
+      />
       <EditorContent editor={editor} />
       {autosave.saving && <span id="saving">saving…</span>}
     </div>

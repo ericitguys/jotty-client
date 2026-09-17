@@ -36,6 +36,15 @@ describe('ChecklistView', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null }));
   });
 
+  it('category change commits via update_checklist on blur', async () => {
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    const cat = screen.getByPlaceholderText('Category');
+    fireEvent.change(cat, { target: { value: 'Errands' } });
+    fireEvent.blur(cat);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Errands' }));
+  });
+
   it('reorder action sends full top-level order', async () => {
     render(<ChecklistView checklistId="l1" />);
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());

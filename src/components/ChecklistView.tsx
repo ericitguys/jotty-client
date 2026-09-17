@@ -5,12 +5,16 @@ import type { ItemDto } from '../api/types';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
   const [items, setItems] = useState<ItemDto[]>([]);
+  const [title, setTitle] = useState('');
+  const [category, setCategory] = useState('');
   const [newText, setNewText] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     const list = await api.getChecklist(checklistId);
     setItems(list.items ?? []);
+    setTitle(list.title);
+    setCategory(list.category);
   }, [checklistId]);
 
   useEffect(() => { reload(); }, [reload]);
@@ -49,8 +53,30 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     await reload();
   };
 
+  const saveMeta = async () => {
+    await api.updateChecklist(checklistId, title, category);
+    await reload();
+  };
+
   return (
     <div id="checklist-view">
+      <div id="checklist-head">
+        <input
+          className="cl-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={saveMeta}
+          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+        />
+        <input
+          className="cl-category"
+          value={category}
+          placeholder="Category"
+          onChange={(e) => setCategory(e.target.value)}
+          onBlur={saveMeta}
+          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+        />
+      </div>
       <ul>
         {top.map((item) => (
           <li key={item.localId}

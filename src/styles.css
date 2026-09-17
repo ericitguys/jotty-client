@@ -105,6 +105,17 @@ input::placeholder { color: var(--muted); }
   max-height: calc(100vh - 32px);
 }
 #app > main > section h2 { margin-bottom: 8px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.section-head h2 { margin-bottom: 0; }
+.new-btn {
+  font-size: 12px;
+  padding: 3px 10px;
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: #d9c6fc;
+  font-weight: 600;
+}
+.new-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ---------- sidebar ---------- */
 #sidebar {
@@ -198,6 +209,23 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
 
 /* ---------- checklist view ---------- */
 #checklist-view { display: flex; flex-direction: column; gap: 8px; }
+#checklist-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+#checklist-head .cl-title {
+  font-size: 17px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 0 8px;
+}
+#checklist-head .cl-title:focus { box-shadow: none; border-bottom-color: var(--accent); }
+#checklist-head .cl-category {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #c9aef7;
+}
 #checklist-view ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 #checklist-view li {
   background: var(--row);
@@ -270,6 +298,12 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   padding: 2px 0 8px;
 }
 #note-title:focus { box-shadow: none; border-bottom-color: var(--accent); }
+#note-category {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  color: #c9aef7;
+}
 #note-editor .tiptap {
   min-height: 55vh;
   outline: none;

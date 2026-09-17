@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invoke = vi.fn();
@@ -21,6 +21,15 @@ describe('NoteEditor', () => {
     await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
     // TipTap renders into a contenteditable; assert it mounted
     expect(document.querySelector('.tiptap')).not.toBeNull();
+  });
+
+  it('category change saves with the new category after debounce', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Work' } });
+    // idle past the 800ms debounce window (real timers per ruling Q)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: '<p>hello</p>', category: 'Work' });
   });
 
   it('note_switch_does_not_clobber_previous_note', async () => {
