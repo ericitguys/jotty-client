@@ -3,11 +3,12 @@ import { listen } from '@tauri-apps/api/event';
 import Sidebar from './components/Sidebar';
 import NoteList from './components/NoteList';
 import ChecklistList from './components/ChecklistList';
+import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, refreshAll } = useStore();
+  const { connection, notes, checklists, selectedNoteId, refreshAll } = useStore();
 
   useEffect(() => {
     refreshAll();
@@ -24,7 +25,7 @@ export default function App() {
       <Sidebar />
       <main>
         <NoteList notes={notes} />
-        <ChecklistList checklists={checklists} />
+        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : <ChecklistList checklists={checklists}/>}
       </main>
       <SyncBadge />
     </div>
