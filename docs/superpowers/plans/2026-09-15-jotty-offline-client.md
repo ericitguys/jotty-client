@@ -2482,6 +2482,14 @@ mod tests {
                 "data": {"id":"srv-1","title":"T","content":"c","category":"Home","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-02T00:00:00.000Z","owner":"u"}
             })))
             .mount(&s).await;
+        // (binding ruling): one-op-per-fetch means the queued update op replays AFTER the
+        // remap and targets srv-1 — it needs this PUT mock.
+        Mock::given(method("PUT")).and(path("/api/notes/srv-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"srv-1","title":"T","content":"c2","category":"Home","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-03T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
         let mut conn = db();
         let local = notes::insert_local(&conn, &notes::NewNote { title: "T".into(), content: "c".into(), category: "Home".into() }).unwrap();
         outbox::enqueue(&conn, "create", "note", &local.id, &serde_json::json!({"temp_id": local.id, "title":"T","content":"c","category":"Home"})).unwrap();
@@ -2489,12 +2497,11 @@ mod tests {
         outbox::enqueue(&conn, "update", "note", &local.id, &serde_json::json!({"id": local.id, "title":"T","content":"c2","category":"Home"})).unwrap();
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         let stats = push_pending(&mut conn, &client).await.unwrap();
-        assert_eq!(stats.pushed, 1); // create done; update now targets srv-1 and hits no mock → stops run
+        assert_eq!(stats.pushed, 2); // create + remapped update both replay (one op per fetch)
         let updated = notes::get(&conn, "srv-1").unwrap().unwrap();
         assert_eq!(updated.id, "srv-1");
         assert!(!updated.dirty);
-        let batch = outbox::next_batch(&conn, 10).unwrap();
-        assert_eq!(batch[0].entity_id, "srv-1", "pending op must be remapped");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -2526,6 +2533,12 @@ mod tests {
         Mock::given(method("DELETE")).and(path("/api/notes/gone-1"))
             .respond_with(ResponseTemplate::new(404).set_body_string("nope"))
             .mount(&s).await;
+        // (pre-dispatch scan ruling): wiremock answers UNMATCHED requests with 404, which
+        // the impl maps to mark_conflict — gone-2 needs its own 500 mock so the run's stop
+        // is the transient-error branch (record_attempt), not a second conflict.
+        Mock::given(method("DELETE")).and(path("/api/notes/gone-2"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
         let mut conn = db();
         outbox::enqueue(&conn, "delete", "note", "gone-1", &serde_json::json!({})).unwrap();
         outbox::enqueue(&conn, "delete", "note", "gone-2", &serde_json::json!({})).unwrap();
@@ -2533,7 +2546,7 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.conflicts, 1);
         let conflicts = crate::db::outbox::next_batch(&conn, 10).unwrap();
-        // gone-1 is conflict (not pending); gone-2 still pending, hit no mock → recorded attempt, run stops
+        // gone-1 is conflict (not pending); gone-2 → 500 → record_attempt, run stops (FIFO)
         assert!(conflicts.iter().any(|o| o.entity_id == "gone-2"));
     }
 
