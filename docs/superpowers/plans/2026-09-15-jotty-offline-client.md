@@ -2459,6 +2459,8 @@ IMPORTANT: the real implementation folds checklist arms (`checklist_create/updat
 > **NB (pre-dispatch rulings, 2026-09-17):** `update_checklist` returns `AppResult<()>` (landed Task 8 surface; its test mock answers PUT with only `{"success":true}`) — the checklist_update arm passes `chrono::Utc::now().to_rfc3339()` to `mark_list_synced` (advisory-class ts; NEVER an empty string — pull's normalized ts parse would fail). Unknown op (unmatched entity/op_type) → `mark_conflict` + continue (record_attempt would loop forever on next_batch(1)).
 >
 > **NB (pre-review ruling, 2026-09-17 — fix round):** (1) the note_create remap tx refreshes notes_fts after the id UPDATE (`DELETE FROM notes_fts WHERE id=old` + re-INSERT under the new id — insert_local writes an FTS row under the TEMP id; lists_fts needs NO fixup: insert_local_list never writes it, items::fts_refresh rebuilds it on next item touch). (2) the checklist create remap tx runs `PRAGMA defer_foreign_keys=ON` FIRST, then also moves `checklist_items.checklist_id` old→new and rewrites pending item-op payloads (`UPDATE outbox SET payload=json_set(payload,'$.checklist_id',new) WHERE state='pending' AND json_extract(payload,'$.checklist_id')=old`) — foreign_keys=ON makes the bare `UPDATE checklists SET id` an immediate FK violation once local items reference the temp id (the normal offline-create flow). Tests 1+2 amended accordingly (test 1: FTS asserts; test 2: offline item + item op → unknown-op conflict after remap).
+>
+> **NB (review ruling, 2026-09-17 — fix round 2):** (1) the four create/update arms (note_create push.rs:26, note_update :49, checklist_create :60, checklist_update :80) call the client with `.await?` — any client error escapes push_pending BEFORE the routing match, violating the error contract (network/5xx → record_attempt + stop; 404 on note_update/note_delete → conflict + continue) and permanently wedging the FIFO behind a vanished-target update op (every later op never pushes — data-stall, not just telemetry loss). RULING: the four arms become match expressions on the client Result — `Ok(x) => { …rest of body…; Ok(()) }`, `Err(e) => Err(e)` — so client errors flow into the routing match. Uniform routing for ALL arms (delete arms already behave this way): 404/409/410 → conflict + continue; network/5xx → record_attempt + stop (stats-so-far preserved). A 404/409/410 on a CREATE op (no vanishing target — practically unreachable) also lands in the conflict arm: acceptable per sync invariant 5. Errors from the remap txs (`?`) still escape push_pending — DB-level failure = corruption-class; aborting the run is the existing, defensible behavior. NEW TEST `note_update_404_becomes_conflict_and_queue_continues` (in the test fence; RED pre-fix = push_pending returns Err(404) → test unwrap panics). (2) the lists_fts orphan is PERMANENT — the fix-round-1 NB's "rebuilds on next item touch" premise was WRONG (items::fts_refresh deletes/re-inserts keyed by the PASSED id only, so the temp-id row written during offline item creation is never cleaned; no other module writes lists_fts). RULING (supersedes the "lists_fts needs NO fixup" premise above): the checklist create remap tx also runs `DELETE FROM lists_fts WHERE id=old` — NO unconditional re-insert (preserves "no items → no lists_fts row" semantics; the new-id row is written by the next item touch / T12 reconcile when items exist). Test 2 gains the stale-row assert. Suite: 35 → 36 (filter `push` → 5).
 
 Tests:
 ```rust
@@ -2550,6 +2552,10 @@ mod tests {
             "SELECT payload FROM outbox WHERE entity='checklist_item' AND state='conflict'", [], |r| r.get(0)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&op_payload).unwrap();
         assert_eq!(v["checklist_id"], "srv-l");
+        // (review ruling 2026-09-17): the create remap deletes the stale temp-id lists_fts row
+        // (written by insert_local -> items::fts_refresh under the TEMP id; permanent orphan otherwise)
+        let stale_fts: i64 = conn.query_row("SELECT count(*) FROM lists_fts WHERE id=?1", [&local.id], |r| r.get(0)).unwrap();
+        assert_eq!(stale_fts, 0);
     }
 
     #[tokio::test]
@@ -2576,6 +2582,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_update_404_becomes_conflict_and_queue_continues() {
+        let s = MockServer::start().await;
+        // vanished target: note deleted server-side while locally dirty — brief line 20's
+        // first-class case; the update arm must route it to mark_conflict (not an Err escape)
+        Mock::given(method("PUT")).and(path("/api/notes/gone-1"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("nope"))
+            .mount(&s).await;
+        // a delete op queued behind must still replay after the conflict (FIFO continues)
+        Mock::given(method("DELETE")).and(path("/api/notes/gone-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        outbox::enqueue(&conn, "update", "note", "gone-1", &serde_json::json!({"id":"gone-1","title":"T","content":"c","category":"Home"})).unwrap();
+        outbox::enqueue(&conn, "delete", "note", "gone-2", &serde_json::json!({})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn network_error_keeps_op_pending_with_error() {
         // port 1 is guaranteed unroutable
         let client = JottyClient::new("http://127.0.0.1:1", "ck").unwrap();
@@ -2593,7 +2621,7 @@ mod tests {
 - [ ] **Step 2: Implement (add checklist arms), run to green**
 
 Run: `cd /coding/jotty/src-tauri && cargo test push`
-Expected: 4 PASS.
+Expected: 5 PASS.
 
 - [ ] **Step 3: Commit**
 
