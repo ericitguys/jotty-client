@@ -4154,8 +4154,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 import ChecklistView from './ChecklistView';
 
 const items = [
-  { localId: 'i1', checklistId: 'l1', parentId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
-  { localId: 'i2', checklistId: 'l1', parentId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
+  { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+  { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
 ];
 
 beforeEach(() => {
@@ -4212,8 +4212,8 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 
   useEffect(() => { reload(); }, [reload]);
 
-  const top = items.filter((i) => i.parentId === null).sort((a, b) => a.position - b.position);
-  const childrenOf = (id: string) => items.filter((i) => i.parentId === id).sort((a, b) => a.position - b.position);
+  const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
+  const childrenOf = (id: string) => items.filter((i) => i.parentLocalId === id).sort((a, b) => a.position - b.position);
 
   const toggle = async (item: ItemDto) => {
     await api.setItemChecked(checklistId, item.localId, !item.completed);
@@ -4319,6 +4319,21 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 > Suite expectation: vitest 4 → 7 (3 new ChecklistView tests); tsc clean; one
 > feat commit of exactly 3 files (ChecklistView.tsx, ChecklistView.test.tsx,
 > App.tsx wiring).
+>
+> **NB (attempt-1 §fixes adjudication, binding, 2026-09-17 — T17):** two
+> judgment calls, BOTH ACCEPTED (deleg_ad93721e, commit 5a250e7):
+> (F1) fence `parentId` → `parentLocalId` (component filter + mock items) —
+> the fence field does not exist on the T15-amended ItemDto; no path to
+> tsc-clean AND green existed (`i.parentId` fails tsc; `parentLocalId` against
+> a `parentId` mock renders 0 items); the fence's own add_item assert already
+> uses `parentLocalId`; production-correct (the backend emits `parentLocalId`).
+> The plan fence above is amended to match (mock items + filter lines).
+> (F2) `<span className="item-text">{item.text}</span>` added per row — the
+> byte-exact test's `getByText('a')` cannot match an input `value` (RTL
+> matches text nodes); per ruling U's precedent (test binding, bend the
+> component) the span is a pure addition; the editing input stays; row text
+> renders twice = ledgered UX minor for T18. Plan component fence NOT amended
+> for F2 (the shipped file is the record; the brief will carry the §fixes NB).
 
 Run: `cd /coding/jotty && npm test`
 Expected: all frontend tests PASS.
