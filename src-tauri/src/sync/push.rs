@@ -30,6 +30,11 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                         let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
                         tx.execute("UPDATE notes SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
                         tx.execute("UPDATE notes SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
+                        tx.execute("DELETE FROM notes_fts WHERE id=?1", rusqlite::params![old_id])?;
+                        tx.execute(
+                            "INSERT INTO notes_fts(id, title, content) SELECT id, title, content FROM notes WHERE id=?1",
+                            rusqlite::params![new_id],
+                        )?;
                         outbox::remap_entity_id(&tx, "note", &old_id, &new_id)?;
                         tx.commit()?;
                     }
@@ -56,9 +61,12 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     let new_id = created.id.clone();
                     {
                         let tx = conn.transaction()?;
+                        tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
                         let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
                         tx.execute("UPDATE checklists SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
                         tx.execute("UPDATE checklists SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
+                        tx.execute("UPDATE checklist_items SET checklist_id=?2 WHERE checklist_id=?1", rusqlite::params![old_id, new_id])?;
+                        tx.execute("UPDATE outbox SET payload=json_set(payload, '$.checklist_id', ?2) WHERE state='pending' AND json_extract(payload, '$.checklist_id')=?1", rusqlite::params![old_id, new_id])?;
                         outbox::remap_entity_id(&tx, "checklist", &old_id, &new_id)?;
                         tx.commit()?;
                     }
@@ -150,6 +158,12 @@ mod tests {
         assert_eq!(updated.id, "srv-1");
         assert!(!updated.dirty);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // (pre-review ruling): remap refreshes notes_fts — old temp-id row gone, new-id row searchable
+        let fts: (String, i64) = conn.query_row(
+            "SELECT id, (SELECT count(*) FROM notes_fts) FROM notes_fts WHERE notes_fts MATCH 'c'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(fts, ("srv-1".into(), 1));
     }
 
     #[tokio::test]
@@ -168,11 +182,26 @@ mod tests {
         let local = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
         outbox::enqueue(&conn, "create", "checklist", &local.id, &serde_json::json!({"temp_id": local.id, "title":"L","category":"Home"})).unwrap();
         outbox::enqueue(&conn, "update", "checklist", &local.id, &serde_json::json!({"id": local.id, "title":"L2","category":"Home"})).unwrap();
+        // (pre-review ruling 2026-09-17): an offline item on the temp list id + its op queued
+        // behind — the create remap must move the item FK and rewrite pending item-op payloads.
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: local.id.clone(), parent_local_id: None, text: "i".into(),
+        }).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": local.id, "checked": true})).unwrap();
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 2);
         assert!(checklists::get_checklist(&conn, "srv-l").unwrap().is_some());
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // item FK moved with the list id; the unknown item op conflicts AFTER the remap rewrote its payload
+        assert_eq!(stats.conflicts, 1);
+        let item = crate::db::items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(item.checklist_id, "srv-l");
+        let op_payload: String = conn.query_row(
+            "SELECT payload FROM outbox WHERE entity='checklist_item' AND state='conflict'", [], |r| r.get(0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&op_payload).unwrap();
+        assert_eq!(v["checklist_id"], "srv-l");
     }
 
     #[tokio::test]
