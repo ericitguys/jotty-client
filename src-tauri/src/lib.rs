@@ -1,11 +1,37 @@
+pub mod commands;
 pub mod db;
 pub mod error;
 pub mod jotty;
 pub mod keys;
+pub mod state;
 pub mod sync;
+
+pub use sync::spawn_scheduler;
+
+use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            let db_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&db_dir)?;
+            let conn = db::open(&db_dir.join("jotty.db"))?;
+            db::migrations::run(&conn)?;
+            // restore connection if instance_url exists
+            let state = state::AppState::new(conn, Box::new(keys::OsKeyStore))?;
+            state.restore_connection(app.handle().clone()); // spawns task: rebuild client from url+keyring, no auto-sync
+            app.manage(state);
+            sync::spawn_scheduler(app.handle().clone());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::connect_instance, commands::disconnect_instance, commands::get_connection,
+            commands::list_notes, commands::get_note, commands::create_note, commands::update_note, commands::delete_note,
+            commands::list_checklists, commands::get_checklist, commands::create_checklist, commands::update_checklist, commands::delete_checklist,
+            commands::add_item, commands::set_item_text, commands::set_item_checked, commands::delete_item, commands::reorder_items,
+            commands::list_categories, commands::search, commands::trigger_sync, commands::sync_status,
+            commands::list_conflicts, commands::resolve_conflict, commands::get_settings, commands::set_sync_interval
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
