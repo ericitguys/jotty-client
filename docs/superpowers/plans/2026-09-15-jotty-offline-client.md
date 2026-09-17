@@ -4062,6 +4062,27 @@ Run: `cd /coding/jotty && npm test -- NoteEditor` → PASS.
 > note is selected (matching "replace the placeholder with editor when a note
 > is selected"; ChecklistList returns when the note is deselected). TipTap deps
 > already in package.json (@tiptap/react 2.27.3, starter-kit, extension-link).
+>
+> **NB (attempt-1 blocker ruling, binding, 2026-09-17 — T16):** attempt 1
+> (deleg_133bbaa6) completed Steps 1–4 with all 4 files census-verified
+> (useAutosave.ts + test fence-exact green; NoteEditor.tsx fence+M green via
+> probes) but STOPPED at the NoteEditor test: the fence combines
+> `vi.useFakeTimers()` with RTL `waitFor` — RTL's asyncWrapper drain
+> (`setTimeout(resolve, 0)` + `jest.advanceTimersByTime(0)`) is gated behind
+> `jestFakeTimersAreEnabled()`, which requires the global `jest` (absent in
+> vitest); under faked setTimeout the drain promise never resolves → `waitFor`
+> hangs even when the condition is already true (proven empirically with
+> direct-expect probes; `waitFor` with REAL timers passes all asserts incl.
+> `.tiptap`). Environment mismatch, not a component defect (probes: get_note
+> called, display-value 'T', `<p>hello</p>` mounted). RULING (Q) — Option 1
+> adopted: drop `vi.useFakeTimers()` + `vi.useRealTimers()` from the
+> NoteEditor test fence (2-line amendment; the test is mount-only per ruling O
+> — no timing-dependent assert exists; useAutosave's fence test keeps its own
+> fake timers). Option 2 (global jest shim in src/test/setup.ts) REJECTED:
+> setup.ts is T1 scaffolding outside the allowed file set and a global shim is
+> an environment hack. Attempt 2 resumes from the attempt-1 uncommitted files
+> (verified: useAutosave.ts + test + NoteEditor.tsx + NoteEditor.test.tsx all
+> present, census clean; App.tsx NOT yet wired).
 
 - [ ] **Step 5: Wire into App (replace note list placeholder with editor when a note is selected)**
 
