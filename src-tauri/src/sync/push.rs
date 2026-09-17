@@ -239,10 +239,14 @@ async fn close_item_group(conn: &Connection, client: &JottyClient, list_id: &str
 // (a) PRUNE: a claim whose (path, text@path) no longer matches the FRESH snapshot is
 //     released — the claimed server item moved/changed, and a stale claim must not
 //     block a different item now at that path.
-// (b) IDENTITY: a surviving own claim, or the row's stored server_path present in the
-//     snapshot, resolves WITHOUT text equality (the stored path is the identity anchor;
-//     own claims never block identity hits). The claim for this item is (re)recorded
-//     with the snapshot text at that path either way.
+// (b) IDENTITY: a surviving own claim resolves WITHOUT text equality in EVERY arm —
+//     the own-claim memo stays all-arm (check→uncheck of the SAME item must keep
+//     replaying at its path). The row's stored server_path hit, by contrast, is
+//     UPDATE-ARM-ONLY (fix round 2, re-review N1): check/delete/create-parent ops at a
+//     present-but-drifted stored path must fall through to the text fallback (baseline
+//     6f9702d semantics — resolve()'s fast path is text-validated), never resolve a
+//     drifted path without text verification. The claim for this item is (re)recorded
+//     with the snapshot text at the resolved path either way.
 // (c) FALLBACK: resolve() sees only OTHER items' claim paths (resolve.rs untouched);
 //     two DIFFERENT identical-text items still never share a server item within a run.
 fn resolve_with_claims(
@@ -251,6 +255,7 @@ fn resolve_with_claims(
     text: &str,
     snap_items: &[ServerItem],
     claims: &mut Vec<(String, String, String)>,
+    update_arm: bool,
 ) -> Option<String> {
     let flat = items::flatten(snap_items);
     let text_at = |p: &str| flat.iter().find(|f| f.path == p).map(|f| f.text.clone());
@@ -266,12 +271,16 @@ fn resolve_with_claims(
         claims.push((item_local_id.to_string(), p.clone(), t));
         return Some(p);
     }
-    // (b) stored-path identity hit
-    if let Some(p) = server_path {
-        if let Some(t) = text_at(p) {
-            claims.retain(|(id, _, _)| id != item_local_id);
-            claims.push((item_local_id.to_string(), p.to_string(), t));
-            return Some(p.to_string());
+    // (b) stored-path identity hit — UPDATE-ARM-ONLY (fix round 2, re-review N1:
+    // check/delete/create-parent ops at a present-but-drifted stored path fall through
+    // to the text fallback below; only the update arm may patch without text equality)
+    if update_arm {
+        if let Some(p) = server_path {
+            if let Some(t) = text_at(p) {
+                claims.retain(|(id, _, _)| id != item_local_id);
+                claims.push((item_local_id.to_string(), p.to_string(), t));
+                return Some(p.to_string());
+            }
         }
     }
     // (c) text fallback against OTHER items' claims only
@@ -317,6 +326,7 @@ fn resolve_item_target(
         &row.text,
         snap_items,
         claims,
+        update_arm,
     )
     .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))
 }
@@ -332,15 +342,18 @@ fn resolve_parent_path(
     };
     let row = items::get(conn, parent_local_id)?
         .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))?;
-    // parent synced -> stored path identity hit (no text equality, review ruling
-    // 2026-09-17); parent also new -> its create op replayed earlier in FIFO (Task 14
-    // enqueue order), so resolve it by text from the snapshot via the shared fallback.
+    // parent synced -> TEXT fallback via the shared helper (the stored-path identity
+    // hit is UPDATE-ARM-ONLY, fix round 2 re-review N1 — fix round 1's "parent synced
+    // -> stored path identity hit" note is superseded; a drifted parent path must
+    // text-verify); parent also new -> its create op replayed earlier in FIFO (Task 14
+    // enqueue order) — the same text fallback resolves it from the snapshot.
     resolve_with_claims(
         parent_local_id,
         row.server_path.as_deref(),
         &row.text,
         snap_items,
         claims,
+        false,
     )
     .map(Some)
     .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))
@@ -770,5 +783,86 @@ mod tests {
         assert_eq!(stats.pushed, 2, "check then uncheck on the SAME item must both replay");
         assert_eq!(stats.conflicts, 0);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_check_resolves_via_text_after_delete_shift() {
+        let s = MockServer::start().await;
+        // Delete-shift regression pin (re-review N1, fix round 2): a@0, c@1, y@2
+        // all synced; ops: check a, delete a, check c. After a's delete the
+        // server reindexes to [c@0, y@1] — c's stale stored path "1" now holds
+        // y. The stored-path identity hit is UPDATE-ARM-ONLY, so the check op
+        // must fall through to the TEXT fallback and check c at its NEW path
+        // "0" — never the drifted stored path "1".
+        let check_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(move |_req: &_| {
+                let n = gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n < 2 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-c","index":1,"text":"c","completed":false},
+                        {"id":"srv-y","index":2,"text":"y","completed":false}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-c","index":0,"text":"c","completed":false},
+                        {"id":"srv-y","index":1,"text":"y","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
+            .mount(&s).await;
+        Mock::given(method("DELETE")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        {
+            let check_hits = check_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+                .respond_with(move |_req: &_| {
+                    check_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let stale_hits = stale_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/1/check"))
+                .respond_with(move |_req: &_| {
+                    stale_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
+        let c = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "c".into() }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='1', dirty=0 WHERE local_id=?1", [&c.local_id]).unwrap();
+        // FIFO: check a (resolves "0"), delete a (resolves "0"; server reindexes),
+        // check c (stale stored path "1" — must TEXT-resolve to "0")
+        outbox::enqueue(&conn, "check", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "delete", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1"})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &c.local_id,
+            &serde_json::json!({"item_local_id": c.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 3, "all three ops must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // the post-delete check of c must land at its NEW path "0" (text-resolved),
+        // never at the drifted stored path "1" (which holds y after the reindex)
+        assert_eq!(check_hits.load(std::sync::atomic::Ordering::SeqCst), 2,
+            "path 0 checked once for a (pre-delete) and once for c (post-delete)");
+        assert_eq!(stale_hits.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "the drifted stored path \"1\" must never be checked (identity hit is update-arm-only)");
     }
 }
