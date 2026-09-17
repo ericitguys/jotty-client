@@ -125,6 +125,11 @@ pub fn soft_delete_local(conn: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub fn tombstone(conn: &Connection, id: &str) -> AppResult<()> {
+    conn.execute("UPDATE notes SET deleted_at=?2 WHERE id=?1", rusqlite::params![id, chrono::Utc::now().to_rfc3339()])?;
+    Ok(())
+}
+
 pub fn get(conn: &Connection, id: &str) -> AppResult<Option<NoteRow>> {
     let sql = format!("SELECT {COLS} FROM notes WHERE id=?1");
     Ok(conn.query_row(&sql, [id], |r| row(r)).optional()?)

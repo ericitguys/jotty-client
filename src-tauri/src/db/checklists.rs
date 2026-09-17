@@ -108,6 +108,11 @@ pub fn soft_delete_list_local(conn: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
+pub fn tombstone(conn: &Connection, id: &str) -> AppResult<()> {
+    conn.execute("UPDATE checklists SET deleted_at=?2 WHERE id=?1", rusqlite::params![id, chrono::Utc::now().to_rfc3339()])?;
+    Ok(())
+}
+
 pub fn mark_list_synced(conn: &Connection, id: &str, server_updated_at: &str) -> AppResult<()> {
     conn.execute(
         "UPDATE checklists SET dirty=0, updated_at=?2 WHERE id=?1",

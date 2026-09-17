@@ -2,6 +2,7 @@ pub mod db;
 pub mod error;
 pub mod jotty;
 pub mod keys;
+pub mod sync;
 
 pub fn run() {
     tauri::Builder::default()
