@@ -17,7 +17,10 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
     // against a freshly fetched index (v1 correctness rule), and the group closes with one
     // re-fetch + reconcile + mark_list_synced after the checklist's last queued op.
     let mut group: Option<String> = None;
-    let mut claimed: Vec<String> = Vec::new();
+    // Review ruling 2026-09-17: claims are (item_local_id, path, text@path-at-claim)
+    // triples; the plain `claimed` vec that resolve() consumes is DERIVED per op from
+    // OTHER items' claims (own-claim exclusion) — see resolve_with_claims.
+    let mut claims: Vec<(String, String, String)> = Vec::new();
     loop {
         let ops = outbox::next_batch(conn, 1)?;
         if ops.is_empty() {
@@ -35,7 +38,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     if let Some(prev) = group.take() {
                         close_item_group(conn, client, &prev).await?;
                     }
-                    claimed.clear();
+                    claims.clear();
                     group = Some(list_id.clone());
                 }
                 list_id
@@ -119,7 +122,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                 }
                 ("checklist", "delete") => client.delete_checklist(&op.entity_id).await,
                 ("checklist_item", "create") => match fetch_list_snapshot(client, &item_list_id).await {
-                    Ok(snap) => match resolve_parent_path(conn, &snap.items, &payload, &mut claimed) {
+                    Ok(snap) => match resolve_parent_path(conn, &snap.items, &payload, &mut claims) {
                         Ok(parent_path) => match client.create_item(
                             &item_list_id,
                             payload["text"].as_str().unwrap_or(""),
@@ -133,7 +136,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     Err(e) => Err(e),
                 }
                 ("checklist_item", "update") => match fetch_list_snapshot(client, &item_list_id).await {
-                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, true) {
                         Ok(path) => match client.patch_item(&item_list_id, &path, payload["text"].as_str().unwrap_or("")).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err(e),
@@ -143,7 +146,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     Err(e) => Err(e),
                 }
                 ("checklist_item", "check") => match fetch_list_snapshot(client, &item_list_id).await {
-                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => match client.check_item(&item_list_id, &path, payload["checked"].as_bool().unwrap_or(false)).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err(e),
@@ -153,7 +156,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     Err(e) => Err(e),
                 }
                 ("checklist_item", "delete") => match fetch_list_snapshot(client, &item_list_id).await {
-                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => match client.delete_item(&item_list_id, &path).await {
                             Ok(()) => {
                                 items::delete_local(conn, payload["item_local_id"].as_str().unwrap_or(&op.entity_id))?;
@@ -230,35 +233,117 @@ async fn close_item_group(conn: &Connection, client: &JottyClient, list_id: &str
     Ok(())
 }
 
+// Review ruling 2026-09-17: per-op target resolution over (item_local_id, path,
+// text@path-at-claim) claims, shared by resolve_item_target (update/check/delete arms)
+// and resolve_parent_path (create arm).
+// (a) PRUNE: a claim whose (path, text@path) no longer matches the FRESH snapshot is
+//     released — the claimed server item moved/changed, and a stale claim must not
+//     block a different item now at that path.
+// (b) IDENTITY: a surviving own claim, or the row's stored server_path present in the
+//     snapshot, resolves WITHOUT text equality (the stored path is the identity anchor;
+//     own claims never block identity hits). The claim for this item is (re)recorded
+//     with the snapshot text at that path either way.
+// (c) FALLBACK: resolve() sees only OTHER items' claim paths (resolve.rs untouched);
+//     two DIFFERENT identical-text items still never share a server item within a run.
+fn resolve_with_claims(
+    item_local_id: &str,
+    server_path: Option<&str>,
+    text: &str,
+    snap_items: &[ServerItem],
+    claims: &mut Vec<(String, String, String)>,
+) -> Option<String> {
+    let flat = items::flatten(snap_items);
+    let text_at = |p: &str| flat.iter().find(|f| f.path == p).map(|f| f.text.clone());
+    // (a) snapshot pruning
+    claims.retain(|(_, p, t)| flat.iter().any(|f| f.path == *p && f.text == *t));
+    // (b) own-claim memo
+    if let Some((p, t)) = claims
+        .iter()
+        .find(|(id, _, _)| id == item_local_id)
+        .and_then(|(_, p, _)| text_at(p).map(|t| (p.clone(), t)))
+    {
+        claims.retain(|(id, _, _)| id != item_local_id);
+        claims.push((item_local_id.to_string(), p.clone(), t));
+        return Some(p);
+    }
+    // (b) stored-path identity hit
+    if let Some(p) = server_path {
+        if let Some(t) = text_at(p) {
+            claims.retain(|(id, _, _)| id != item_local_id);
+            claims.push((item_local_id.to_string(), p.to_string(), t));
+            return Some(p.to_string());
+        }
+    }
+    // (c) text fallback against OTHER items' claims only
+    let mut claimed: Vec<String> = claims
+        .iter()
+        .filter(|(id, _, _)| id != item_local_id)
+        .map(|(_, p, _)| p.clone())
+        .collect();
+    let found = resolve(snap_items, server_path, text, &mut claimed);
+    if let Some(p) = &found {
+        if let Some(t) = text_at(p) {
+            claims.retain(|(id, _, _)| id != item_local_id);
+            claims.push((item_local_id.to_string(), p.clone(), t));
+        }
+    }
+    found
+}
+
 fn resolve_item_target(
     conn: &Connection,
     snap_items: &[ServerItem],
     item_local_id: &str,
-    claimed: &mut Vec<String>,
+    claims: &mut Vec<(String, String, String)>,
+    update_arm: bool,
 ) -> AppResult<String> {
     let row = items::get(conn, item_local_id)?
         .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))?;
-    resolve(snap_items, row.server_path.as_deref(), &row.text, claimed)
-        .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))
+    // F1 (review ruling 2026-09-17, update arm ONLY): a stored path that has VANISHED
+    // from the fresh snapshot must not text-fallback for a patch (the row text is the
+    // NEW text — a rename's target cannot be safely re-resolved) → sentinel conflict
+    // directly. server_path None (created offline; its create replayed earlier this
+    // run) keeps the normal text fallback below — bounded edge, may conflict.
+    if update_arm {
+        if let Some(p) = row.server_path.as_deref() {
+            if !items::flatten(snap_items).iter().any(|f| f.path == p) {
+                return Err(AppError::Other(format!("unresolved item op {item_local_id}")));
+            }
+        }
+    }
+    resolve_with_claims(
+        item_local_id,
+        row.server_path.as_deref(),
+        &row.text,
+        snap_items,
+        claims,
+    )
+    .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))
 }
 
 fn resolve_parent_path(
     conn: &Connection,
     snap_items: &[ServerItem],
     payload: &serde_json::Value,
-    claimed: &mut Vec<String>,
+    claims: &mut Vec<(String, String, String)>,
 ) -> AppResult<Option<String>> {
     let Some(parent_local_id) = payload["parent_local_id"].as_str() else {
         return Ok(None); // top-level create
     };
     let row = items::get(conn, parent_local_id)?
         .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))?;
-    // parent synced -> stored path re-validated against the fresh snapshot (text fallback
-    // on drift); parent also new -> its create op replayed earlier in FIFO (Task 14
-    // enqueue order), so resolve it by text from the snapshot.
-    resolve(snap_items, row.server_path.as_deref(), &row.text, claimed)
-        .map(Some)
-        .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))
+    // parent synced -> stored path identity hit (no text equality, review ruling
+    // 2026-09-17); parent also new -> its create op replayed earlier in FIFO (Task 14
+    // enqueue order), so resolve it by text from the snapshot via the shared fallback.
+    resolve_with_claims(
+        parent_local_id,
+        row.server_path.as_deref(),
+        &row.text,
+        snap_items,
+        claims,
+    )
+    .map(Some)
+    .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))
 }
 
 async fn rebuild_replay(
@@ -271,16 +356,28 @@ async fn rebuild_replay(
     // (children before parents) -> re-create in local desired DFS order (top-level order
     // from the payload, children nested under their parents via parentIndex — never flat
     // ORDER BY position, R4) -> re-check recreated completed items.
-    let snap = fetch_list_snapshot(client, list_id).await?;
-    let flat = items::flatten(&snap.items);
-    for s in flat.iter().rev() {
-        client.delete_item(list_id, &s.path).await?;
-    }
+    // M1 pre-wipe guard (review ruling 2026-09-17): every top-level local row must appear
+    // in the payload's ordered ids; a stale/partial payload must become a sentinel
+    // conflict BEFORE any client call, so the server list is never wiped by a payload we
+    // cannot fully honor.
     let ordered: Vec<String> = payload["ordered_top_level_ids"]
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     let rows = items::list_for_checklist(conn, list_id)?;
+    if rows
+        .iter()
+        .any(|r| r.parent_id.is_none() && !ordered.contains(&r.local_id))
+    {
+        return Err(AppError::Other(format!(
+            "unresolved item op {list_id} (reorder payload missing a top-level row)"
+        )));
+    }
+    let snap = fetch_list_snapshot(client, list_id).await?;
+    let flat = items::flatten(&snap.items);
+    for s in flat.iter().rev() {
+        client.delete_item(list_id, &s.path).await?;
+    }
     let dfs = desired_dfs_order(&ordered, &rows);
     for (text, _, parent_path, _) in &dfs {
         client.create_item(list_id, text, parent_path.as_deref()).await?;
@@ -303,6 +400,7 @@ fn desired_dfs_order(
     ordered_top: &[String],
     rows: &[items::ItemRow],
 ) -> Vec<(String, bool, Option<String>, String)> {
+    // sibling order within a parent comes from stored positions (maintained by T5); the forbidden flat rebuild applies to TOP-LEVEL ordering only (R4: children follow parents via parent_id nesting)
     let mut children_of: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
     for (i, r) in rows.iter().enumerate() {
         if let Some(p) = &r.parent_id {
@@ -605,5 +703,72 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].text, "b");
         assert_eq!(items[1].text, "a");
+    }
+
+    #[tokio::test]
+    async fn item_update_renames_via_stored_path_without_text_conflict() {
+        let s = MockServer::start().await;
+        // server still holds the OLD text at path 0 — the row text is the NEW text
+        // (update_local mutated it command-time); the update arm must patch the
+        // stored path WITHOUT text equality (review ruling: path-existence)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"old","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "old".into(),
+        }).unwrap();
+        // synced earlier at path "0", then renamed OFFLINE: row text = new, server text = old
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=1, text='new' WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "update", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "text": "new"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "rename must patch the stored path even though server text differs");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_multi_op_same_run() {
+        let s = MockServer::start().await;
+        // check then uncheck the SAME item in one run: the own-claim memo must
+        // let the second op resolve to the same path (no spurious conflict)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/uncheck"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": false})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "check then uncheck on the SAME item must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 }
