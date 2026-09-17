@@ -1,6 +1,8 @@
-use crate::db::{checklists, notes, outbox};
+use crate::db::{checklists, items, notes, outbox};
 use crate::error::{AppError, AppResult};
 use crate::jotty::client::JottyClient;
+use crate::jotty::models::ServerItem;
+use crate::sync::resolve::resolve;
 use rusqlite::Connection;
 
 #[derive(Debug, Default, Clone)]
@@ -11,12 +13,35 @@ pub struct PushStats {
 
 pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppResult<PushStats> {
     let mut stats = PushStats::default();
+    // checklist_item ops replay as per-checklist groups: each op re-resolves its target
+    // against a freshly fetched index (v1 correctness rule), and the group closes with one
+    // re-fetch + reconcile + mark_list_synced after the checklist's last queued op.
+    let mut group: Option<String> = None;
+    let mut claimed: Vec<String> = Vec::new();
     loop {
         let ops = outbox::next_batch(conn, 1)?;
-        if ops.is_empty() { break; }
+        if ops.is_empty() {
+            if let Some(list_id) = group.take() {
+                close_item_group(conn, client, &list_id).await?;
+            }
+            break;
+        }
         for op in ops {
             let payload: serde_json::Value = serde_json::from_str(&op.payload)
                 .unwrap_or_else(|_| serde_json::json!({}));
+            let item_list_id: String = if op.entity == "checklist_item" {
+                let list_id = payload["checklist_id"].as_str().unwrap_or(&op.entity_id).to_string();
+                if group.as_deref() != Some(list_id.as_str()) {
+                    if let Some(prev) = group.take() {
+                        close_item_group(conn, client, &prev).await?;
+                    }
+                    claimed.clear();
+                    group = Some(list_id.clone());
+                }
+                list_id
+            } else {
+                String::new()
+            };
             let result: AppResult<()> = match (op.entity.as_str(), op.op_type.as_str()) {
                 ("note", "create") => match client.create_note(
                     payload["title"].as_str().unwrap_or(""),
@@ -93,6 +118,57 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     Err(e) => Err(e),
                 }
                 ("checklist", "delete") => client.delete_checklist(&op.entity_id).await,
+                ("checklist_item", "create") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_parent_path(conn, &snap.items, &payload, &mut claimed) {
+                        Ok(parent_path) => match client.create_item(
+                            &item_list_id,
+                            payload["text"].as_str().unwrap_or(""),
+                            parent_path.as_deref(),
+                        ).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "update") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                        Ok(path) => match client.patch_item(&item_list_id, &path, payload["text"].as_str().unwrap_or("")).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "check") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                        Ok(path) => match client.check_item(&item_list_id, &path, payload["checked"].as_bool().unwrap_or(false)).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "delete") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claimed) {
+                        Ok(path) => match client.delete_item(&item_list_id, &path).await {
+                            Ok(()) => {
+                                items::delete_local(conn, payload["item_local_id"].as_str().unwrap_or(&op.entity_id))?;
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "reorder") => match rebuild_replay(conn, client, &item_list_id, &payload).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(e),
+                }
                 _ => Err(crate::error::AppError::Other(format!("unknown op {}/{}", op.entity, op.op_type))),
             };
             match result {
@@ -110,6 +186,13 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     outbox::mark_conflict(conn, op.seq, &e.to_string())?;
                     stats.conflicts += 1;
                 }
+                // (ruled 2026-09-17): an item op whose target can't be resolved is a CONFLICT
+                // (state='conflict', UI offers keep-mine/take-server) — string-sentinel
+                // precedent per the unknown-op arm.
+                Err(e) if e.to_string().starts_with("unresolved item op") => {
+                    outbox::mark_conflict(conn, op.seq, &e.to_string())?;
+                    stats.conflicts += 1;
+                }
                 Err(e) => {
                     outbox::record_attempt(conn, op.seq, &e.to_string())?;
                     // transient error: stop FIFO replay this run
@@ -119,6 +202,141 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
         }
     }
     Ok(stats)
+}
+
+async fn fetch_list_snapshot(client: &JottyClient, list_id: &str) -> AppResult<crate::jotty::models::ServerChecklist> {
+    // v1 correctness rule: re-fetch the catalog before EACH item op's resolve —
+    // index paths drift under concurrent edits, stored paths go stale.
+    let lists = client.get_checklists().await?;
+    lists
+        .into_iter()
+        .find(|c| c.id == list_id)
+        .ok_or_else(|| AppError::Api { status: 404, body: format!("checklist {list_id} absent from index during item replay") })
+}
+
+async fn close_item_group(conn: &Connection, client: &JottyClient, list_id: &str) -> AppResult<()> {
+    // group end: one re-fetch, reconcile that list, then mark synced with the server
+    // updatedAt (LWW binding note: push WRITES timestamps, never COMPARES them).
+    // A failed group-end fetch does NOT abort the run (unlike the pull's catalog rule —
+    // no tombstone pass depends on it; ops are already done/conflicted): skip the
+    // reconcile + mark_list_synced, the next pull imports server state. (T11's
+    // checklist_create test pins this: its mock has no GET /api/checklists route.)
+    if let Ok(lists) = client.get_checklists().await {
+        if let Some(c) = lists.iter().find(|c| c.id == list_id) {
+            items::reconcile(conn, list_id, &items::flatten(&c.items))?;
+            checklists::mark_list_synced(conn, list_id, &c.updated_at)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_item_target(
+    conn: &Connection,
+    snap_items: &[ServerItem],
+    item_local_id: &str,
+    claimed: &mut Vec<String>,
+) -> AppResult<String> {
+    let row = items::get(conn, item_local_id)?
+        .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))?;
+    resolve(snap_items, row.server_path.as_deref(), &row.text, claimed)
+        .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))
+}
+
+fn resolve_parent_path(
+    conn: &Connection,
+    snap_items: &[ServerItem],
+    payload: &serde_json::Value,
+    claimed: &mut Vec<String>,
+) -> AppResult<Option<String>> {
+    let Some(parent_local_id) = payload["parent_local_id"].as_str() else {
+        return Ok(None); // top-level create
+    };
+    let row = items::get(conn, parent_local_id)?
+        .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))?;
+    // parent synced -> stored path re-validated against the fresh snapshot (text fallback
+    // on drift); parent also new -> its create op replayed earlier in FIFO (Task 14
+    // enqueue order), so resolve it by text from the snapshot.
+    resolve(snap_items, row.server_path.as_deref(), &row.text, claimed)
+        .map(Some)
+        .ok_or_else(|| AppError::Other(format!("unresolved item op {parent_local_id}")))
+}
+
+async fn rebuild_replay(
+    conn: &Connection,
+    client: &JottyClient,
+    list_id: &str,
+    payload: &serde_json::Value,
+) -> AppResult<()> {
+    // rebuild = fetch group snapshot -> delete every server item in REVERSE flatten order
+    // (children before parents) -> re-create in local desired DFS order (top-level order
+    // from the payload, children nested under their parents via parentIndex — never flat
+    // ORDER BY position, R4) -> re-check recreated completed items.
+    let snap = fetch_list_snapshot(client, list_id).await?;
+    let flat = items::flatten(&snap.items);
+    for s in flat.iter().rev() {
+        client.delete_item(list_id, &s.path).await?;
+    }
+    let ordered: Vec<String> = payload["ordered_top_level_ids"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let rows = items::list_for_checklist(conn, list_id)?;
+    let dfs = desired_dfs_order(&ordered, &rows);
+    for (text, _, parent_path, _) in &dfs {
+        client.create_item(list_id, text, parent_path.as_deref()).await?;
+    }
+    for (_, completed, _, path) in &dfs {
+        if *completed {
+            client.check_item(list_id, path, true).await?;
+        }
+    }
+    // NB ruling: clear dirty on this checklist's items BEFORE reconcile(empty) -> re-fetch
+    // -> reconcile(new) at group end — reconcile step-2 adoption requires server_path IS
+    // NULL and step-3 deletes only clean rows, so stale dirty rows would be skipped and
+    // duplicated by fresh INSERTs (production reorder marks items dirty=1, T5).
+    conn.execute("UPDATE checklist_items SET dirty=0 WHERE checklist_id=?1", [list_id])?;
+    items::reconcile(conn, list_id, &[])?;
+    Ok(())
+}
+
+fn desired_dfs_order(
+    ordered_top: &[String],
+    rows: &[items::ItemRow],
+) -> Vec<(String, bool, Option<String>, String)> {
+    let mut children_of: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        if let Some(p) = &r.parent_id {
+            children_of.entry(p.clone()).or_default().push(i);
+        }
+    }
+    let index_of: std::collections::HashMap<&str, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.local_id.as_str(), i))
+        .collect();
+    let mut out: Vec<(String, bool, Option<String>, String)> = Vec::new();
+    fn walk(
+        level: &[usize],
+        rows: &[items::ItemRow],
+        children_of: &std::collections::HashMap<String, Vec<usize>>,
+        parent_path: Option<&str>,
+        out: &mut Vec<(String, bool, Option<String>, String)>,
+    ) {
+        for (i, &ri) in level.iter().enumerate() {
+            let r = &rows[ri];
+            let path = match parent_path {
+                None => i.to_string(),
+                Some(p) => format!("{p}.{i}"),
+            };
+            out.push((r.text.clone(), r.completed, parent_path.map(str::to_string), path.clone()));
+            if let Some(kids) = children_of.get(&r.local_id) {
+                walk(kids, rows, children_of, Some(&path), out);
+            }
+        }
+    }
+    let top: Vec<usize> = ordered_top.iter().filter_map(|id| index_of.get(id.as_str()).copied()).collect();
+    walk(&top, rows, &children_of, None, &mut out);
+    out
 }
 
 // checklist ops handled in same loop; shown as separate match arms — see tests
@@ -273,5 +491,119 @@ mod tests {
         let op = &outbox::next_batch(&conn, 10).unwrap()[0];
         assert_eq!(op.attempts, 1);
         assert!(op.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn item_ops_replay_against_fresh_indices() {
+        let s = MockServer::start().await;
+        // server list state at replay time: ONE item "a" at path "0" (drift: local thought 2 items)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        // force list id to server id and mark synced
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        // local item "a" with stale server_path "0.5"
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0.5', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        // queued check op for an item the server moved to path "0"
+        outbox::enqueue(&conn, "check", "checklist_item", "l1",
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "check op must resolve via text fallback and succeed");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn unresolvable_item_op_becomes_conflict() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-x","index":0,"text":"unrelated","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", "l1",
+            &serde_json::json!({"item_local_id": "missing-item", "checklist_id": "l1", "checked": true})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+    }
+
+    #[tokio::test]
+    async fn reorder_replays_as_rebuild() {
+        let s = MockServer::start().await;
+        // GET /api/checklists is CALL-COUNTED (binding ruling): call 1 returns the
+        // original order [a(false), b(true)]; calls 2+ return the rebuilt order
+        // [b(true), a(false)] — the post-rebuild reconcile fetch must see the new
+        // server state. The impl makes exactly 2 GET calls for one reorder op
+        // (group snapshot + post-group re-fetch).
+        let get_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(move |_req: &_| {
+                let n = get_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n == 0 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-b","index":1,"text":"b","completed":true}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-b","index":0,"text":"b","completed":true},
+                        {"id":"srv-a","index":1,"text":"a","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
+            .mount(&s).await;
+        // rebuild: delete 1 (b) then 0 (a); recreate b, a; then re-check the recreated completed item
+        for p in ["1", "0"] {
+            Mock::given(method("DELETE")).and(path(format!("/api/checklists/l1/items/{p}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+                .mount(&s).await;
+        }
+        Mock::given(method("POST")).and(path("/api/checklists/l1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // re-check the recreated completed item (b recreated first -> path "0")
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        // two local items a,b already synced with server_paths
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
+        let b = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "b".into() }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='1', dirty=0, completed=1 WHERE local_id=?1", [&b.local_id]).unwrap();
+        // reorder: b first
+        outbox::enqueue(&conn, "reorder", "checklist_item", "l1",
+            &serde_json::json!({"checklist_id": "l1", "ordered_top_level_ids": [b.local_id, a.local_id]})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // post-rebuild reconcile re-imports server items in the new order
+        let items = crate::db::items::list_for_checklist(&conn, "l1").unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "b");
+        assert_eq!(items[1].text, "a");
     }
 }
