@@ -1085,13 +1085,19 @@ pub fn list_for_checklist(conn: &Connection, checklist_id: &str) -> AppResult<Ve
 pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerItemFlat]) -> AppResult<()> {
     let local = list_for_checklist(conn, checklist_id)?;
     let mut claimed: Vec<String> = Vec::new(); // local_ids matched to server
+    // pending ops shield items from adoption/deletion until their op resolves (Task 7 push-then-pull)
+    let pending: Vec<String> = local
+        .iter()
+        .filter(|l| matches!(outbox::has_pending_for(conn, "checklist_item", &l.local_id), Ok(true)))
+        .map(|l| l.local_id.clone())
+        .collect();
     for (order, s) in server_items.iter().enumerate() {
         // 1) match by server_path
         let mut target = local.iter().find(|l| l.server_path.as_deref() == Some(s.path.as_str()) && !claimed.contains(&l.local_id));
-        // 2) fallback: unclaimed, non-dirty local with same text
+        // 2) fallback: unclaimed, no pending op, same text (never-synced dirty locals are adoptable)
         if target.is_none() {
             target = local.iter().find(|l| {
-                l.server_path.is_none() && !l.dirty && !claimed.contains(&l.local_id) && l.text == s.text
+                l.server_path.is_none() && !claimed.contains(&l.local_id) && !pending.contains(&l.local_id) && l.text == s.text
             });
         }
         match target {
@@ -1162,6 +1168,10 @@ pub fn set_checked(conn: &Connection, local_id: &str, checked: bool) -> AppResul
 }
 
 pub fn delete_local(conn: &Connection, local_id: &str) -> AppResult<()> {
+    use rusqlite::OptionalExtension;
+    let list_id: Option<String> = conn
+        .query_row("SELECT checklist_id FROM checklist_items WHERE local_id=?1", [local_id], |r| r.get(0))
+        .optional()?;
     // collect descendants (BFS) then delete children-first
     let mut to_delete = vec![local_id.to_string()];
     let mut i = 0;
@@ -1175,7 +1185,6 @@ pub fn delete_local(conn: &Connection, local_id: &str) -> AppResult<()> {
     for id in to_delete.iter().rev() {
         conn.execute("DELETE FROM checklist_items WHERE local_id=?1", [id])?;
     }
-    let list_id: Option<String> = conn.query_row("SELECT checklist_id FROM checklist_items WHERE local_id=?1", [local_id], |r| r.get(0)).optional()?;
     if let Some(l) = list_id { fts_refresh(conn, &l)?; }
     Ok(())
 }
@@ -1215,7 +1224,7 @@ mod tests {
             completed: Some(completed),
             status: None,
             description: None,
-            children: Some(children),
+            children,
             priority: None,
             score: None,
             start_date: None,
@@ -1355,6 +1364,7 @@ pub fn list_checklists(conn: &Connection, include_deleted: bool) -> AppResult<Ve
 }
 
 pub fn upsert_list_from_server(conn: &Connection, c: &ServerChecklist) -> AppResult<bool> {
+    use rusqlite::OptionalExtension;
     let existing = conn
         .query_row("SELECT dirty, updated_at FROM checklists WHERE id=?1", [&c.id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
@@ -1480,6 +1490,14 @@ cd /coding/jotty && git add -A && git commit -m "feat(db): checklists+items DAO,
 ---
 
 ### Task 6: jotty API models + serde round-trip fixtures
+
+> **Binding note (Task 4 review carry-forward, 2026-09-15):** (1) LWW timestamps compare as raw
+> strings and `now()` is chrono `to_rfc3339()` (`+00:00`, variable fractional digits) while server
+> values are `.000Z`-style — lexicographic compare is only correct when formats align. Task 7 sync
+> comparisons must normalize both sides (parse to DateTime, or emit a fixed-format UTC string)
+> before comparing — do not rely on string ordering across mixed formats. (2) `notes::update_local`
+> was the only untested Task 4 fn and carries the E0507 clone-fix deviation — **Task 6 must include
+> an `update_local` test** (patch-merge of title/content/category, `dirty=1`, FTS refreshed).
 
 **Files:**
 - Create: `src-tauri/src/jotty/mod.rs`, `src-tauri/src/jotty/models.rs`
@@ -1653,13 +1671,18 @@ pub struct Categories {
 pub struct Created<T> {
     #[serde(default)]
     pub success: bool,
-    #[serde(default)]
+    // NB: no #[serde(default)] here — serde's derive adds a `T: Default` bound for a
+    // generic-typed #[serde(default)] field (E0277: ServerNote: Default not satisfied).
+    // Missing Option<T> parses to None natively, so runtime behavior is unchanged.
+    // (Proven in Task 6, ruling in ledger; mirrors the walk<'a> amendment.)
     pub data: Option<T>,
 }
 
 pub fn flatten_items(items: &[ServerItem]) -> Vec<(String, &ServerItem)> {
     let mut out = Vec::new();
-    fn walk(prefix: &str, items: &[ServerItem], out: &mut Vec<(String, &ServerItem)>) {
+    // NB: explicit 'a on items + the element type — elision + &mut invariance make the
+    // one-verbatim-line version a hard rustc error (proven in Task 5, ruling in ledger).
+    fn walk<'a>(prefix: &str, items: &'a [ServerItem], out: &mut Vec<(String, &'a ServerItem)>) {
         for (i, it) in items.iter().enumerate() {
             let path = if prefix.is_empty() { i.to_string() } else { format!("{prefix}.{i}") };
             out.push((path.clone(), it));
@@ -1790,7 +1813,10 @@ use crate::error::{AppError, AppResult};
 use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote};
 use serde::de::DeserializeOwned;
 
-#[derive(Clone)]
+// NB: derive must include Debug — Step 1's `plain_http_rejected_outside_localhost` calls
+// `.unwrap_err()` on Result<JottyClient, _>, which requires JottyClient: Debug (E0277,
+// proven in Task 7; brief's Clone-only derive does not compile).
+#[derive(Debug, Clone)]
 pub struct JottyClient {
     http: reqwest::Client,
     base_url: String,
@@ -1840,11 +1866,19 @@ impl JottyClient {
     }
 
     pub async fn get_notes(&self) -> AppResult<Vec<ServerNote>> {
-        Ok(self.api_get::<serde_json::Value>("/api/notes").await?["notes"].clone().into())
+        // NB: no `.into()` here — `From<Value>` for `Vec<T>` does not exist (E0277,
+        // proven in a Task 7 pre-dispatch probe). from_value + map_err is the shape;
+        // serde_json::Error has no From impl on AppError, so map to Other.
+        let v = self.api_get::<serde_json::Value>("/api/notes").await?;
+        Ok(serde_json::from_value(v["notes"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/notes: {e}")))?)
     }
 
     pub async fn get_checklists(&self) -> AppResult<Vec<ServerChecklist>> {
-        Ok(self.api_get::<serde_json::Value>("/api/checklists").await?["checklists"].clone().into())
+        // Same ruled repair as get_notes (`.into()` is E0277; see NB above).
+        let v = self.api_get::<serde_json::Value>("/api/checklists").await?;
+        Ok(serde_json::from_value(v["checklists"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/checklists: {e}")))?)
     }
 
     pub async fn get_categories(&self) -> AppResult<Categories> {
@@ -2163,8 +2197,12 @@ pub struct PullStats {
 }
 
 pub async fn pull_all(conn: &mut Connection, client: &JottyClient) -> AppResult<PullStats> {
-    let server_notes = client.get_notes().await.unwrap_or_default();
-    let server_lists = client.get_checklists().await.unwrap_or_default();
+    // NB: `?` propagation, NOT unwrap_or_default — a failed catalog fetch must ABORT the
+    // pull before the tombstone pass. Tombstoning against an empty/failing snapshot would
+    // mass-delete every clean local entity on a transient network error (proven in the
+    // Task 10 pre-dispatch scan; ruling in ledger).
+    let server_notes = client.get_notes().await?;
+    let server_lists = client.get_checklists().await?;
     let mut stats = PullStats::default();
 
     {
@@ -2418,6 +2456,12 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
 
 IMPORTANT: the real implementation folds checklist arms (`checklist_create/update/delete`) into the same match — checklist_create mirrors note_create (remap `checklists.id` + remap outbox entity), checklist_update → `client.update_checklist` + `checklists::mark_list_synced`, checklist_delete → `client.delete_checklist`. The test below pins this behavior.
 
+> **NB (pre-dispatch rulings, 2026-09-17):** `update_checklist` returns `AppResult<()>` (landed Task 8 surface; its test mock answers PUT with only `{"success":true}`) — the checklist_update arm passes `chrono::Utc::now().to_rfc3339()` to `mark_list_synced` (advisory-class ts; NEVER an empty string — pull's normalized ts parse would fail). Unknown op (unmatched entity/op_type) → `mark_conflict` + continue (record_attempt would loop forever on next_batch(1)).
+>
+> **NB (pre-review ruling, 2026-09-17 — fix round):** (1) the note_create remap tx refreshes notes_fts after the id UPDATE (`DELETE FROM notes_fts WHERE id=old` + re-INSERT under the new id — insert_local writes an FTS row under the TEMP id; lists_fts needs NO fixup: insert_local_list never writes it, items::fts_refresh rebuilds it on next item touch). (2) the checklist create remap tx runs `PRAGMA defer_foreign_keys=ON` FIRST, then also moves `checklist_items.checklist_id` old→new and rewrites pending item-op payloads (`UPDATE outbox SET payload=json_set(payload,'$.checklist_id',new) WHERE state='pending' AND json_extract(payload,'$.checklist_id')=old`) — foreign_keys=ON makes the bare `UPDATE checklists SET id` an immediate FK violation once local items reference the temp id (the normal offline-create flow). Tests 1+2 amended accordingly (test 1: FTS asserts; test 2: offline item + item op → unknown-op conflict after remap).
+>
+> **NB (review ruling, 2026-09-17 — fix round 2):** (1) the four create/update arms (note_create push.rs:26, note_update :49, checklist_create :60, checklist_update :80) call the client with `.await?` — any client error escapes push_pending BEFORE the routing match, violating the error contract (network/5xx → record_attempt + stop; 404 on note_update/note_delete → conflict + continue) and permanently wedging the FIFO behind a vanished-target update op (every later op never pushes — data-stall, not just telemetry loss). RULING: the four arms become match expressions on the client Result — `Ok(x) => { …rest of body…; Ok(()) }`, `Err(e) => Err(e)` — so client errors flow into the routing match. Uniform routing for ALL arms (delete arms already behave this way): 404/409/410 → conflict + continue; network/5xx → record_attempt + stop (stats-so-far preserved). A 404/409/410 on a CREATE op (no vanishing target — practically unreachable) also lands in the conflict arm: acceptable per sync invariant 5. Errors from the remap txs (`?`) still escape push_pending — DB-level failure = corruption-class; aborting the run is the existing, defensible behavior. NEW TEST `note_update_404_becomes_conflict_and_queue_continues` (in the test fence; RED pre-fix = push_pending returns Err(404) → test unwrap panics). (2) the lists_fts orphan is PERMANENT — the fix-round-1 NB's "rebuilds on next item touch" premise was WRONG (items::fts_refresh deletes/re-inserts keyed by the PASSED id only, so the temp-id row written during offline item creation is never cleaned; no other module writes lists_fts). RULING (supersedes the "lists_fts needs NO fixup" premise above): the checklist create remap tx also runs `DELETE FROM lists_fts WHERE id=old` — NO unconditional re-insert (preserves "no items → no lists_fts row" semantics; the new-id row is written by the next item touch / T12 reconcile when items exist). Test 2 gains the stale-row assert. Suite: 35 → 36 (filter `push` → 5).
+
 Tests:
 ```rust
 #[cfg(test)]
@@ -2444,6 +2488,14 @@ mod tests {
                 "data": {"id":"srv-1","title":"T","content":"c","category":"Home","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-02T00:00:00.000Z","owner":"u"}
             })))
             .mount(&s).await;
+        // (binding ruling): one-op-per-fetch means the queued update op replays AFTER the
+        // remap and targets srv-1 — it needs this PUT mock.
+        Mock::given(method("PUT")).and(path("/api/notes/srv-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"srv-1","title":"T","content":"c2","category":"Home","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-03T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
         let mut conn = db();
         let local = notes::insert_local(&conn, &notes::NewNote { title: "T".into(), content: "c".into(), category: "Home".into() }).unwrap();
         outbox::enqueue(&conn, "create", "note", &local.id, &serde_json::json!({"temp_id": local.id, "title":"T","content":"c","category":"Home"})).unwrap();
@@ -2451,12 +2503,17 @@ mod tests {
         outbox::enqueue(&conn, "update", "note", &local.id, &serde_json::json!({"id": local.id, "title":"T","content":"c2","category":"Home"})).unwrap();
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         let stats = push_pending(&mut conn, &client).await.unwrap();
-        assert_eq!(stats.pushed, 1); // create done; update now targets srv-1 and hits no mock → stops run
+        assert_eq!(stats.pushed, 2); // create + remapped update both replay (one op per fetch)
         let updated = notes::get(&conn, "srv-1").unwrap().unwrap();
         assert_eq!(updated.id, "srv-1");
         assert!(!updated.dirty);
-        let batch = outbox::next_batch(&conn, 10).unwrap();
-        assert_eq!(batch[0].entity_id, "srv-1", "pending op must be remapped");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // (pre-review ruling): remap refreshes notes_fts — old temp-id row gone, new-id row searchable
+        let fts: (String, i64) = conn.query_row(
+            "SELECT id, (SELECT count(*) FROM notes_fts) FROM notes_fts WHERE notes_fts MATCH 'c'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(fts, ("srv-1".into(), 1));
     }
 
     #[tokio::test]
@@ -2475,11 +2532,30 @@ mod tests {
         let local = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
         outbox::enqueue(&conn, "create", "checklist", &local.id, &serde_json::json!({"temp_id": local.id, "title":"L","category":"Home"})).unwrap();
         outbox::enqueue(&conn, "update", "checklist", &local.id, &serde_json::json!({"id": local.id, "title":"L2","category":"Home"})).unwrap();
+        // (pre-review ruling 2026-09-17): an offline item on the temp list id + its op queued
+        // behind — the create remap must move the item FK and rewrite pending item-op payloads.
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: local.id.clone(), parent_local_id: None, text: "i".into(),
+        }).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": local.id, "checked": true})).unwrap();
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 2);
         assert!(checklists::get_checklist(&conn, "srv-l").unwrap().is_some());
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // item FK moved with the list id; the unknown item op conflicts AFTER the remap rewrote its payload
+        assert_eq!(stats.conflicts, 1);
+        let item = crate::db::items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(item.checklist_id, "srv-l");
+        let op_payload: String = conn.query_row(
+            "SELECT payload FROM outbox WHERE entity='checklist_item' AND state='conflict'", [], |r| r.get(0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&op_payload).unwrap();
+        assert_eq!(v["checklist_id"], "srv-l");
+        // (review ruling 2026-09-17): the create remap deletes the stale temp-id lists_fts row
+        // (written by insert_local -> items::fts_refresh under the TEMP id; permanent orphan otherwise)
+        let stale_fts: i64 = conn.query_row("SELECT count(*) FROM lists_fts WHERE id=?1", [&local.id], |r| r.get(0)).unwrap();
+        assert_eq!(stale_fts, 0);
     }
 
     #[tokio::test]
@@ -2488,6 +2564,12 @@ mod tests {
         Mock::given(method("DELETE")).and(path("/api/notes/gone-1"))
             .respond_with(ResponseTemplate::new(404).set_body_string("nope"))
             .mount(&s).await;
+        // (pre-dispatch scan ruling): wiremock answers UNMATCHED requests with 404, which
+        // the impl maps to mark_conflict — gone-2 needs its own 500 mock so the run's stop
+        // is the transient-error branch (record_attempt), not a second conflict.
+        Mock::given(method("DELETE")).and(path("/api/notes/gone-2"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
         let mut conn = db();
         outbox::enqueue(&conn, "delete", "note", "gone-1", &serde_json::json!({})).unwrap();
         outbox::enqueue(&conn, "delete", "note", "gone-2", &serde_json::json!({})).unwrap();
@@ -2495,8 +2577,30 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.conflicts, 1);
         let conflicts = crate::db::outbox::next_batch(&conn, 10).unwrap();
-        // gone-1 is conflict (not pending); gone-2 still pending, hit no mock → recorded attempt, run stops
+        // gone-1 is conflict (not pending); gone-2 → 500 → record_attempt, run stops (FIFO)
         assert!(conflicts.iter().any(|o| o.entity_id == "gone-2"));
+    }
+
+    #[tokio::test]
+    async fn note_update_404_becomes_conflict_and_queue_continues() {
+        let s = MockServer::start().await;
+        // vanished target: note deleted server-side while locally dirty — brief line 20's
+        // first-class case; the update arm must route it to mark_conflict (not an Err escape)
+        Mock::given(method("PUT")).and(path("/api/notes/gone-1"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("nope"))
+            .mount(&s).await;
+        // a delete op queued behind must still replay after the conflict (FIFO continues)
+        Mock::given(method("DELETE")).and(path("/api/notes/gone-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        outbox::enqueue(&conn, "update", "note", "gone-1", &serde_json::json!({"id":"gone-1","title":"T","content":"c","category":"Home"})).unwrap();
+        outbox::enqueue(&conn, "delete", "note", "gone-2", &serde_json::json!({})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
     #[tokio::test]
@@ -2517,7 +2621,7 @@ mod tests {
 - [ ] **Step 2: Implement (add checklist arms), run to green**
 
 Run: `cd /coding/jotty/src-tauri && cargo test push`
-Expected: 4 PASS.
+Expected: 5 PASS.
 
 - [ ] **Step 3: Commit**
 
@@ -2526,6 +2630,14 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): push engine for not
 ```
 
 ---
+
+> **Controller pre-flight ruling (binding):** the loop skeleton above is superseded —
+> `push_pending` processes **one op per fetch** (`outbox::next_batch(conn, 1)` in a
+> `loop`), so a create-remap is visible to every subsequent op; transient error →
+> `record_attempt` + return; 404/409/410 → `mark_conflict` + continue; loop ends when
+> the batch is empty. The `note_create_remaps_temp_id_and_pending_ops` test gains a
+> `PUT /api/notes/srv-1` mock (returns the note with `updatedAt 2026-01-03`) and
+> asserts `pushed == 2`, remapped row, and `pending_count == 0`.
 
 ### Task 12: Sync — item-op replay with index resolution + reorder rebuild
 
@@ -2668,22 +2780,43 @@ mod tests {
     #[tokio::test]
     async fn reorder_replays_as_rebuild() {
         let s = MockServer::start().await;
-        // server has items a,b (paths 0,1)
+        // GET /api/checklists is CALL-COUNTED (binding ruling): call 1 returns the
+        // original order [a(false), b(true)]; calls 2+ return the rebuilt order
+        // [b(true), a(false)] — the post-rebuild reconcile fetch must see the new
+        // server state. The impl makes exactly 2 GET calls for one reorder op
+        // (group snapshot + post-group re-fetch).
+        let get_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         Mock::given(method("GET")).and(path("/api/checklists"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
-                    {"id":"srv-a","index":0,"text":"a","completed":false},
-                    {"id":"srv-b","index":1,"text":"b","completed":true}
-                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
-            })))
+            .respond_with(move |_req: &_| {
+                let n = get_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n == 0 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-b","index":1,"text":"b","completed":true}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-b","index":0,"text":"b","completed":true},
+                        {"id":"srv-a","index":1,"text":"a","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
             .mount(&s).await;
-        // rebuild: delete 1 (b) then 0 (a); recreate b, a
+        // rebuild: delete 1 (b) then 0 (a); recreate b, a; then re-check the recreated completed item
         for p in ["1", "0"] {
             Mock::given(method("DELETE")).and(path(format!("/api/checklists/l1/items/{p}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
                 .mount(&s).await;
         }
         Mock::given(method("POST")).and(path("/api/checklists/l1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // re-check the recreated completed item (b recreated first -> path "0")
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
             .mount(&s).await;
         let mut conn = db();
@@ -2706,6 +2839,154 @@ mod tests {
         assert_eq!(items[0].text, "b");
         assert_eq!(items[1].text, "a");
     }
+
+    #[tokio::test]
+    async fn item_update_renames_via_stored_path_without_text_conflict() {
+        let s = MockServer::start().await;
+        // server still holds the OLD text at path 0 — the row text is the NEW text
+        // (update_local mutated it command-time); the update arm must patch the
+        // stored path WITHOUT text equality (review ruling: path-existence)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"old","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "old".into(),
+        }).unwrap();
+        // synced earlier at path "0", then renamed OFFLINE: row text = new, server text = old
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=1, text='new' WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "update", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "text": "new"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "rename must patch the stored path even though server text differs");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_multi_op_same_run() {
+        let s = MockServer::start().await;
+        // check then uncheck the SAME item in one run: the own-claim memo must
+        // let the second op resolve to the same path (no spurious conflict)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/uncheck"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": false})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "check then uncheck on the SAME item must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_check_resolves_via_text_after_delete_shift() {
+        let s = MockServer::start().await;
+        // Delete-shift regression pin (re-review N1, fix round 2): a@0, c@1, y@2
+        // all synced; ops: check a, delete a, check c. After a's delete the
+        // server reindexes to [c@0, y@1] — c's stale stored path "1" now holds
+        // y. The stored-path identity hit is UPDATE-ARM-ONLY, so the check op
+        // must fall through to the TEXT fallback and check c at its NEW path
+        // "0" — never the drifted stored path "1".
+        let check_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(move |_req: &_| {
+                let n = gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n < 2 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-c","index":1,"text":"c","completed":false},
+                        {"id":"srv-y","index":2,"text":"y","completed":false}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-c","index":0,"text":"c","completed":false},
+                        {"id":"srv-y","index":1,"text":"y","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
+            .mount(&s).await;
+        Mock::given(method("DELETE")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        {
+            let check_hits = check_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+                .respond_with(move |_req: &_| {
+                    check_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let stale_hits = stale_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/1/check"))
+                .respond_with(move |_req: &_| {
+                    stale_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
+        let c = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "c".into() }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='1', dirty=0 WHERE local_id=?1", [&c.local_id]).unwrap();
+        // FIFO: check a (resolves "0"), delete a (resolves "0"; server reindexes),
+        // check c (stale stored path "1" — must TEXT-resolve to "0")
+        outbox::enqueue(&conn, "check", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "delete", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1"})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &c.local_id,
+            &serde_json::json!({"item_local_id": c.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 3, "all three ops must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // the post-delete check of c must land at its NEW path "0" (text-resolved),
+        // never at the drifted stored path "1" (which holds y after the reindex)
+        assert_eq!(check_hits.load(std::sync::atomic::Ordering::SeqCst), 2,
+            "path 0 checked once for a (pre-delete) and once for c (post-delete)");
+        assert_eq!(stale_hits.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "the drifted stored path \"1\" must never be checked (identity hit is update-arm-only)");
+    }
 ```
 
 - [ ] **Step 3: Implement item-op arms + resolve, run to green**
@@ -2715,9 +2996,10 @@ Implementation notes for `push.rs`:
 - For the first item op of a checklist in this run: fetch `client.get_checklists().await` once, find the list by id; keep `claimed: Vec<String>` for resolution within the run; after each item mutation (check/patch/delete) the server state changes — for correctness, re-fetch the checklist before EACH resolve if more than one op targets the same list (cheap at personal scale), or optimistically reuse the flattened snapshot and trust index math: v1 correctness rule = re-fetch before each op.
 - `item_create` parent resolution: parent item's `server_path` must be non-NULL (it was synced earlier); if NULL → parent is also new: parent's create op must appear earlier in FIFO (guaranteed by enqueue order in Task 14); resolve parent via text from that op's effects. If still unresolvable → conflict.
 - After a checklist's ops finish: re-fetch all lists once, `items::reconcile` for that list, `checklists::mark_list_synced` with its `updatedAt`.
+- RULING (pre-dispatch scan, reorder): after the rebuild's HTTP ops and BEFORE the reconcile(empty) → re-fetch → reconcile(new), the reorder arm MUST clear dirty on that checklist's items: `conn.execute("UPDATE checklist_items SET dirty=0 WHERE checklist_id=?1", [&list_id])?`. Why: reconcile step-3 deletes only clean non-pending rows and step-2 adoption requires `server_path` IS NULL — production reorder marks items dirty=1 (T5 reorder_local), so dirty rows with stale server_paths are skipped by step-2 and duplicated by fresh INSERTs. Test-neutral (the reorder test's rows are pre-forced clean).
 
-Run: `cd /coding/jotty/src-tauri && cargo test resolve push`
-Expected: all PASS (3 resolve + 3 new push + 4 from Task 11).
+Run: `cd /coding/jotty/src-tauri && cargo test -- resolve push`
+Expected: all PASS (3 resolve + 5 new push + 5 from Task 11 = 13); full suite 42 → 44.
 
 - [ ] **Step 4: Commit**
 
@@ -2726,6 +3008,54 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): item-op replay with
 ```
 
 ---
+
+> **Controller pre-flight ruling (binding):** the reorder test's `GET /api/checklists`
+> mock must be **call-counted** (e.g. `AtomicUsize` in a `respond_with` handler):
+> call 1 returns the original order `[a(false), b(true)]`; calls 2+ return the
+> rebuilt order `[b(completed=true), a(false)]` — the post-rebuild reconcile fetch
+> must see the new server state. The rebuild replay sequence is: DELETE items/1,
+> DELETE items/0, then POST items in local order (b, a), then a re-check call
+> (`PUT items/0/check`) for the recreated completed item. Reconcile then adopts
+> local rows by text (stale `server_path` values must not duplicate rows).
+>
+> **NB (review ruling, 2026-09-17 — fix round):** the Task 12 review returned Needs fixes with three plan-inherent Importants; all ruled here. (1) UPDATE ARM resolves via PATH-EXISTENCE: server_path Some(p) and p in the fresh snapshot → `client.patch_item(list_id, p, text)` — text equality NOT required (row text is the NEW text; the stored path is the identity anchor; residual drift-swap risk accepted). server_path None → text-fallback (may conflict if renamed — bounded edge). Path missing → sentinel conflict. (2) CLAIMS become (item_local_id, path, text@path-at-claim) triples + own-claim exclusion: per op (a) prune claims whose (path, text@path) no longer matches the fresh snapshot; (b) own-claim memo — a surviving claim for THIS item resolves to its path directly (check→uncheck both replay; stored-path identity hits likewise exempt); (c) resolve()'s `claimed` vec = OTHER items' claim paths only (resolve.rs UNTOUCHED); (d) fallback success records (local_id, path, text@path). Two DIFFERENT identical-text items never share a server item in a run. (3) Post-reorder item ops: NO code change — production-safe via R1 (T14 enqueues entity_id=item local_id → reconcile's pending shield works); BINDING NOTE to T14: R1 is LOAD-BEARING. (4) REORDER GUARD: before the DELETE phase, validate every top-level local row's local_id appears in `ordered_top_level_ids`; missing → sentinel conflict BEFORE any server deletion. (5) Comment rider on `children_of`'s ORDER BY position. NEW TESTS `item_update_renames_via_stored_path_without_text_conflict` + `item_multi_op_same_run` (in the test fence; RED: rename → conflict pushed 0/conflicts 1; multi-op → second op conflicts pushed 1/conflicts 1). Suite 42 → 44 (filter 13). NOTE: patch_item = PATCH `/api/checklists/{list_id}/items/{path}` body `{"text": ...}`; uncheck = PUT `.../items/0/uncheck` (client.rs:122-137).
+>
+> **NB (re-review ruling, 2026-09-17 — fix round 2):** the scoped re-review
+> (task-12-re-review.md; deleg_b0d33fb2, 685.7s) verified ALL FOUR fix-round
+> rulings correctly executed (F1/F2/F3/M1 ADDRESSED; suite 44/13 re-run;
+> resolve.rs untouched; test block byte-identical) but flagged ONE
+> Important-class regression introduced by the fix diff itself: **N1 — the
+> stored-path identity hit (`resolve_with_claims` step (b), push.rs:269-276) is
+> ARM-AGNOSTIC.** Ruling (1) scoped no-text-equality path identity to the UPDATE
+> arm ("UPDATE-ONLY semantics"); the implementer's helper applies it to every
+> arm, so check/delete/create-parent ops at a present-but-drifted stored path
+> resolve WITHOUT text verification where the 6f9702d baseline text-scanned.
+> Concrete silent mis-targets (op marked DONE, no conflict): same-run
+> delete-shift (a@0,c@1,y@2; check a, delete a, check c → c's stale stored
+> path "1" now holds y → unchecks y; the ruled flow prunes a's stale claim and
+> TEXT-resolves c at its new path "0"); post-reorder trailing ops (pre-rebuild
+> stored path still occupied → wrong item; the F3 scenario itself);
+> server-side reorder drift on a single op; create-parent under a drifted
+> parent path. Worst case the DELETE arm: deletes the WRONG server item AND
+> removes the local row — unrecoverable, no conflict marker. RULING (restores
+> the ruled shape): **the stored-path identity hit is UPDATE-ARM-ONLY** — pass
+> `update_arm` into `resolve_with_claims` (resolve_item_target forwards its
+> flag; resolve_parent_path passes `false`); check/delete/create-parent go
+> prune → memo → `resolve()` text semantics exactly as ruling (2) prescribed.
+> The own-claim MEMO stays ALL-ARM (claim-based, recorded within this run —
+> check→uncheck keeps working); only the DB-stored-path hit is gated. The
+> update arm's vanished-path pre-check (ruling 1) is unchanged. Clarification
+> of ruling (2)(b)'s "stored-path identity hits likewise exempt": it meant
+> EXEMPT FROM OWN-CLAIM BLOCKING (claims never mask the fast path), NOT exempt
+> from TEXT verification — resolve()'s fast path remains text-validated for
+> non-update arms. amend the (b) doc comment + resolve_parent_path's
+> "stored path identity hit" comment accordingly. NEW TEST
+> `item_check_resolves_via_text_after_delete_shift` (in the test fence; RED
+> pre-fix: the identity hit checks the WRONG item — check_hits 1≠2,
+> stale_hits 1≠0; GREEN post-fix: check_hits 2, stale_hits 0, pushed==3,
+> conflicts==0). Suite 44 → 45 (filter `resolve push` 13 → 14; `cargo test
+> sync` 15 → 16). Scope: push.rs ONLY; resolve.rs UNTOUCHED; the rename +
+> multi-op tests stay green (update arm identity + all-arm memo respectively).
 
 ### Task 13: Sync orchestration (run = push→pull) + scheduler
 
@@ -2915,7 +3245,7 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
 (This code assumes `state.rs` from Task 14; implement scheduler INSIDE Task 14 after state exists — the ordering test above is pure sync-module and lands in this task.)
 
 Run: `cd /coding/jotty/src-tauri && cargo test sync`
-Expected: ordering test PASS.
+Expected: ordering test PASS. (The filter matches ALL sync-module tests, not just the ordering test — 16 at this task's start = 2 T10-pull + 6 T11-push + 3 T12-resolve + 5 T12-push [incl. the 2 fix-round-1 tests] + 1 T12-fix-round-2 test; 17 at green including the ordering test. Full suite expectation: 45 → 46.)
 
 - [ ] **Step 3: Commit**
 
@@ -2925,7 +3255,102 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 
 ---
 
+> **Controller pre-dispatch rulings (binding, 2026-09-17):**
+> (1) SyncReport RELOCATION: Task 10 landed `pub struct SyncReport` in pull.rs
+> (Debug/Default/Clone; zero references outside pull.rs). This task DELETES that
+> pull.rs definition when it adds the sync/mod.rs one (Step 2 block verbatim,
+> extended with serde::Serialize + camelCase rename + to_dto) — pure relocation;
+> pull.rs needs no other change.
+> (2) The Files header lists lib.rs — SUPERSEDED by the pre-flight ruling: this
+> task delivers `run()` + the ordering test ONLY (scheduler_tick/do_sync/
+> spawn_scheduler land in Task 14 after state.rs exists; see the NB under Step 2).
+> Do not modify lib.rs in this task.
+> (3) The Step 1 PUT mock's `data` omits "owner" — verified safe: ServerNote.owner
+> is Option<String>; serde parses a missing Option<T> as None (Task 6 Created<T>
+> precedent).
+
 ### Task 14: AppState + Tauri commands (connect, CRUD, search, conflicts, settings, sync trigger)
+
+> **Binding note (Task 5 review resolution R1, 2026-09-15):** item-mutation commands
+> (`add_item`, `set_item_text`, `set_item_checked`, `delete_item`, `reorder_items`) MUST
+> enqueue with `entity="checklist_item"` and `entity_id=<item local_id>` (NOT the
+> checklist id) so `items::reconcile`'s pending-op guard
+> (`outbox::has_pending_for(conn, "checklist_item", local_id)`) matches. Reorder
+> enqueues `entity="checklist"`, `entity_id=<checklist id>` — one op per rebuild.
+> Conflict label lookups for `item_*` ops join via `checklist_items.local_id`.
+> (Task 12's own test enqueues bypass this — they are mock-level seeds.)
+>
+> **NB (re-review observation adjudicated, 2026-09-17 — fix round 2):** the
+> plan line above ("Reorder enqueues `entity="checklist"`") is a PLAN DEFECT:
+> push.rs's reorder arm pattern-matches `("checklist_item", "reorder")` and the
+> T12 reorder test enqueues `("checklist_item", ...)`. SUPERSEDED: reorder
+> commands enqueue `entity="checklist_item"`, `entity_id=<checklist id>` (the
+> payload still carries checklist_id + ordered_top_level_ids). Shield note:
+> has_pending_for("checklist_item", <checklist id>) then never matches an item
+> row's local_id — harmless for the reorder arm (its rows are force-cleared
+> dirty + reconcile(empty) is intentional); item ops from OTHER queued ops are
+> still shielded by their own entity_id keys. If T14's implementer finds the
+> reorder arm matching differently at dispatch time, STOP and surface — do not
+> silently widen the match.
+>
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T14):** verified every
+> fence against the live code surfaces (push.rs match arms, outbox/notes/items/
+> checklists fns, FTS schema, client methods, rusqlite 0.32.1). Rulings:
+> (A) ITEM OP-TYPE STRINGS: the Interfaces' `item_create`/`item_update`/
+> `item_check`/`item_delete`/`item_reorder` are SHORTHAND — the commands enqueue
+> op_type `create`/`update`/`check`/`delete`/`reorder` with entity
+> `checklist_item` (push.rs's match arms are literal; a literal `item_create`
+> would hit the unknown-op sentinel → conflict, and the Step-1 fence's kinds
+> assert `["create","create","check","reorder"]` pins the plain strings). The
+> fence is binding. (B) SCHEDULER TRANSPLANT: `spawn_scheduler`/`scheduler_tick`/
+> `do_sync` code (plan T13 section, deferred here by the T13 banner NB) is
+> delivered THIS task verbatim — `scheduler_tick` + `do_sync` into
+> `src-tauri/src/sync/mod.rs`, `spawn_scheduler` into `lib.rs` (the lib.rs fence
+> calls it). scheduler_tick needs `rusqlite::OptionalExtension` in scope for
+> `.optional()` and `tauri::Manager` for `app.state::<AppState>()`. (C) conflict
+> resolve "mine": raw `UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1`
+> in commands/mod.rs (outbox.rs is NOT in this task's Files list); `keep=="server"`
+> = outbox::mark_done then trigger a sync. list_conflicts reads
+> state='conflict' rows, label via entity joins (implementer shapes the SQL).
+> (D) ITEM PAYLOAD SHAPES (match push.rs's reads exactly; entity_id = item
+> local_id for ALL item ops per R1 + the NB above, reorder included):
+> create → {"checklist_id", "item_local_id", "text", "parent_local_id": opt}
+> (NO "temp_local_id" key — prose shorthand, push.rs never reads it); update →
+> {"checklist_id", "item_local_id", "text"}; check → {"checklist_id",
+> "item_local_id", "checked": bool}; delete → {"checklist_id", "item_local_id"};
+> reorder → {"checklist_id", "ordered_top_level_ids": [...]}. (E)
+> note/checklist payloads (match push.rs): note create → {"temp_id",
+> "title", "content", "category"} (temp_id REQUIRED — the create arm remaps via
+> it); note update → {"title", "content", "category"} (full merged copy — the
+> post-patch row values; push update arm keys on op.entity_id); note delete →
+> {} (entity_id carries the id); checklist create → {"temp_id", "title",
+> "category"}; checklist update → {"title", "category"}; checklist delete → {}.
+> (F) TEST FENCE 1-TOKEN AMENDMENT: the fence's `use crate::db::{migrations,
+> outbox};` does not import `open` (bare `open` in db() → E0425) — amended to
+> `use crate::db::{migrations, open, outbox};` in the plan fence (this NB is the
+> ruling; implementer applies). (G) AppState::new(conn, keystore) derives
+> db_path internally from `conn.path()` (rusqlite 0.32.1 exposes it — verified)
+> → `.unwrap_or_default().to_path_buf()`. (H) update_note_inner(conn, id, title:
+> Option<String>, content: Option<String>, category: Option<String>) builds
+> NotePatch; the enqueued payload = the post-patch merged row values (full
+> copy). (I) get_checklist tree: nest ItemDto from list_for_checklist's flat
+> rows via parent_id (v1 choice). (J) disconnect: clear client, DELETE the
+> instance_url sync_state row, keystore.delete(). (K) list_categories: via
+> state client get_categories (DTO wrapper shape implementer's). (L) TEST FENCE
+> PAYLOAD FIX (attempt-1 proven): `ops[1].payload["content"]` indexes
+> `payload: String` (outbox.rs:11) with a str key → compile error; amend the
+> fence to parse first — `let p2: serde_json::Value =
+> serde_json::from_str(&ops[1].payload).unwrap();` + `assert_eq!(p2["content"],
+> "body");` (push.rs:33 precedent). (M) drop the fence's `use
+> crate::keys::MockKeyStore;` line — no test body constructs it (keeping it =
+> +1 unused-import warning vs baseline). (N) spawn_scheduler is DEFINED in
+> sync/mod.rs (scheduler region) and re-exported from lib.rs via
+> `pub use sync::spawn_scheduler;` — the fence call
+> `sync::spawn_scheduler(app.handle().clone())` then compiles byte-exact.
+> (O) restore_connection: spawn a tauri task that rebuilds the client from the
+> sync_state url + keystore, guarded with `app.try_state::<AppState>()`
+> (manage runs after setup returns); NO auto-sync in the restore path.
+> (P) get_connection returns version None in v1 (no network in a getter).
 
 **Files:**
 - Create: `src-tauri/src/state.rs`, `src-tauri/src/commands/mod.rs`, `src-tauri/src/commands/dto.rs`
@@ -2962,8 +3387,7 @@ Test in `src-tauri/src/commands/mod.rs` tests module (commands call a pure inner
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{migrations, outbox};
-    use crate::keys::MockKeyStore;
+    use crate::db::{migrations, open, outbox};
     use rusqlite::Connection;
 
     fn db() -> Connection {
@@ -2994,8 +3418,9 @@ mod tests {
         assert_eq!(updated.title, "T2");
         let ops = outbox::next_batch(&conn, 10).unwrap();
         assert_eq!(ops.len(), 2);
+        let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert_eq!(ops[1].op_type, "update");
-        assert_eq!(ops[1].payload["content"], "body");
+        assert_eq!(p2["content"], "body");
     }
 
     #[tokio::test]
@@ -3409,6 +3834,35 @@ Add `import './styles.css';` to `src/main.tsx`.
 Run: `cd /coding/jotty && npm test`
 Expected: App shell test PASS.
 
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T15):** the plan's
+> `api/types.ts` fence DRIFTS from the Rust DTOs that Task 14 actually shipped
+> (commands/dto.rs, all `rename_all = "camelCase"`). The fence is amended — the
+> TS types mirror the REAL serialization (structural superset of what T15's own
+> asserts touch; later tasks consume these types):
+> - `NoteDto`: add `createdAt: string | null;` (Rust dto.rs:12).
+> - `ChecklistDto`: `{ id, title, category, createdAt: string | null,
+>   updatedAt: string | null, deletedAt: string | null, dirty: boolean, items:
+>   ItemDto[] }` — `items` is ALWAYS present (Rust `#[serde(default)]` Vec,
+>   dto.rs:71-72); drop the `?`.
+> - `ItemDto`: `{ localId: string; checklistId: string; parentLocalId: string |
+>   null; text: string; completed: boolean; position: number; dirty: boolean;
+>   children: ItemDto[]; }` — the fence's `parentId` (real key:
+>   parentLocalId), `serverPath` (NOT in the Rust ItemDto — the DB column exists
+>   but the DTO never exposed it), and the missing `checklistId`/`children` are
+>   fence-vs-code drift; the real shape wins (dto.rs:35-44).
+> - `ConflictDto`: `label` is `string | null` in Rust (dto.rs:167) — fence
+>   agrees (`label: string` → amend to `string | null`).
+> - The App.test.tsx mock returns SNAKE_CASE keys for get_connection
+>   (`instance_url`) and sync_status (`last_sync_at`) while the real DTOs
+>   serialize camelCase — the fence is kept byte-exact because the test's
+>   asserts never read those keys (get_connection's object is only truthy-tested;
+>   syncStatus.pending is key-consistent). Mock infidelity noted; tasks 16-18
+>   must use the camelCase keys when their tests mock these commands.
+> - SyncBadge.tsx is missing from the Files header but IS part of the task (its
+>   code block is in the plan) — create it.
+> - Display caveat: `apiKey: string` may render as `apiKey: ***` in some views —
+>   byte census decides; the file on disk is correct (`string`).
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -3584,6 +4038,88 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
 
 Run: `cd /coding/jotty && npm test -- NoteEditor` → PASS.
 
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T16):** verified against
+> the installed @tiptap/react 2.27.3 / @tiptap/core dist (prependClass() sets
+> `view.dom.className = 'tiptap ' + ...` — the test's `.tiptap` query matches).
+> Rulings: (M) STALE-CLOSURE FIX (pre-ruled NoteEditor amendment): useEditor
+> creates the editor once per deps array (`[loadedId]`), so its `onUpdate`
+> closes over CREATION-TIME state — `autosave.value?.title` and `category`
+> inside onUpdate would be stale after the first render (content edits after a
+> title edit would autosave the OLD title = silent revert; category changes
+> never propagate). Amend NoteEditor: add `const metaRef = useRef({ title: '',
+> category: 'Uncategorized' });` updated every render (`metaRef.current =
+> { title: autosave.value?.title ?? '', category };`), and onUpdate calls
+> `autosave.setValue({ title: metaRef.current.title, content:
+> editor.getHTML(), category: metaRef.current.category });`. Behavior otherwise
+> unchanged. (N) useAutosave's unmount-flush saves unconditionally if
+> latest.current is set (one spurious update per open→close even with no edits)
+> — INERT for the fence test; keep fence bytes; deferred-minor family (a
+> dirty-flag would fix it). (O) the NoteEditor test asserts mount only
+> (display-value + .tiptap); it does not exercise save-on-edit — fence binding,
+> noted as the task's honest test shape. (P) Step 5 wiring (prose, no fence):
+> `selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : <ChecklistList/>`
+> as main's second column — the editor replaces the checklist column while a
+> note is selected (matching "replace the placeholder with editor when a note
+> is selected"; ChecklistList returns when the note is deselected). TipTap deps
+> already in package.json (@tiptap/react 2.27.3, starter-kit, extension-link).
+>
+> **NB (attempt-1 blocker ruling, binding, 2026-09-17 — T16):** attempt 1
+> (deleg_133bbaa6) completed Steps 1–4 with all 4 files census-verified
+> (useAutosave.ts + test fence-exact green; NoteEditor.tsx fence+M green via
+> probes) but STOPPED at the NoteEditor test: the fence combines
+> `vi.useFakeTimers()` with RTL `waitFor` — RTL's asyncWrapper drain
+> (`setTimeout(resolve, 0)` + `jest.advanceTimersByTime(0)`) is gated behind
+> `jestFakeTimersAreEnabled()`, which requires the global `jest` (absent in
+> vitest); under faked setTimeout the drain promise never resolves → `waitFor`
+> hangs even when the condition is already true (proven empirically with
+> direct-expect probes; `waitFor` with REAL timers passes all asserts incl.
+> `.tiptap`). Environment mismatch, not a component defect (probes: get_note
+> called, display-value 'T', `<p>hello</p>` mounted). RULING (Q) — Option 1
+> adopted: drop `vi.useFakeTimers()` + `vi.useRealTimers()` from the
+> NoteEditor test fence (2-line amendment; the test is mount-only per ruling O
+> — no timing-dependent assert exists; useAutosave's fence test keeps its own
+> fake timers). Option 2 (global jest shim in src/test/setup.ts) REJECTED:
+> setup.ts is T1 scaffolding outside the allowed file set and a global shim is
+> an environment hack. Attempt 2 resumes from the attempt-1 uncommitted files
+(unverified: useAutosave.ts + test + NoteEditor.tsx + NoteEditor.test.tsx all
+ present, census clean; App.tsx NOT yet wired).
+>
+> **NB (review ruling, binding, 2026-09-17 — T16 fix round 1):** the T16 review
+> (deleg_7476e595, probe-proven) returned NEEDS FIXES with F1 Critical
+> (fence-inherent) + F2/F3 Important. RULINGS:
+> (R) **useAutosave saveRef mirror (kills F1 + close-loss half of F2):** add
+> `const saveRef = useRef(save);` + `saveRef.current = save;` in the render
+> body; the timer callback and the unmount flush call `saveRef.current(v)`
+> instead of the captured `save`. The timer then binds to the note actually
+> loaded at fire time (a post-load armed timer becomes a harmless same-content
+> rewrite of the CORRECT note — previously it targeted the OLD loadedId = silent
+> cross-note corruption, probe P2). The unmount flush becomes live and correct
+> (probe P4 fixed). F6 adjudication: the stale-full-copy reorder hazard does NOT
+> hold (enqueue happens at invoke time in one tx — commands/mod.rs:36-51; FIFO
+> seq; server LWW receives old→new → new wins) — the hypothesized corruption
+> class is structurally absent; only the wrong-note targeting (F1) was real.
+> (S2) **`reset(v: T)` added to useAutosave** (kills the switch-loss half of
+> F2): the load effect currently calls `autosave.setValue(v_next)` while
+> `loadedId` is still the previous note — the pending edit's timer is cleared
+> and its edit never dispatched (probe P3). `reset(v)` = if a timer is armed,
+> dispatch its pending value immediately via `saveRef.current(latest.current)`
+> (at that moment saveRef still holds the previous note's saveFn → the pending
+> edit lands on the CORRECT note), then clear the timer, `setValue(v)` +
+> `latest.current = v` WITHOUT arming a new timer. The NoteEditor load effect
+> switches to `autosave.reset({ title, content, category })`; user edits keep
+> `setValue` (debounce untouched — the fence's debounce test only uses
+> setValue, unaffected). (T) **Load cancellation (F3):** the load effect gains a
+> cancelled-flag cleanup (`let cancelled = false; return () => { cancelled =
+> true; }`) with `if (cancelled) return;` guards after the await — kills the
+> out-of-order getNote resolution class. NO key-remount (editor re-init churn
+> avoided; correctness fully covered by R+S2+T). Suite 3 → 4: NEW REGRESSION
+> TEST `note_switch_does_not_clobber_previous_note` (in the NoteEditor test
+> fence; load n1 → rerender noteId=n2 → idle ≥800ms → assert NO update_note
+> targeting n1 with n2's values; at most a same-content update_note for n2 —
+> attempt-1 probe P2's corruption shape, inverted to a GREEN pin). Deferred
+> minors ledger: F4 (saving-flag flicker on overlapping saves, cosmetic), F5
+> (test-name overstatement — fence text kept).
+
 - [ ] **Step 5: Wire into App (replace note list placeholder with editor when a note is selected)**
 
 In `App.tsx`, when `selectedNoteId` set render `<NoteEditor noteId={selectedNoteId} />` in the right pane (keep ChecklistList in left/main list column). Commit includes this wiring.
@@ -3618,8 +4154,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 import ChecklistView from './ChecklistView';
 
 const items = [
-  { localId: 'i1', parentId: null, text: 'a', completed: false, position: 0, serverPath: '0', dirty: false },
-  { localId: 'i2', parentId: null, text: 'b', completed: true, position: 1, serverPath: '1', dirty: false },
+  { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+  { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
 ];
 
 beforeEach(() => {
@@ -3676,8 +4212,8 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 
   useEffect(() => { reload(); }, [reload]);
 
-  const top = items.filter((i) => i.parentId === null).sort((a, b) => a.position - b.position);
-  const childrenOf = (id: string) => items.filter((i) => i.parentId === id).sort((a, b) => a.position - b.position);
+  const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
+  const childrenOf = (id: string) => items.filter((i) => i.parentLocalId === id).sort((a, b) => a.position - b.position);
 
   const toggle = async (item: ItemDto) => {
     await api.setItemChecked(checklistId, item.localId, !item.completed);
@@ -3742,6 +4278,62 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 ```
 
 - [ ] **Step 3: Wire into App, run tests to green**
+
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T17):**
+> **(U) DnD contract fix (fence bug — the reorder test cannot pass with the
+> fence component as written):** the test fires `fireEvent.drop` directly with
+> `dataTransfer.getData` returning `'i2'` but never fires `dragStart`, so the
+> component's `dragId` state is null → `onDrop` early-returns → `reorder_items`
+> is never dispatched. RULING: the component reads the dragged id from the
+> event, not the state — `onDrop(targetId, e)` uses
+> `const drag = e.dataTransfer.getData('text/plain') || dragId;` (dataTransfer
+> is the source of truth; `dragId` state stays as fallback), and `onDragStart`
+> additionally calls `e.dataTransfer.setData('text/plain', item.localId)` so
+> real HTML5 DnD carries the id. Test fence unchanged.
+> **(V) App wiring (Step 3, no fence block in the plan):** the `main` column
+> becomes a 3-way branch — `selectedNoteId ? <NoteEditor noteId/> :
+> selectedChecklistId ? <ChecklistView checklistId/> : <ChecklistList/>`;
+> destructure `selectedChecklistId` from the store in App. The App shell test
+> is unaffected (nothing selected → `ChecklistList` renders → 'Errands'
+> visible). The Interfaces prose "consumes store selectedChecklistId" is
+> SHORTHAND (T14 precedent): the component takes `checklistId` as a prop; App
+> reads the store and passes it.
+> **(W) Nested-children shape (fence bug — childrenOf filters a list that is
+> never flat):** `get_checklist_inner` (commands/mod.rs:117-135) returns
+> NESTED items — `attach_items(None, &flat)` returns ONLY top-level items with
+> children inside `ItemDto.children` (DFS order). The fence component's
+> `childrenOf = items.filter(parentId === id)` always returns [] because the
+> flat array is never returned. RULING: `top` = the returned `items` array
+> as-is (it IS the top level; the `.filter(parentId === null)` is harmless but
+> redundant — keep the filter for shape-safety), and children render from
+> `item.children ?? []` — delete `childrenOf`.
+> **(X) Test-fence mock cleanup (fidelity with the T15-amended ItemDto):** the
+> fence's `items` const carries `serverPath: '0'` — a field that no longer
+> exists on ItemDto (dead field; untyped const so tsc is silent, but it
+> contradicts the amended types) and lacks `checklistId`/`children`. Amend the
+> two mock items: drop `serverPath`, add `checklistId: 'l1'` and
+> `children: []`.
+> Ledgered UX minor (deferred, not a fence change): `rename` fires
+> `setItemText` + a full `reload()` on EVERY keystroke (controlled input
+> re-rendered from the reload) — cursor-jump/race class; T18 may own a debounce.
+> Suite expectation: vitest 4 → 7 (3 new ChecklistView tests); tsc clean; one
+> feat commit of exactly 3 files (ChecklistView.tsx, ChecklistView.test.tsx,
+> App.tsx wiring).
+>
+> **NB (attempt-1 §fixes adjudication, binding, 2026-09-17 — T17):** two
+> judgment calls, BOTH ACCEPTED (deleg_ad93721e, commit 5a250e7):
+> (F1) fence `parentId` → `parentLocalId` (component filter + mock items) —
+> the fence field does not exist on the T15-amended ItemDto; no path to
+> tsc-clean AND green existed (`i.parentId` fails tsc; `parentLocalId` against
+> a `parentId` mock renders 0 items); the fence's own add_item assert already
+> uses `parentLocalId`; production-correct (the backend emits `parentLocalId`).
+> The plan fence above is amended to match (mock items + filter lines).
+> (F2) `<span className="item-text">{item.text}</span>` added per row — the
+> byte-exact test's `getByText('a')` cannot match an input `value` (RTL
+> matches text nodes); per ruling U's precedent (test binding, bend the
+> component) the span is a pure addition; the editing input stays; row text
+> renders twice = ledgered UX minor for T18. Plan component fence NOT amended
+> for F2 (the shipped file is the record; the brief will carry the §fixes NB).
 
 Run: `cd /coding/jotty && npm test`
 Expected: all frontend tests PASS.
@@ -3870,6 +4462,74 @@ describe('SearchPalette', () => {
 ```
 
 - [ ] **Step 2: Implement the three components + SyncBadge upgrade + App wiring**
+
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T18):**
+> **(Y) SearchPalette: NO dangerouslySetInnerHTML.** Wire shapes verified on
+> disk: NoteHit { id, title, snippet } (dto.rs:126-130) — snippet is REAL for
+> note hits; ListHit { id, title, itemText } (dto.rs:134-138) — NO snippet on
+> checklist hits (the T15 carry-forward: `c.snippet` is runtime-undefined).
+> Render plain text: `<small>{n.snippet}</small>` for notes and
+> `<small>{c.itemText}</small>` for checklists. This kills the unbacked-field
+> read, uses the real ListHit field, and removes an XSS-class vector (jotty
+> search returns text, not HTML). **Type-scope extension (part of Y):** the
+> `SearchResultsDto.checklists` type in `src/api/types.ts` currently declares
+> the unbacked `snippet` and omits `itemText` — amend it to
+> `{ id: string; title: string; itemText: string }` (notes hit stays
+> `{ id; title; snippet }`). This 1-line types.ts edit is IN SCOPE for T18
+> (carry-forward ownership; the type lie must die before the component reads
+> itemText).
+> **(AA) SyncBadge conflicts guard (required — the App shell test has NO
+> list_conflicts mock):** the App.test.tsx beforeEach mocks get_connection /
+> list_notes / list_checklists / list_categories / sync_status but returns
+> `null` for any other command → an unguarded
+> `api.listConflicts().then((c) => setConflicts(c.length))` reads
+> `null.length` → unhandled rejection → vitest fails the App test file
+> (App.test.tsx is NOT in T18's file list, so the mock cannot gain
+> list_conflicts). Guard component-side:
+> `setConflicts(Array.isArray(c) ? c.length : 0)`. Same defensive pattern as
+> `list.items ?? []` already in the codebase. ConflictDialog is safe (its own
+> test mocks the array; App only auto-opens it when the guarded count > 0).
+> **(Z) SyncBadge upgrade + App wiring (no code fence for App — prose only).
+> Ruled shape:** SyncBadge becomes `({ onOpenConflicts })` per the fence;
+> App holds `const [showConflicts, setShowConflicts] = useState(false)` +
+> `const [showSearch, setShowSearch] = useState(false)`; keydown listener in a
+> useEffect — `if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')`
+> → preventDefault + setShowSearch(true); renders `<SyncBadge
+> onOpenConflicts={() => setShowConflicts(true)} />`; renders
+> `{showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}`
+> and `{showSearch && <SearchPalette onClose={() => setShowSearch(false)}
+> onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) =>
+> selectChecklist(id)} />}` (store's selectNote/selectChecklist enforce mutual
+> exclusion). "Conflicts auto-open once per session": NOT implemented (App
+> holds no session-conflict-prompted flag in the fence; a one-shot auto-open
+> needs an extra effect + ref — RULED: skip the auto-open, the badge's red
+> conflict button is the affordance; ledgered as a deliberate scope cut, the
+> plan prose does not fence it). The App shell test must stay green
+> byte-unchanged (it never opens modals; the keydown listener is inert).
+> Settings-mode prose drift LEDGERED (prose says the settings mode "shows
+> URL" and implies getSettings — the fence neither shows it nor calls it;
+> interval state initialized 5; no test covers settings mode; accepted for
+> v1). Suite expectation: vitest 7 → 10 (3 new files, 1 test each); tsc
+> clean; ONE feat commit of exactly 8 files (3 components + 3 tests +
+> SyncBadge.tsx + App.tsx + src/api/types.ts).
+>
+> **NB (attempt-1 blocker ruling AB, binding, 2026-09-17 — T18):** attempt 1
+> (deleg_5081cf99) stopped at GREEN per the hard-stop contract: the
+> SearchPalette fence test `getByText('Groceries')` cannot pass the fence
+> component — the li renders `📝 {n.title} <small>{n.snippet}</small>` and RTL
+> `getNodeText` exact-matches joined direct text children
+> (`'📝 Groceries '`), never equal to `'Groceries'` (verified in the installed
+> @testing-library/dom; verbatim error in the report; search wiring proven
+> working — invoke fires, results render, only the matcher fails). Same class
+> as T17 F2, missed by the scan. RULING (candidate (a), T17 F2 precedent,
+> probe-verified by the implementer at 11/11 + tsc clean): wrap the row titles
+> in `<strong>{n.title}</strong>` / `<strong>{c.title}</strong>` (keep the
+> emoji prefix and the snippet `<small>`; `<strong>` is an element child so
+> `getByText` matches its text node exactly). Suite total corrected: **11**
+> tests (7 prior + SettingsModal 2 + ConflictDialog 1 + SearchPalette 1) — the
+> earlier NB said 10; the fence is binding. Attempt 2: apply AB to
+> SearchPalette.tsx (both rows), re-verify 11/11 + tsc clean, re-census, then
+> single feat commit of exactly 8 files.
 
 `src/components/SettingsModal.tsx`:
 ```tsx
@@ -4222,6 +4882,36 @@ Final `AGENTS.md` addition (append):
 ```
 
 - [ ] **Step 4: Commit**
+
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T19):**
+> **(AC) Tauri CLI invocation:** `cargo tauri` is NOT installed on this
+> machine (verified: "no such command: tauri"). The Tauri CLI ships as the
+> npm dev-dep `@tauri-apps/cli` (tauri-cli 2.11.4 via `npx tauri`, bin already
+> in node_modules/.bin). Replace the fence's invocations: Step 2 icon command
+> → `cd /coding/jotty/src-tauri && npx tauri icon ../app-icon.png`; the build
+> command → `cd /coding/jotty/src-tauri && npx tauri build` (the
+> `beforeBuildCommand: npm run build` in tauri.conf.json already handles the
+> frontend; run `npm run build` first anyway per the fence).
+> **(AD) Bundle fallback:** the appimage bundler downloads linuxdeploy/
+> appimagetool at build time and can fail in a network-restricted
+> environment. If the full `npx tauri build` fails on the appimage step,
+> re-run `npx tauri build --bundles deb` and document the deviation in the
+> report. The graded artifacts are: icons generated + tauri.conf.json bundle
+> section updated + a SUCCESSFUL release build of the app binary — the
+> appimage bundle itself is best-effort.
+> **(AE) Real-instance test expected SKIPPED:** the env-gated
+> `roundtrip_note_push_and_pull` is `#[ignore]`d and returns early without
+> both env vars; no jotty instance admin key exists on this box (first-run
+> admin setup is browser-only per dev/README.md). Docker IS available
+> (29.7.2, daemon up): the implementer may verify the harness config parses
+> with `docker compose -f dev/docker-compose.yml config` (no `up`). Do NOT
+> fabricate a run of the real-instance suite — skipped is the expected,
+> reportable outcome.
+> **(AF) Commit contents:** `git add -A` is acceptable here — `.gitignore`
+> already excludes dev/data|config|cache (verified), and `app-icon.png` at
+> the repo root is the icon source and should be committed alongside
+> `src-tauri/icons/*` (generated by `npx tauri icon`). Nothing else stray
+> should exist at commit time; verify `git status` before committing.
 
 ```bash
 cd /coding/jotty && git add -A && git commit -m "feat: real-instance harness, icons, packaging, docs"

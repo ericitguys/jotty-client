@@ -1,0 +1,13 @@
+:root { --bg: #101418; --fg: #e6e9ec; --accent: #1f6feb; --muted: #8a929a; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; }
+#app { display: grid; grid-template-columns: 220px 1fr; height: 100vh; }
+#sidebar { border-right: 1px solid #232a31; padding: 12px; }
+#sidebar ul { list-style: none; padding: 0; }
+#sidebar li { padding: 4px 8px; cursor: pointer; border-radius: 6px; }
+#sidebar li:hover { background: #1a212a; }
+#app > main { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; overflow: auto; }
+li.selected { background: #1a212a; }
+.count { color: var(--muted); float: right; }
+#sync-badge { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 12px; }
+h2 { font-size: 14px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.06em; }

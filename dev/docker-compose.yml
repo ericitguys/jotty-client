@@ -1,0 +1,13 @@
+services:
+  jotty:
+    image: ghcr.io/fccview/jotty:latest
+    container_name: jotty-desktop-test
+    ports:
+      - "1122:3000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./cache:/app/cache
+    environment:
+      - PUID=1000
+      - PGID=1000
