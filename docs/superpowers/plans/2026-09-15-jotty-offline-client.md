@@ -2457,6 +2457,8 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
 IMPORTANT: the real implementation folds checklist arms (`checklist_create/update/delete`) into the same match — checklist_create mirrors note_create (remap `checklists.id` + remap outbox entity), checklist_update → `client.update_checklist` + `checklists::mark_list_synced`, checklist_delete → `client.delete_checklist`. The test below pins this behavior.
 
 > **NB (pre-dispatch rulings, 2026-09-17):** `update_checklist` returns `AppResult<()>` (landed Task 8 surface; its test mock answers PUT with only `{"success":true}`) — the checklist_update arm passes `chrono::Utc::now().to_rfc3339()` to `mark_list_synced` (advisory-class ts; NEVER an empty string — pull's normalized ts parse would fail). Unknown op (unmatched entity/op_type) → `mark_conflict` + continue (record_attempt would loop forever on next_batch(1)).
+>
+> **NB (pre-review ruling, 2026-09-17 — fix round):** (1) the note_create remap tx refreshes notes_fts after the id UPDATE (`DELETE FROM notes_fts WHERE id=old` + re-INSERT under the new id — insert_local writes an FTS row under the TEMP id; lists_fts needs NO fixup: insert_local_list never writes it, items::fts_refresh rebuilds it on next item touch). (2) the checklist create remap tx runs `PRAGMA defer_foreign_keys=ON` FIRST, then also moves `checklist_items.checklist_id` old→new and rewrites pending item-op payloads (`UPDATE outbox SET payload=json_set(payload,'$.checklist_id',new) WHERE state='pending' AND json_extract(payload,'$.checklist_id')=old`) — foreign_keys=ON makes the bare `UPDATE checklists SET id` an immediate FK violation once local items reference the temp id (the normal offline-create flow). Tests 1+2 amended accordingly (test 1: FTS asserts; test 2: offline item + item op → unknown-op conflict after remap).
 
 Tests:
 ```rust
@@ -2504,6 +2506,12 @@ mod tests {
         assert_eq!(updated.id, "srv-1");
         assert!(!updated.dirty);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // (pre-review ruling): remap refreshes notes_fts — old temp-id row gone, new-id row searchable
+        let fts: (String, i64) = conn.query_row(
+            "SELECT id, (SELECT count(*) FROM notes_fts) FROM notes_fts WHERE notes_fts MATCH 'c'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(fts, ("srv-1".into(), 1));
     }
 
     #[tokio::test]
@@ -2522,11 +2530,26 @@ mod tests {
         let local = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
         outbox::enqueue(&conn, "create", "checklist", &local.id, &serde_json::json!({"temp_id": local.id, "title":"L","category":"Home"})).unwrap();
         outbox::enqueue(&conn, "update", "checklist", &local.id, &serde_json::json!({"id": local.id, "title":"L2","category":"Home"})).unwrap();
+        // (pre-review ruling 2026-09-17): an offline item on the temp list id + its op queued
+        // behind — the create remap must move the item FK and rewrite pending item-op payloads.
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: local.id.clone(), parent_local_id: None, text: "i".into(),
+        }).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": local.id, "checked": true})).unwrap();
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 2);
         assert!(checklists::get_checklist(&conn, "srv-l").unwrap().is_some());
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // item FK moved with the list id; the unknown item op conflicts AFTER the remap rewrote its payload
+        assert_eq!(stats.conflicts, 1);
+        let item = crate::db::items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(item.checklist_id, "srv-l");
+        let op_payload: String = conn.query_row(
+            "SELECT payload FROM outbox WHERE entity='checklist_item' AND state='conflict'", [], |r| r.get(0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&op_payload).unwrap();
+        assert_eq!(v["checklist_id"], "srv-l");
     }
 
     #[tokio::test]
