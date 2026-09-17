@@ -30,10 +30,12 @@ describe('Sidebar category filtering', () => {
     expect(useStore.getState().selectedCategory).toBeNull();
   });
 
-  it('checklist categories select with type checklists', () => {
+  it('selecting a checklist category clears open selections so the list is visible', () => {
+    useStore.setState({ selectedCategory: null, selectedNoteId: 'n1', selectedChecklistId: null });
     render(<Sidebar />);
     fireEvent.click(screen.getByText('Errands'));
     expect(useStore.getState().selectedCategory).toEqual({ type: 'checklists', path: 'Errands' });
+    expect(useStore.getState().selectedNoteId).toBeNull();
   });
 
   it('show all button clears an active filter', () => {

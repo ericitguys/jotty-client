@@ -2,10 +2,15 @@ import { useStore } from '../stores/store';
 import type { CategoryFilter } from '../stores/store';
 
 export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { categories, selectedCategory, selectCategory, refreshAll } = useStore();
+  const { categories, selectedCategory, selectCategory, selectNote, selectChecklist, refreshAll } = useStore();
   const toggle = (type: CategoryFilter['type'], c: { name: string; path: string }) => {
     const active = selectedCategory?.type === type && selectedCategory.path === c.path;
     selectCategory(active ? null : { type, path: c.path });
+    if (type === 'checklists') {
+      // browsing checklists: close any open editor/view so the list is what's on screen
+      selectNote(null);
+      selectChecklist(null);
+    }
   };
   return (
     <nav id="sidebar">

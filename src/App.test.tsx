@@ -6,9 +6,12 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => async () => {}) }));
 
 import App from './App';
+import { useStore } from './stores/store';
 
 beforeEach(() => {
   invoke.mockReset();
+  // the store is a module singleton — UI state leaks between tests without a reset
+  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null });
   invoke.mockImplementation((cmd: string) => {
     if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
     if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
@@ -82,6 +85,36 @@ describe('App shell', () => {
     await waitFor(() => expect(screen.queryByText('Errands')).not.toBeInTheDocument());
     expect(screen.getByText('Deploy')).toBeInTheDocument(); // the Trips checklist remains visible
     expect(within(screen.getByRole('navigation')).getByText('Trips').closest('li')).toHaveClass('selected');
+  });
+
+  it('clicking a checklist category shows the checklists list, not the open note', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: null, dirty: false },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([
+        { id: 'l1', title: 'Errands', category: 'Home', updatedAt: null, dirty: false },
+        { id: 'l2', title: 'Packing list', category: 'Trips', updatedAt: null, dirty: false },
+      ]);
+      if (cmd === 'list_categories') return Promise.resolve({
+        notes: [{ name: 'Home', path: 'Home', count: 1, level: 0 }],
+        checklists: [{ name: 'Trips', path: 'Trips', count: 1, level: 0 }],
+      });
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'Groceries', content: '<p>milk</p>', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    // open the note editor
+    fireEvent.click(screen.getByText('Groceries'));
+    await waitFor(() => expect(screen.getByPlaceholderText('Note title')).toBeInTheDocument());
+    // browse the Trips checklist category -> editor closes, filtered checklists show
+    fireEvent.click(within(screen.getByRole('navigation')).getByText('Trips'));
+    await waitFor(() => expect(screen.queryByPlaceholderText('Note title')).not.toBeInTheDocument());
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // filtered out
+    expect(screen.getByText('Packing list')).toBeInTheDocument();
   });
 
   it('settings button opens settings mode', async () => {

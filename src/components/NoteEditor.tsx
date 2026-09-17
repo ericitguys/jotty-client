@@ -20,8 +20,8 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const note: NoteDto = await api.getNote(noteId);
-      if (cancelled) return;
+      const note: NoteDto | null = await api.getNote(noteId);
+      if (cancelled || !note) return; // missing note: leave the editor inert
       setLoadedId(note.id);
       setCategory(note.category);
       autosave.reset({ title: note.title, content: note.content, category: note.category });
