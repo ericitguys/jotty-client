@@ -45,6 +45,28 @@ describe('ChecklistView', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Errands' }));
   });
 
+  it('save button commits meta and refreshes the store lists', async () => {
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Trips' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Trips' }));
+    // refreshAll evidence: the store re-pulls the lists after committing
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_notes'));
+  });
+
+  it('item ops do not clobber in-progress category edits', async () => {
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    const cat = screen.getByPlaceholderText('Category');
+    fireEvent.change(cat, { target: { value: 'Ho' } });
+    fireEvent.change(screen.getByPlaceholderText('New item'), { target: { value: 'c' } });
+    fireEvent.click(screen.getByText('Add'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null }));
+    // the reload after add_item must not snap the category field back to the DB value
+    await waitFor(() => expect(screen.getByDisplayValue('Ho')).toBeInTheDocument());
+  });
+
   it('reorder action sends full top-level order', async () => {
     render(<ChecklistView checklistId="l1" />);
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());

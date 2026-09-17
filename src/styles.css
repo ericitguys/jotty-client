@@ -226,6 +226,17 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   padding: 4px 10px;
   color: #c9aef7;
 }
+.cl-meta-row { display: flex; align-items: center; gap: 8px; }
+.cl-meta-row .cl-category { align-self: auto; }
+.cl-save {
+  font-size: 12px;
+  padding: 4px 14px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.cl-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 #checklist-view ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 #checklist-view li {
   background: var(--row);

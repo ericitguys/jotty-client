@@ -2,22 +2,35 @@ import { useCallback, useEffect, useState } from 'react';
 import type { DragEvent } from 'react';
 import * as api from '../api/client';
 import type { ItemDto } from '../api/types';
+import { useStore } from '../stores/store';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
+  const refreshAll = useStore((s) => s.refreshAll);
   const [items, setItems] = useState<ItemDto[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [newText, setNewText] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
 
+  // Meta (title/category) is loaded ONLY when switching checklists — reload()
+  // below must never snap the header fields back while the user edits them.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await api.getChecklist(checklistId);
+      if (cancelled) return;
+      setItems(list.items ?? []);
+      setTitle(list.title);
+      setCategory(list.category);
+    })();
+    return () => { cancelled = true; };
+  }, [checklistId]);
+
+  // Item ops re-fetch ONLY the items — header state stays local.
   const reload = useCallback(async () => {
     const list = await api.getChecklist(checklistId);
     setItems(list.items ?? []);
-    setTitle(list.title);
-    setCategory(list.category);
   }, [checklistId]);
-
-  useEffect(() => { reload(); }, [reload]);
 
   const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
 
@@ -55,7 +68,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 
   const saveMeta = async () => {
     await api.updateChecklist(checklistId, title, category);
-    await reload();
+    await refreshAll();
   };
 
   return (
@@ -68,14 +81,18 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
           onBlur={saveMeta}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
-        <input
-          className="cl-category"
-          value={category}
-          placeholder="Category"
-          onChange={(e) => setCategory(e.target.value)}
-          onBlur={saveMeta}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
+        <div className="cl-meta-row">
+          <input
+            className="cl-category"
+            value={category}
+            placeholder="Category"
+            onChange={(e) => setCategory(e.target.value)}
+            onBlur={saveMeta}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          />
+          {/* preventDefault on mousedown keeps input focus; Save then commits once */}
+          <button className="cl-save" onMouseDown={(e) => e.preventDefault()} onClick={saveMeta}>Save</button>
+        </div>
       </div>
       <ul>
         {top.map((item) => (
