@@ -4463,6 +4463,56 @@ describe('SearchPalette', () => {
 
 - [ ] **Step 2: Implement the three components + SyncBadge upgrade + App wiring**
 
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T18):**
+> **(Y) SearchPalette: NO dangerouslySetInnerHTML.** Wire shapes verified on
+> disk: NoteHit { id, title, snippet } (dto.rs:126-130) — snippet is REAL for
+> note hits; ListHit { id, title, itemText } (dto.rs:134-138) — NO snippet on
+> checklist hits (the T15 carry-forward: `c.snippet` is runtime-undefined).
+> Render plain text: `<small>{n.snippet}</small>` for notes and
+> `<small>{c.itemText}</small>` for checklists. This kills the unbacked-field
+> read, uses the real ListHit field, and removes an XSS-class vector (jotty
+> search returns text, not HTML). **Type-scope extension (part of Y):** the
+> `SearchResultsDto.checklists` type in `src/api/types.ts` currently declares
+> the unbacked `snippet` and omits `itemText` — amend it to
+> `{ id: string; title: string; itemText: string }` (notes hit stays
+> `{ id; title; snippet }`). This 1-line types.ts edit is IN SCOPE for T18
+> (carry-forward ownership; the type lie must die before the component reads
+> itemText).
+> **(AA) SyncBadge conflicts guard (required — the App shell test has NO
+> list_conflicts mock):** the App.test.tsx beforeEach mocks get_connection /
+> list_notes / list_checklists / list_categories / sync_status but returns
+> `null` for any other command → an unguarded
+> `api.listConflicts().then((c) => setConflicts(c.length))` reads
+> `null.length` → unhandled rejection → vitest fails the App test file
+> (App.test.tsx is NOT in T18's file list, so the mock cannot gain
+> list_conflicts). Guard component-side:
+> `setConflicts(Array.isArray(c) ? c.length : 0)`. Same defensive pattern as
+> `list.items ?? []` already in the codebase. ConflictDialog is safe (its own
+> test mocks the array; App only auto-opens it when the guarded count > 0).
+> **(Z) SyncBadge upgrade + App wiring (no code fence for App — prose only).
+> Ruled shape:** SyncBadge becomes `({ onOpenConflicts })` per the fence;
+> App holds `const [showConflicts, setShowConflicts] = useState(false)` +
+> `const [showSearch, setShowSearch] = useState(false)`; keydown listener in a
+> useEffect — `if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')`
+> → preventDefault + setShowSearch(true); renders `<SyncBadge
+> onOpenConflicts={() => setShowConflicts(true)} />`; renders
+> `{showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}`
+> and `{showSearch && <SearchPalette onClose={() => setShowSearch(false)}
+> onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) =>
+> selectChecklist(id)} />}` (store's selectNote/selectChecklist enforce mutual
+> exclusion). "Conflicts auto-open once per session": NOT implemented (App
+> holds no session-conflict-prompted flag in the fence; a one-shot auto-open
+> needs an extra effect + ref — RULED: skip the auto-open, the badge's red
+> conflict button is the affordance; ledgered as a deliberate scope cut, the
+> plan prose does not fence it). The App shell test must stay green
+> byte-unchanged (it never opens modals; the keydown listener is inert).
+> Settings-mode prose drift LEDGERED (prose says the settings mode "shows
+> URL" and implies getSettings — the fence neither shows it nor calls it;
+> interval state initialized 5; no test covers settings mode; accepted for
+> v1). Suite expectation: vitest 7 → 10 (3 new files, 1 test each); tsc
+> clean; ONE feat commit of exactly 8 files (3 components + 3 tests +
+> SyncBadge.tsx + App.tsx + src/api/types.ts).
+
 `src/components/SettingsModal.tsx`:
 ```tsx
 import { useState } from 'react';

@@ -16,7 +16,7 @@ export interface CategoryNode { name: string; path: string; count: number; level
 export interface CategoriesDto { notes: CategoryNode[]; checklists: CategoryNode[]; }
 export interface SearchResultsDto {
   notes: { id: string; title: string; snippet: string }[];
-  checklists: { id: string; title: string; itemText: string; snippet: string }[];
+  checklists: { id: string; title: string; itemText: string }[];
 }
 export interface SyncStatusDto { pending: number; lastSyncAt: string | null; syncing: boolean; }
 export interface ConflictDto { seq: number; entity: string; entityId: string; opType: string; lastError: string | null; label: string | null; }
