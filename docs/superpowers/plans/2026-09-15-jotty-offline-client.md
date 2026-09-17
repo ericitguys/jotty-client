@@ -2906,6 +2906,87 @@ mod tests {
         assert_eq!(stats.conflicts, 0);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
+
+    #[tokio::test]
+    async fn item_check_resolves_via_text_after_delete_shift() {
+        let s = MockServer::start().await;
+        // Delete-shift regression pin (re-review N1, fix round 2): a@0, c@1, y@2
+        // all synced; ops: check a, delete a, check c. After a's delete the
+        // server reindexes to [c@0, y@1] — c's stale stored path "1" now holds
+        // y. The stored-path identity hit is UPDATE-ARM-ONLY, so the check op
+        // must fall through to the TEXT fallback and check c at its NEW path
+        // "0" — never the drifted stored path "1".
+        let check_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gets = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(move |_req: &_| {
+                let n = gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n < 2 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-c","index":1,"text":"c","completed":false},
+                        {"id":"srv-y","index":2,"text":"y","completed":false}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-c","index":0,"text":"c","completed":false},
+                        {"id":"srv-y","index":1,"text":"y","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
+            .mount(&s).await;
+        Mock::given(method("DELETE")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        {
+            let check_hits = check_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+                .respond_with(move |_req: &_| {
+                    check_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let stale_hits = stale_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/checklists/l1/items/1/check"))
+                .respond_with(move |_req: &_| {
+                    stale_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
+        let c = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "c".into() }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='1', dirty=0 WHERE local_id=?1", [&c.local_id]).unwrap();
+        // FIFO: check a (resolves "0"), delete a (resolves "0"; server reindexes),
+        // check c (stale stored path "1" — must TEXT-resolve to "0")
+        outbox::enqueue(&conn, "check", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "delete", "checklist_item", &a.local_id,
+            &serde_json::json!({"item_local_id": a.local_id, "checklist_id": "l1"})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &c.local_id,
+            &serde_json::json!({"item_local_id": c.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 3, "all three ops must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        // the post-delete check of c must land at its NEW path "0" (text-resolved),
+        // never at the drifted stored path "1" (which holds y after the reindex)
+        assert_eq!(check_hits.load(std::sync::atomic::Ordering::SeqCst), 2,
+            "path 0 checked once for a (pre-delete) and once for c (post-delete)");
+        assert_eq!(stale_hits.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "the drifted stored path \"1\" must never be checked (identity hit is update-arm-only)");
+    }
 ```
 
 - [ ] **Step 3: Implement item-op arms + resolve, run to green**
@@ -2938,6 +3019,43 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): item-op replay with
 > local rows by text (stale `server_path` values must not duplicate rows).
 >
 > **NB (review ruling, 2026-09-17 — fix round):** the Task 12 review returned Needs fixes with three plan-inherent Importants; all ruled here. (1) UPDATE ARM resolves via PATH-EXISTENCE: server_path Some(p) and p in the fresh snapshot → `client.patch_item(list_id, p, text)` — text equality NOT required (row text is the NEW text; the stored path is the identity anchor; residual drift-swap risk accepted). server_path None → text-fallback (may conflict if renamed — bounded edge). Path missing → sentinel conflict. (2) CLAIMS become (item_local_id, path, text@path-at-claim) triples + own-claim exclusion: per op (a) prune claims whose (path, text@path) no longer matches the fresh snapshot; (b) own-claim memo — a surviving claim for THIS item resolves to its path directly (check→uncheck both replay; stored-path identity hits likewise exempt); (c) resolve()'s `claimed` vec = OTHER items' claim paths only (resolve.rs UNTOUCHED); (d) fallback success records (local_id, path, text@path). Two DIFFERENT identical-text items never share a server item in a run. (3) Post-reorder item ops: NO code change — production-safe via R1 (T14 enqueues entity_id=item local_id → reconcile's pending shield works); BINDING NOTE to T14: R1 is LOAD-BEARING. (4) REORDER GUARD: before the DELETE phase, validate every top-level local row's local_id appears in `ordered_top_level_ids`; missing → sentinel conflict BEFORE any server deletion. (5) Comment rider on `children_of`'s ORDER BY position. NEW TESTS `item_update_renames_via_stored_path_without_text_conflict` + `item_multi_op_same_run` (in the test fence; RED: rename → conflict pushed 0/conflicts 1; multi-op → second op conflicts pushed 1/conflicts 1). Suite 42 → 44 (filter 13). NOTE: patch_item = PATCH `/api/checklists/{list_id}/items/{path}` body `{"text": ...}`; uncheck = PUT `.../items/0/uncheck` (client.rs:122-137).
+>
+> **NB (re-review ruling, 2026-09-17 — fix round 2):** the scoped re-review
+> (task-12-re-review.md; deleg_b0d33fb2, 685.7s) verified ALL FOUR fix-round
+> rulings correctly executed (F1/F2/F3/M1 ADDRESSED; suite 44/13 re-run;
+> resolve.rs untouched; test block byte-identical) but flagged ONE
+> Important-class regression introduced by the fix diff itself: **N1 — the
+> stored-path identity hit (`resolve_with_claims` step (b), push.rs:269-276) is
+> ARM-AGNOSTIC.** Ruling (1) scoped no-text-equality path identity to the UPDATE
+> arm ("UPDATE-ONLY semantics"); the implementer's helper applies it to every
+> arm, so check/delete/create-parent ops at a present-but-drifted stored path
+> resolve WITHOUT text verification where the 6f9702d baseline text-scanned.
+> Concrete silent mis-targets (op marked DONE, no conflict): same-run
+> delete-shift (a@0,c@1,y@2; check a, delete a, check c → c's stale stored
+> path "1" now holds y → unchecks y; the ruled flow prunes a's stale claim and
+> TEXT-resolves c at its new path "0"); post-reorder trailing ops (pre-rebuild
+> stored path still occupied → wrong item; the F3 scenario itself);
+> server-side reorder drift on a single op; create-parent under a drifted
+> parent path. Worst case the DELETE arm: deletes the WRONG server item AND
+> removes the local row — unrecoverable, no conflict marker. RULING (restores
+> the ruled shape): **the stored-path identity hit is UPDATE-ARM-ONLY** — pass
+> `update_arm` into `resolve_with_claims` (resolve_item_target forwards its
+> flag; resolve_parent_path passes `false`); check/delete/create-parent go
+> prune → memo → `resolve()` text semantics exactly as ruling (2) prescribed.
+> The own-claim MEMO stays ALL-ARM (claim-based, recorded within this run —
+> check→uncheck keeps working); only the DB-stored-path hit is gated. The
+> update arm's vanished-path pre-check (ruling 1) is unchanged. Clarification
+> of ruling (2)(b)'s "stored-path identity hits likewise exempt": it meant
+> EXEMPT FROM OWN-CLAIM BLOCKING (claims never mask the fast path), NOT exempt
+> from TEXT verification — resolve()'s fast path remains text-validated for
+> non-update arms. amend the (b) doc comment + resolve_parent_path's
+> "stored path identity hit" comment accordingly. NEW TEST
+> `item_check_resolves_via_text_after_delete_shift` (in the test fence; RED
+> pre-fix: the identity hit checks the WRONG item — check_hits 1≠2,
+> stale_hits 1≠0; GREEN post-fix: check_hits 2, stale_hits 0, pushed==3,
+> conflicts==0). Suite 44 → 45 (filter `resolve push` 13 → 14; `cargo test
+> sync` 15 → 16). Scope: push.rs ONLY; resolve.rs UNTOUCHED; the rename +
+> multi-op tests stay green (update arm identity + all-arm memo respectively).
 
 ### Task 13: Sync orchestration (run = push→pull) + scheduler
 
@@ -3127,7 +3245,7 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
 (This code assumes `state.rs` from Task 14; implement scheduler INSIDE Task 14 after state exists — the ordering test above is pure sync-module and lands in this task.)
 
 Run: `cd /coding/jotty/src-tauri && cargo test sync`
-Expected: ordering test PASS. (The filter matches ALL sync-module tests, not just the ordering test — 12 at this task's start = 2 T10-pull + 4 T11-push + 3 T12-resolve + 3 T12-push; 13 at green including the ordering test. Full suite expectation: 41 → 42.)
+Expected: ordering test PASS. (The filter matches ALL sync-module tests, not just the ordering test — 16 at this task's start = 2 T10-pull + 6 T11-push + 3 T12-resolve + 5 T12-push [incl. the 2 fix-round-1 tests] + 1 T12-fix-round-2 test; 17 at green including the ordering test. Full suite expectation: 45 → 46.)
 
 - [ ] **Step 3: Commit**
 
@@ -3161,6 +3279,19 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 > enqueues `entity="checklist"`, `entity_id=<checklist id>` — one op per rebuild.
 > Conflict label lookups for `item_*` ops join via `checklist_items.local_id`.
 > (Task 12's own test enqueues bypass this — they are mock-level seeds.)
+>
+> **NB (re-review observation adjudicated, 2026-09-17 — fix round 2):** the
+> plan line above ("Reorder enqueues `entity="checklist"`") is a PLAN DEFECT:
+> push.rs's reorder arm pattern-matches `("checklist_item", "reorder")` and the
+> T12 reorder test enqueues `("checklist_item", ...)`. SUPERSEDED: reorder
+> commands enqueue `entity="checklist_item"`, `entity_id=<checklist id>` (the
+> payload still carries checklist_id + ordered_top_level_ids). Shield note:
+> has_pending_for("checklist_item", <checklist id>) then never matches an item
+> row's local_id — harmless for the reorder arm (its rows are force-cleared
+> dirty + reconcile(empty) is intentional); item ops from OTHER queued ops are
+> still shielded by their own entity_id keys. If T14's implementer finds the
+> reorder arm matching differently at dispatch time, STOP and surface — do not
+> silently widen the match.
 
 **Files:**
 - Create: `src-tauri/src/state.rs`, `src-tauri/src/commands/mod.rs`, `src-tauri/src/commands/dto.rs`
