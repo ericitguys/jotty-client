@@ -22,4 +22,24 @@ describe('NoteEditor', () => {
     // TipTap renders into a contenteditable; assert it mounted
     expect(document.querySelector('.tiptap')).not.toBeNull();
   });
+
+  it('note_switch_does_not_clobber_previous_note', async () => {
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_note') {
+        if (args?.id === 'n2') return Promise.resolve({ id: 'n2', title: 'T2', content: '<p>two</p>', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+        return Promise.resolve({ id: args?.id, title: 'T', content: '<p>hello</p>', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      }
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    const { rerender } = render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    rerender(<NoteEditor noteId="n2" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T2')).toBeInTheDocument());
+    // idle past the 800ms debounce window (real timers per ruling Q)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const updates = invoke.mock.calls.filter((c) => c[0] === 'update_note');
+    expect(updates.filter((c) => c[1]?.id === 'n1')).toEqual([]);
+    for (const c of updates) expect(c[1]?.id).toBe('n2');
+  });
 });

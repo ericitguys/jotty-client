@@ -15,12 +15,15 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
   });
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const note: NoteDto = await api.getNote(noteId);
+      if (cancelled) return;
       setLoadedId(note.id);
       setCategory(note.category);
-      autosave.setValue({ title: note.title, content: note.content, category: note.category });
+      autosave.reset({ title: note.title, content: note.content, category: note.category });
     })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId]);
 
