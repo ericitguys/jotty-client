@@ -1,6 +1,6 @@
 import { useStore } from '../stores/store';
 
-export default function Sidebar() {
+export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { categories, refreshAll } = useStore();
   return (
     <nav id="sidebar">
@@ -14,6 +14,7 @@ export default function Sidebar() {
         ))}
       </ul>
       <button onClick={() => refreshAll()}>Refresh</button>
+      {onOpenSettings && <button onClick={onOpenSettings}>Settings</button>}
     </nav>
   );
 }

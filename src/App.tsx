@@ -8,12 +8,14 @@ import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
 import ConflictDialog from './components/ConflictDialog';
 import SearchPalette from './components/SearchPalette';
+import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
   const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectNote, selectChecklist, refreshAll } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     refreshAll();
@@ -33,12 +35,17 @@ export default function App() {
   }, []);
 
   if (!connection) {
-    return <div id="app">Not connected — open settings to connect your jotty instance.</div>;
+    return (
+      <div id="app">
+        <SettingsModal mode="onboarding" onClose={() => {}} onConnected={refreshAll} />
+        <p>Not connected — open settings to connect your jotty instance.</p>
+      </div>
+    );
   }
 
   return (
     <div id="app">
-      <Sidebar />
+      <Sidebar onOpenSettings={() => setShowSettings(true)} />
       <main>
         <NoteList notes={notes} />
         {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : <ChecklistList checklists={checklists}/>}
@@ -46,6 +53,7 @@ export default function App() {
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}
       {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) => selectChecklist(id)} />}
+      {showSettings && <SettingsModal mode="settings" onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

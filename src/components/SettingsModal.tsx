@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 
 export default function SettingsModal({ mode, onClose, onConnected }: {
@@ -9,6 +9,12 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const [interval, setIntervalMin] = useState(5);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [settings, setSettings] = useState<{ instanceUrl: string | null; syncIntervalMinutes: number } | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'settings') return;
+    api.getSettings().then((data) => { if (data) setSettings(data); });
+  }, [mode]);
 
   const connect = async () => {
     setBusy(true); setError(null);
@@ -24,6 +30,7 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{mode === 'onboarding' ? 'Connect to jotty' : 'Settings'}</h2>
+        {mode === 'settings' && <p className="instance-url">{settings?.instanceUrl ?? 'not connected'}</p>}
         {mode === 'onboarding' && (
           <>
             <p>Generate an API key in your jotty web UI: Profile → Settings → API Key → Generate.</p>

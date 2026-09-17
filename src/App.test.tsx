@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invoke = vi.fn();
@@ -24,5 +24,21 @@ describe('App shell', () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
     expect(screen.getByText('Errands')).toBeInTheDocument();
+  });
+
+  it('not-connected screen auto-opens onboarding modal', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve(null);
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Connect to jotty')).toBeInTheDocument());
+  });
+
+  it('settings button opens settings mode', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Settings'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument());
   });
 });
