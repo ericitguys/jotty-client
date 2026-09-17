@@ -9,7 +9,8 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
       <ul>
         {checklists.map((c) => (
           <li key={c.id} className={c.id === selectedChecklistId ? 'selected' : ''} onClick={() => selectChecklist(c.id)}>
-            {c.title}{c.dirty ? ' •' : ''}
+            <span className="item-title">{c.title}{c.dirty ? ' •' : ''}</span>
+            <span className="chip">{c.category}</span>
           </li>
         ))}
       </ul>

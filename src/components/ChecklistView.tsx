@@ -54,21 +54,26 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
       <ul>
         {top.map((item) => (
           <li key={item.localId}
+              className={item.completed ? 'completed-item' : ''}
               draggable
               onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => onDrop(item.localId, e)}>
-            <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
-            <span className="item-text">{item.text}</span>
-            <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
-            <button onClick={() => remove(item)}>✕</button>
+            <div className="row-line">
+              <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
+              <span className="item-text">{item.text}</span>
+              <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
+              <button onClick={() => remove(item)}>✕</button>
+            </div>
             <ul>
               {(item.children ?? []).map((c) => (
                 <li key={c.localId} className="child">
-                  <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
-                  <span className="item-text">{c.text}</span>
-                  <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
-                  <button onClick={() => remove(c)}>✕</button>
+                  <div className="row-line">
+                    <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
+                    <span className="item-text">{c.text}</span>
+                    <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
+                    <button onClick={() => remove(c)}>✕</button>
+                  </div>
                 </li>
               ))}
             </ul>

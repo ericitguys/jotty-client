@@ -9,7 +9,8 @@ export default function NoteList({ notes }: { notes: NoteDto[] }) {
       <ul>
         {notes.map((n) => (
           <li key={n.id} className={n.id === selectedNoteId ? 'selected' : ''} onClick={() => selectNote(n.id)}>
-            {n.title}{n.dirty ? ' •' : ''}
+            <span className="item-title">{n.title}{n.dirty ? ' •' : ''}</span>
+            <span className="chip">{n.category}</span>
           </li>
         ))}
       </ul>
