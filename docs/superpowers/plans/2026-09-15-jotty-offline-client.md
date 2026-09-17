@@ -2456,6 +2456,8 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
 
 IMPORTANT: the real implementation folds checklist arms (`checklist_create/update/delete`) into the same match — checklist_create mirrors note_create (remap `checklists.id` + remap outbox entity), checklist_update → `client.update_checklist` + `checklists::mark_list_synced`, checklist_delete → `client.delete_checklist`. The test below pins this behavior.
 
+> **NB (pre-dispatch rulings, 2026-09-17):** `update_checklist` returns `AppResult<()>` (landed Task 8 surface; its test mock answers PUT with only `{"success":true}`) — the checklist_update arm passes `chrono::Utc::now().to_rfc3339()` to `mark_list_synced` (advisory-class ts; NEVER an empty string — pull's normalized ts parse would fail). Unknown op (unmatched entity/op_type) → `mark_conflict` + continue (record_attempt would loop forever on next_batch(1)).
+
 Tests:
 ```rust
 #[cfg(test)]
