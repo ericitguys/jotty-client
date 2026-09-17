@@ -4038,6 +4038,31 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
 
 Run: `cd /coding/jotty && npm test -- NoteEditor` → PASS.
 
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T16):** verified against
+> the installed @tiptap/react 2.27.3 / @tiptap/core dist (prependClass() sets
+> `view.dom.className = 'tiptap ' + ...` — the test's `.tiptap` query matches).
+> Rulings: (M) STALE-CLOSURE FIX (pre-ruled NoteEditor amendment): useEditor
+> creates the editor once per deps array (`[loadedId]`), so its `onUpdate`
+> closes over CREATION-TIME state — `autosave.value?.title` and `category`
+> inside onUpdate would be stale after the first render (content edits after a
+> title edit would autosave the OLD title = silent revert; category changes
+> never propagate). Amend NoteEditor: add `const metaRef = useRef({ title: '',
+> category: 'Uncategorized' });` updated every render (`metaRef.current =
+> { title: autosave.value?.title ?? '', category };`), and onUpdate calls
+> `autosave.setValue({ title: metaRef.current.title, content:
+> editor.getHTML(), category: metaRef.current.category });`. Behavior otherwise
+> unchanged. (N) useAutosave's unmount-flush saves unconditionally if
+> latest.current is set (one spurious update per open→close even with no edits)
+> — INERT for the fence test; keep fence bytes; deferred-minor family (a
+> dirty-flag would fix it). (O) the NoteEditor test asserts mount only
+> (display-value + .tiptap); it does not exercise save-on-edit — fence binding,
+> noted as the task's honest test shape. (P) Step 5 wiring (prose, no fence):
+> `selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : <ChecklistList/>`
+> as main's second column — the editor replaces the checklist column while a
+> note is selected (matching "replace the placeholder with editor when a note
+> is selected"; ChecklistList returns when the note is deselected). TipTap deps
+> already in package.json (@tiptap/react 2.27.3, starter-kit, extension-link).
+
 - [ ] **Step 5: Wire into App (replace note list placeholder with editor when a note is selected)**
 
 In `App.tsx`, when `selectedNoteId` set render `<NoteEditor noteId={selectedNoteId} />` in the right pane (keep ChecklistList in left/main list column). Commit includes this wiring.
