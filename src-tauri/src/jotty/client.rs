@@ -66,7 +66,13 @@ impl JottyClient {
     }
 
     pub async fn get_categories(&self) -> AppResult<Categories> {
-        self.api_get("/api/categories").await
+        // Real wire shape (API.md §14): payload is wrapped under a top-level
+        // "categories" key — unwrap like get_notes/get_checklists. The plain
+        // parse previously relied on Categories' #[serde(default)] fields and
+        // silently produced empty lists (sidebar showed no categories).
+        let v = self.api_get::<serde_json::Value>("/api/categories").await?;
+        Ok(serde_json::from_value(v["categories"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/categories: {e}")))?)
     }
 
     pub async fn create_note(&self, title: &str, content: &str, category: &str) -> AppResult<ServerNote> {
@@ -185,6 +191,35 @@ mod tests {
         let notes = c.get_notes().await.unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, "n1");
+    }
+
+    #[tokio::test]
+    async fn get_categories_unwraps_envelope() {
+        // REAL wire shape (upstream API.md §14, verified 1.22.0 + main): payload is
+        // wrapped under a top-level "categories" key. serde(default) on Categories
+        // would mask a missing unwrap as silently-empty lists.
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/categories"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "categories": {
+                    "notes": [
+                        {"name": "Personal", "path": "Personal", "count": 5, "level": 0},
+                        {"name": "Projects", "path": "Work/Projects", "count": 2, "level": 1}
+                    ],
+                    "checklists": [
+                        {"name": "Shopping", "path": "Shopping", "count": 4, "level": 0}
+                    ]
+                }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let cats = c.get_categories().await.unwrap();
+        assert_eq!(cats.notes.len(), 2);
+        assert_eq!(cats.notes[0].name, "Personal");
+        assert_eq!(cats.notes[0].count, 5);
+        assert_eq!(cats.notes[1].path, "Work/Projects");
+        assert_eq!(cats.checklists.len(), 1);
+        assert_eq!(cats.checklists[0].name, "Shopping");
     }
 
     #[tokio::test]
