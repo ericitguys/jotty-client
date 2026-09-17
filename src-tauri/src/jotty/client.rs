@@ -89,6 +89,57 @@ impl JottyClient {
         self.api_send::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/notes/{id}"), serde_json::json!({})).await?;
         Ok(())
     }
+    pub async fn create_checklist(&self, title: &str, category: &str) -> AppResult<ServerChecklist> {
+        let created: Created<ServerChecklist> = self.api_send(
+            reqwest::Method::POST, "/api/checklists",
+            serde_json::json!({"title": title, "category": category, "type": "simple"}),
+        ).await?;
+        created.data.ok_or_else(|| AppError::Other("create_checklist: missing data".into()))
+    }
+
+    pub async fn update_checklist(&self, id: &str, title: &str, category: &str) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT, &format!("/api/checklists/{id}"),
+            serde_json::json!({"title": title, "category": category}),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn delete_checklist(&self, id: &str) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/checklists/{id}"), serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    pub async fn create_item(&self, list_id: &str, text: &str, parent_path: Option<&str>) -> AppResult<()> {
+        let mut body = serde_json::json!({"text": text});
+        if let Some(p) = parent_path {
+            body["parentIndex"] = serde_json::Value::String(p.to_string());
+        }
+        self.api_send::<serde_json::Value>(reqwest::Method::POST, &format!("/api/checklists/{list_id}/items"), body).await?;
+        Ok(())
+    }
+
+    pub async fn patch_item(&self, list_id: &str, path: &str, text: &str) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            serde_json::json!({"text": text}),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn check_item(&self, list_id: &str, path: &str, checked: bool) -> AppResult<()> {
+        let suffix = if checked { "check" } else { "uncheck" };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT, &format!("/api/checklists/{list_id}/items/{path}/{suffix}"),
+            serde_json::json!({}),
+        ).await?;
+        Ok(())
+    }
+
+    pub async fn delete_item(&self, list_id: &str, path: &str) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/checklists/{list_id}/items/{path}"), serde_json::json!({})).await?;
+        Ok(())
+    }
 }
 
 async fn finish<T: DeserializeOwned>(resp: reqwest::Response) -> AppResult<T> {
@@ -167,5 +218,52 @@ mod tests {
         assert!(matches!(err, AppError::InvalidConfig(_)));
         assert!(JottyClient::new("http://localhost:1122", "ck").is_ok());
         assert!(JottyClient::new("http://127.0.0.1:1122", "ck").is_ok());
+    }
+
+    #[tokio::test]
+    async fn checklist_crud_and_item_ops() {
+        let s = server().await;
+        // create
+        Mock::given(method("POST")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"list-1","title":"L","category":"Home","type":"simple","items":[],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z"}
+            })))
+            .mount(&s).await;
+        // check item 0
+        Mock::given(method("PUT")).and(path("/api/checklists/list-1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // nested path patch
+        Mock::given(method("PATCH")).and(path("/api/checklists/list-1/items/0.1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // nested delete
+        Mock::given(method("DELETE")).and(path("/api/checklists/list-1/items/1.0.2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // create with parentIndex
+        Mock::given(method("POST")).and(path("/api/checklists/list-1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let list = c.create_checklist("L", "Home").await.unwrap();
+        assert_eq!(list.id, "list-1");
+        c.check_item("list-1", "0", true).await.unwrap();
+        c.patch_item("list-1", "0.1", "renamed").await.unwrap();
+        c.delete_item("list-1", "1.0.2").await.unwrap();
+        c.create_item("list-1", "new", Some("0")).await.unwrap();
+        c.create_item("list-1", "top", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn item_op_error_surfaces() {
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l/items/9/check"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad index"))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let err = c.check_item("l", "9", true).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 400, .. }));
     }
 }
