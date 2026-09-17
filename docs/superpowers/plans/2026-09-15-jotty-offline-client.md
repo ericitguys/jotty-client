@@ -4081,8 +4081,44 @@ Run: `cd /coding/jotty && npm test -- NoteEditor` → PASS.
 > fake timers). Option 2 (global jest shim in src/test/setup.ts) REJECTED:
 > setup.ts is T1 scaffolding outside the allowed file set and a global shim is
 > an environment hack. Attempt 2 resumes from the attempt-1 uncommitted files
-> (verified: useAutosave.ts + test + NoteEditor.tsx + NoteEditor.test.tsx all
-> present, census clean; App.tsx NOT yet wired).
+(unverified: useAutosave.ts + test + NoteEditor.tsx + NoteEditor.test.tsx all
+ present, census clean; App.tsx NOT yet wired).
+>
+> **NB (review ruling, binding, 2026-09-17 — T16 fix round 1):** the T16 review
+> (deleg_7476e595, probe-proven) returned NEEDS FIXES with F1 Critical
+> (fence-inherent) + F2/F3 Important. RULINGS:
+> (R) **useAutosave saveRef mirror (kills F1 + close-loss half of F2):** add
+> `const saveRef = useRef(save);` + `saveRef.current = save;` in the render
+> body; the timer callback and the unmount flush call `saveRef.current(v)`
+> instead of the captured `save`. The timer then binds to the note actually
+> loaded at fire time (a post-load armed timer becomes a harmless same-content
+> rewrite of the CORRECT note — previously it targeted the OLD loadedId = silent
+> cross-note corruption, probe P2). The unmount flush becomes live and correct
+> (probe P4 fixed). F6 adjudication: the stale-full-copy reorder hazard does NOT
+> hold (enqueue happens at invoke time in one tx — commands/mod.rs:36-51; FIFO
+> seq; server LWW receives old→new → new wins) — the hypothesized corruption
+> class is structurally absent; only the wrong-note targeting (F1) was real.
+> (S2) **`reset(v: T)` added to useAutosave** (kills the switch-loss half of
+> F2): the load effect currently calls `autosave.setValue(v_next)` while
+> `loadedId` is still the previous note — the pending edit's timer is cleared
+> and its edit never dispatched (probe P3). `reset(v)` = if a timer is armed,
+> dispatch its pending value immediately via `saveRef.current(latest.current)`
+> (at that moment saveRef still holds the previous note's saveFn → the pending
+> edit lands on the CORRECT note), then clear the timer, `setValue(v)` +
+> `latest.current = v` WITHOUT arming a new timer. The NoteEditor load effect
+> switches to `autosave.reset({ title, content, category })`; user edits keep
+> `setValue` (debounce untouched — the fence's debounce test only uses
+> setValue, unaffected). (T) **Load cancellation (F3):** the load effect gains a
+> cancelled-flag cleanup (`let cancelled = false; return () => { cancelled =
+> true; }`) with `if (cancelled) return;` guards after the await — kills the
+> out-of-order getNote resolution class. NO key-remount (editor re-init churn
+> avoided; correctness fully covered by R+S2+T). Suite 3 → 4: NEW REGRESSION
+> TEST `note_switch_does_not_clobber_previous_note` (in the NoteEditor test
+> fence; load n1 → rerender noteId=n2 → idle ≥800ms → assert NO update_note
+> targeting n1 with n2's values; at most a same-content update_note for n2 —
+> attempt-1 probe P2's corruption shape, inverted to a GREEN pin). Deferred
+> minors ledger: F4 (saving-flag flicker on overlapping saves, cosmetic), F5
+> (test-name overstatement — fence text kept).
 
 - [ ] **Step 5: Wire into App (replace note list placeholder with editor when a note is selected)**
 
