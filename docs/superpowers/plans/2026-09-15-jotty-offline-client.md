@@ -3292,6 +3292,51 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 > still shielded by their own entity_id keys. If T14's implementer finds the
 > reorder arm matching differently at dispatch time, STOP and surface — do not
 > silently widen the match.
+>
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T14):** verified every
+> fence against the live code surfaces (push.rs match arms, outbox/notes/items/
+> checklists fns, FTS schema, client methods, rusqlite 0.32.1). Rulings:
+> (A) ITEM OP-TYPE STRINGS: the Interfaces' `item_create`/`item_update`/
+> `item_check`/`item_delete`/`item_reorder` are SHORTHAND — the commands enqueue
+> op_type `create`/`update`/`check`/`delete`/`reorder` with entity
+> `checklist_item` (push.rs's match arms are literal; a literal `item_create`
+> would hit the unknown-op sentinel → conflict, and the Step-1 fence's kinds
+> assert `["create","create","check","reorder"]` pins the plain strings). The
+> fence is binding. (B) SCHEDULER TRANSPLANT: `spawn_scheduler`/`scheduler_tick`/
+> `do_sync` code (plan T13 section, deferred here by the T13 banner NB) is
+> delivered THIS task verbatim — `scheduler_tick` + `do_sync` into
+> `src-tauri/src/sync/mod.rs`, `spawn_scheduler` into `lib.rs` (the lib.rs fence
+> calls it). scheduler_tick needs `rusqlite::OptionalExtension` in scope for
+> `.optional()` and `tauri::Manager` for `app.state::<AppState>()`. (C) conflict
+> resolve "mine": raw `UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1`
+> in commands/mod.rs (outbox.rs is NOT in this task's Files list); `keep=="server"`
+> = outbox::mark_done then trigger a sync. list_conflicts reads
+> state='conflict' rows, label via entity joins (implementer shapes the SQL).
+> (D) ITEM PAYLOAD SHAPES (match push.rs's reads exactly; entity_id = item
+> local_id for ALL item ops per R1 + the NB above, reorder included):
+> create → {"checklist_id", "item_local_id", "text", "parent_local_id": opt}
+> (NO "temp_local_id" key — prose shorthand, push.rs never reads it); update →
+> {"checklist_id", "item_local_id", "text"}; check → {"checklist_id",
+> "item_local_id", "checked": bool}; delete → {"checklist_id", "item_local_id"};
+> reorder → {"checklist_id", "ordered_top_level_ids": [...]}. (E)
+> note/checklist payloads (match push.rs): note create → {"temp_id",
+> "title", "content", "category"} (temp_id REQUIRED — the create arm remaps via
+> it); note update → {"title", "content", "category"} (full merged copy — the
+> post-patch row values; push update arm keys on op.entity_id); note delete →
+> {} (entity_id carries the id); checklist create → {"temp_id", "title",
+> "category"}; checklist update → {"title", "category"}; checklist delete → {}.
+> (F) TEST FENCE 1-TOKEN AMENDMENT: the fence's `use crate::db::{migrations,
+> outbox};` does not import `open` (bare `open` in db() → E0425) — amended to
+> `use crate::db::{migrations, open, outbox};` in the plan fence (this NB is the
+> ruling; implementer applies). (G) AppState::new(conn, keystore) derives
+> db_path internally from `conn.path()` (rusqlite 0.32.1 exposes it — verified)
+> → `.unwrap_or_default().to_path_buf()`. (H) update_note_inner(conn, id, title:
+> Option<String>, content: Option<String>, category: Option<String>) builds
+> NotePatch; the enqueued payload = the post-patch merged row values (full
+> copy). (I) get_checklist tree: nest ItemDto from list_for_checklist's flat
+> rows via parent_id (v1 choice). (J) disconnect: clear client, DELETE the
+> instance_url sync_state row, keystore.delete(). (K) list_categories: via
+> state client get_categories (DTO wrapper shape implementer's).
 
 **Files:**
 - Create: `src-tauri/src/state.rs`, `src-tauri/src/commands/mod.rs`, `src-tauri/src/commands/dto.rs`
@@ -3328,7 +3373,7 @@ Test in `src-tauri/src/commands/mod.rs` tests module (commands call a pure inner
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{migrations, outbox};
+    use crate::db::{migrations, open, outbox};
     use crate::keys::MockKeyStore;
     use rusqlite::Connection;
 
