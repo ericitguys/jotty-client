@@ -1813,7 +1813,10 @@ use crate::error::{AppError, AppResult};
 use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote};
 use serde::de::DeserializeOwned;
 
-#[derive(Clone)]
+// NB: derive must include Debug — Step 1's `plain_http_rejected_outside_localhost` calls
+// `.unwrap_err()` on Result<JottyClient, _>, which requires JottyClient: Debug (E0277,
+// proven in Task 7; brief's Clone-only derive does not compile).
+#[derive(Debug, Clone)]
 pub struct JottyClient {
     http: reqwest::Client,
     base_url: String,
