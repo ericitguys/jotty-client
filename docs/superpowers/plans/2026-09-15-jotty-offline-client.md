@@ -4154,8 +4154,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 import ChecklistView from './ChecklistView';
 
 const items = [
-  { localId: 'i1', parentId: null, text: 'a', completed: false, position: 0, serverPath: '0', dirty: false },
-  { localId: 'i2', parentId: null, text: 'b', completed: true, position: 1, serverPath: '1', dirty: false },
+  { localId: 'i1', checklistId: 'l1', parentId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+  { localId: 'i2', checklistId: 'l1', parentId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
 ];
 
 beforeEach(() => {
@@ -4278,6 +4278,47 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 ```
 
 - [ ] **Step 3: Wire into App, run tests to green**
+
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T17):**
+> **(U) DnD contract fix (fence bug — the reorder test cannot pass with the
+> fence component as written):** the test fires `fireEvent.drop` directly with
+> `dataTransfer.getData` returning `'i2'` but never fires `dragStart`, so the
+> component's `dragId` state is null → `onDrop` early-returns → `reorder_items`
+> is never dispatched. RULING: the component reads the dragged id from the
+> event, not the state — `onDrop(targetId, e)` uses
+> `const drag = e.dataTransfer.getData('text/plain') || dragId;` (dataTransfer
+> is the source of truth; `dragId` state stays as fallback), and `onDragStart`
+> additionally calls `e.dataTransfer.setData('text/plain', item.localId)` so
+> real HTML5 DnD carries the id. Test fence unchanged.
+> **(V) App wiring (Step 3, no fence block in the plan):** the `main` column
+> becomes a 3-way branch — `selectedNoteId ? <NoteEditor noteId/> :
+> selectedChecklistId ? <ChecklistView checklistId/> : <ChecklistList/>`;
+> destructure `selectedChecklistId` from the store in App. The App shell test
+> is unaffected (nothing selected → `ChecklistList` renders → 'Errands'
+> visible). The Interfaces prose "consumes store selectedChecklistId" is
+> SHORTHAND (T14 precedent): the component takes `checklistId` as a prop; App
+> reads the store and passes it.
+> **(W) Nested-children shape (fence bug — childrenOf filters a list that is
+> never flat):** `get_checklist_inner` (commands/mod.rs:117-135) returns
+> NESTED items — `attach_items(None, &flat)` returns ONLY top-level items with
+> children inside `ItemDto.children` (DFS order). The fence component's
+> `childrenOf = items.filter(parentId === id)` always returns [] because the
+> flat array is never returned. RULING: `top` = the returned `items` array
+> as-is (it IS the top level; the `.filter(parentId === null)` is harmless but
+> redundant — keep the filter for shape-safety), and children render from
+> `item.children ?? []` — delete `childrenOf`.
+> **(X) Test-fence mock cleanup (fidelity with the T15-amended ItemDto):** the
+> fence's `items` const carries `serverPath: '0'` — a field that no longer
+> exists on ItemDto (dead field; untyped const so tsc is silent, but it
+> contradicts the amended types) and lacks `checklistId`/`children`. Amend the
+> two mock items: drop `serverPath`, add `checklistId: 'l1'` and
+> `children: []`.
+> Ledgered UX minor (deferred, not a fence change): `rename` fires
+> `setItemText` + a full `reload()` on EVERY keystroke (controlled input
+> re-rendered from the reload) — cursor-jump/race class; T18 may own a debounce.
+> Suite expectation: vitest 4 → 7 (3 new ChecklistView tests); tsc clean; one
+> feat commit of exactly 3 files (ChecklistView.tsx, ChecklistView.test.tsx,
+> App.tsx wiring).
 
 Run: `cd /coding/jotty && npm test`
 Expected: all frontend tests PASS.
