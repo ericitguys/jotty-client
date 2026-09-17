@@ -41,5 +41,14 @@ export function useAutosave<T>(save: (v: T) => Promise<void>, delayMs = 800) {
     latest.current = v;
   };
 
-  return { value, setValue: set, reset, saving };
+  // commit an armed edit immediately (explicit Save); debounced save is cancelled
+  const flush = async () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (latest.current) await saveRef.current(latest.current);
+  };
+
+  return { value, setValue: set, reset, flush, saving };
 }

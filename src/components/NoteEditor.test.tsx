@@ -32,6 +32,17 @@ describe('NoteEditor', () => {
     expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: '<p>hello</p>', category: 'Work' });
   });
 
+  it('save button flushes pending edits immediately and refreshes the store', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Urgent' } });
+    // NO debounce wait — Save must commit right away
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: '<p>hello</p>', category: 'Urgent' }));
+    // refreshAll evidence: the store re-pulls the lists
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_notes'));
+  });
+
   it('note_switch_does_not_clobber_previous_note', async () => {
     invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
       if (cmd === 'get_note') {

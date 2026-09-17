@@ -4,14 +4,17 @@ import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import * as api from '../api/client';
 import { useAutosave } from '../hooks/useAutosave';
+import { useStore } from '../stores/store';
 import type { NoteDto } from '../api/types';
 
 export default function NoteEditor({ noteId }: { noteId: string }) {
+  const refreshAll = useStore((s) => s.refreshAll);
   const [category, setCategory] = useState<string>('Uncategorized');
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const autosave = useAutosave(async (v: { title: string; content: string; category: string }) => {
     if (!loadedId) return;
     await api.updateNote(loadedId, v.title, v.content, v.category);
+    await refreshAll();
   });
 
   useEffect(() => {
@@ -58,7 +61,10 @@ export default function NoteEditor({ noteId }: { noteId: string }) {
         placeholder="Category"
       />
       <EditorContent editor={editor} />
-      {autosave.saving && <span id="saving">saving…</span>}
+      <div className="editor-foot">
+        {autosave.saving && <span id="saving">saving…</span>}
+        <button className="cl-save" onClick={() => autosave.flush()}>Save</button>
+      </div>
     </div>
   );
 }

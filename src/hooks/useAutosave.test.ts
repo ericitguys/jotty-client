@@ -19,4 +19,18 @@ describe('useAutosave', () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(save).toHaveBeenCalledWith({ title: 'a', content: '123' });
   });
+
+  it('flush commits an armed edit immediately and cancels the debounce', async () => {
+    const save = vi.fn(async () => {});
+    const { result } = renderHook(() => useAutosave(save, 800));
+    act(() => result.current.setValue({ title: 't', content: 'x' }));
+    act(() => vi.advanceTimersByTime(100));
+    await act(async () => { await result.current.flush(); });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith({ title: 't', content: 'x' });
+    // the armed debounce must NOT fire again after the flush
+    act(() => vi.advanceTimersByTime(2000));
+    await act(async () => {});
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });

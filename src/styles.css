@@ -315,6 +315,8 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   padding: 4px 10px;
   color: #c9aef7;
 }
+.editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.editor-foot #saving { align-self: auto; }
 #note-editor .tiptap {
   min-height: 55vh;
   outline: none;
