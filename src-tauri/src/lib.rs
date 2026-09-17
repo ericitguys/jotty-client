@@ -1,6 +1,7 @@
 pub mod db;
 pub mod error;
 pub mod jotty;
+pub mod keys;
 
 pub fn run() {
     tauri::Builder::default()
