@@ -1671,7 +1671,10 @@ pub struct Categories {
 pub struct Created<T> {
     #[serde(default)]
     pub success: bool,
-    #[serde(default)]
+    // NB: no #[serde(default)] here — serde's derive adds a `T: Default` bound for a
+    // generic-typed #[serde(default)] field (E0277: ServerNote: Default not satisfied).
+    // Missing Option<T> parses to None natively, so runtime behavior is unchanged.
+    // (Proven in Task 6, ruling in ledger; mirrors the walk<'a> amendment.)
     pub data: Option<T>,
 }
 
