@@ -4512,6 +4512,24 @@ describe('SearchPalette', () => {
 > v1). Suite expectation: vitest 7 → 10 (3 new files, 1 test each); tsc
 > clean; ONE feat commit of exactly 8 files (3 components + 3 tests +
 > SyncBadge.tsx + App.tsx + src/api/types.ts).
+>
+> **NB (attempt-1 blocker ruling AB, binding, 2026-09-17 — T18):** attempt 1
+> (deleg_5081cf99) stopped at GREEN per the hard-stop contract: the
+> SearchPalette fence test `getByText('Groceries')` cannot pass the fence
+> component — the li renders `📝 {n.title} <small>{n.snippet}</small>` and RTL
+> `getNodeText` exact-matches joined direct text children
+> (`'📝 Groceries '`), never equal to `'Groceries'` (verified in the installed
+> @testing-library/dom; verbatim error in the report; search wiring proven
+> working — invoke fires, results render, only the matcher fails). Same class
+> as T17 F2, missed by the scan. RULING (candidate (a), T17 F2 precedent,
+> probe-verified by the implementer at 11/11 + tsc clean): wrap the row titles
+> in `<strong>{n.title}</strong>` / `<strong>{c.title}</strong>` (keep the
+> emoji prefix and the snippet `<small>`; `<strong>` is an element child so
+> `getByText` matches its text node exactly). Suite total corrected: **11**
+> tests (7 prior + SettingsModal 2 + ConflictDialog 1 + SearchPalette 1) — the
+> earlier NB said 10; the fence is binding. Attempt 2: apply AB to
+> SearchPalette.tsx (both rows), re-verify 11/11 + tsc clean, re-census, then
+> single feat commit of exactly 8 files.
 
 `src/components/SettingsModal.tsx`:
 ```tsx
