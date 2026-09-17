@@ -2197,8 +2197,12 @@ pub struct PullStats {
 }
 
 pub async fn pull_all(conn: &mut Connection, client: &JottyClient) -> AppResult<PullStats> {
-    let server_notes = client.get_notes().await.unwrap_or_default();
-    let server_lists = client.get_checklists().await.unwrap_or_default();
+    // NB: `?` propagation, NOT unwrap_or_default — a failed catalog fetch must ABORT the
+    // pull before the tombstone pass. Tombstoning against an empty/failing snapshot would
+    // mass-delete every clean local entity on a transient network error (proven in the
+    // Task 10 pre-dispatch scan; ruling in ledger).
+    let server_notes = client.get_notes().await?;
+    let server_lists = client.get_checklists().await?;
     let mut stats = PullStats::default();
 
     {
