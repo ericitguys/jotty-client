@@ -3834,6 +3834,35 @@ Add `import './styles.css';` to `src/main.tsx`.
 Run: `cd /coding/jotty && npm test`
 Expected: App shell test PASS.
 
+> **NB (pre-dispatch scan rulings, binding, 2026-09-17 — T15):** the plan's
+> `api/types.ts` fence DRIFTS from the Rust DTOs that Task 14 actually shipped
+> (commands/dto.rs, all `rename_all = "camelCase"`). The fence is amended — the
+> TS types mirror the REAL serialization (structural superset of what T15's own
+> asserts touch; later tasks consume these types):
+> - `NoteDto`: add `createdAt: string | null;` (Rust dto.rs:12).
+> - `ChecklistDto`: `{ id, title, category, createdAt: string | null,
+>   updatedAt: string | null, deletedAt: string | null, dirty: boolean, items:
+>   ItemDto[] }` — `items` is ALWAYS present (Rust `#[serde(default)]` Vec,
+>   dto.rs:71-72); drop the `?`.
+> - `ItemDto`: `{ localId: string; checklistId: string; parentLocalId: string |
+>   null; text: string; completed: boolean; position: number; dirty: boolean;
+>   children: ItemDto[]; }` — the fence's `parentId` (real key:
+>   parentLocalId), `serverPath` (NOT in the Rust ItemDto — the DB column exists
+>   but the DTO never exposed it), and the missing `checklistId`/`children` are
+>   fence-vs-code drift; the real shape wins (dto.rs:35-44).
+> - `ConflictDto`: `label` is `string | null` in Rust (dto.rs:167) — fence
+>   agrees (`label: string` → amend to `string | null`).
+> - The App.test.tsx mock returns SNAKE_CASE keys for get_connection
+>   (`instance_url`) and sync_status (`last_sync_at`) while the real DTOs
+>   serialize camelCase — the fence is kept byte-exact because the test's
+>   asserts never read those keys (get_connection's object is only truthy-tested;
+>   syncStatus.pending is key-consistent). Mock infidelity noted; tasks 16-18
+>   must use the camelCase keys when their tests mock these commands.
+> - SyncBadge.tsx is missing from the Files header but IS part of the task (its
+>   code block is in the plan) — create it.
+> - Display caveat: `apiKey: string` may render as `apiKey: ***` in some views —
+>   byte census decides; the file on disk is correct (`string`).
+
 - [ ] **Step 4: Commit**
 
 ```bash
