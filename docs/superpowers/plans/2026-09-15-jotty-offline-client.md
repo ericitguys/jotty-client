@@ -3336,7 +3336,21 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 > copy). (I) get_checklist tree: nest ItemDto from list_for_checklist's flat
 > rows via parent_id (v1 choice). (J) disconnect: clear client, DELETE the
 > instance_url sync_state row, keystore.delete(). (K) list_categories: via
-> state client get_categories (DTO wrapper shape implementer's).
+> state client get_categories (DTO wrapper shape implementer's). (L) TEST FENCE
+> PAYLOAD FIX (attempt-1 proven): `ops[1].payload["content"]` indexes
+> `payload: String` (outbox.rs:11) with a str key → compile error; amend the
+> fence to parse first — `let p2: serde_json::Value =
+> serde_json::from_str(&ops[1].payload).unwrap();` + `assert_eq!(p2["content"],
+> "body");` (push.rs:33 precedent). (M) drop the fence's `use
+> crate::keys::MockKeyStore;` line — no test body constructs it (keeping it =
+> +1 unused-import warning vs baseline). (N) spawn_scheduler is DEFINED in
+> sync/mod.rs (scheduler region) and re-exported from lib.rs via
+> `pub use sync::spawn_scheduler;` — the fence call
+> `sync::spawn_scheduler(app.handle().clone())` then compiles byte-exact.
+> (O) restore_connection: spawn a tauri task that rebuilds the client from the
+> sync_state url + keystore, guarded with `app.try_state::<AppState>()`
+> (manage runs after setup returns); NO auto-sync in the restore path.
+> (P) get_connection returns version None in v1 (no network in a getter).
 
 **Files:**
 - Create: `src-tauri/src/state.rs`, `src-tauri/src/commands/mod.rs`, `src-tauri/src/commands/dto.rs`
@@ -3374,7 +3388,6 @@ Test in `src-tauri/src/commands/mod.rs` tests module (commands call a pure inner
 mod tests {
     use super::*;
     use crate::db::{migrations, open, outbox};
-    use crate::keys::MockKeyStore;
     use rusqlite::Connection;
 
     fn db() -> Connection {
@@ -3405,8 +3418,9 @@ mod tests {
         assert_eq!(updated.title, "T2");
         let ops = outbox::next_batch(&conn, 10).unwrap();
         assert_eq!(ops.len(), 2);
+        let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert_eq!(ops[1].op_type, "update");
-        assert_eq!(ops[1].payload["content"], "body");
+        assert_eq!(p2["content"], "body");
     }
 
     #[tokio::test]
