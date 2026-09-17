@@ -5,19 +5,11 @@ use crate::jotty::models::{ServerChecklist, ServerNote};
 use chrono::Utc;
 use rusqlite::Connection;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct PullStats {
     pub notes_applied: usize,
     pub lists_applied: usize,
     pub tombstones: usize,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct SyncReport {
-    pub pushed: usize,
-    pub push_conflicts: usize,
-    pub pull: PullStats,
-    pub errors: Vec<String>,
 }
 
 pub async fn pull_all(conn: &mut Connection, client: &JottyClient) -> AppResult<PullStats> {
