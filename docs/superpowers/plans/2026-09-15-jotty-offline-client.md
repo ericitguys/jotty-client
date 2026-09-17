@@ -1863,11 +1863,19 @@ impl JottyClient {
     }
 
     pub async fn get_notes(&self) -> AppResult<Vec<ServerNote>> {
-        Ok(self.api_get::<serde_json::Value>("/api/notes").await?["notes"].clone().into())
+        // NB: no `.into()` here — `From<Value>` for `Vec<T>` does not exist (E0277,
+        // proven in a Task 7 pre-dispatch probe). from_value + map_err is the shape;
+        // serde_json::Error has no From impl on AppError, so map to Other.
+        let v = self.api_get::<serde_json::Value>("/api/notes").await?;
+        Ok(serde_json::from_value(v["notes"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/notes: {e}")))?)
     }
 
     pub async fn get_checklists(&self) -> AppResult<Vec<ServerChecklist>> {
-        Ok(self.api_get::<serde_json::Value>("/api/checklists").await?["checklists"].clone().into())
+        // Same ruled repair as get_notes (`.into()` is E0277; see NB above).
+        let v = self.api_get::<serde_json::Value>("/api/checklists").await?;
+        Ok(serde_json::from_value(v["checklists"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/checklists: {e}")))?)
     }
 
     pub async fn get_categories(&self) -> AppResult<Categories> {
