@@ -18,70 +18,79 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
             let payload: serde_json::Value = serde_json::from_str(&op.payload)
                 .unwrap_or_else(|_| serde_json::json!({}));
             let result: AppResult<()> = match (op.entity.as_str(), op.op_type.as_str()) {
-                ("note", "create") => {
-                    let created = client.create_note(
-                        payload["title"].as_str().unwrap_or(""),
-                        payload["content"].as_str().unwrap_or(""),
-                        payload["category"].as_str().unwrap_or("Uncategorized"),
-                    ).await?;
-                    let new_id = created.id.clone();
-                    {
-                        let tx = conn.transaction()?;
-                        let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
-                        tx.execute("UPDATE notes SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
-                        tx.execute("UPDATE notes SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
-                        tx.execute("DELETE FROM notes_fts WHERE id=?1", rusqlite::params![old_id])?;
-                        tx.execute(
-                            "INSERT INTO notes_fts(id, title, content) SELECT id, title, content FROM notes WHERE id=?1",
-                            rusqlite::params![new_id],
-                        )?;
-                        outbox::remap_entity_id(&tx, "note", &old_id, &new_id)?;
-                        tx.commit()?;
+                ("note", "create") => match client.create_note(
+                    payload["title"].as_str().unwrap_or(""),
+                    payload["content"].as_str().unwrap_or(""),
+                    payload["category"].as_str().unwrap_or("Uncategorized"),
+                ).await {
+                    Ok(created) => {
+                        let new_id = created.id.clone();
+                        {
+                            let tx = conn.transaction()?;
+                            let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
+                            tx.execute("UPDATE notes SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
+                            tx.execute("UPDATE notes SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
+                            tx.execute("DELETE FROM notes_fts WHERE id=?1", rusqlite::params![old_id])?;
+                            tx.execute(
+                                "INSERT INTO notes_fts(id, title, content) SELECT id, title, content FROM notes WHERE id=?1",
+                                rusqlite::params![new_id],
+                            )?;
+                            outbox::remap_entity_id(&tx, "note", &old_id, &new_id)?;
+                            tx.commit()?;
+                        }
+                        Ok(())
                     }
-                    Ok(())
+                    Err(e) => Err(e),
                 }
-                ("note", "update") => {
-                    let updated = client.update_note(
-                        &op.entity_id,
-                        payload["title"].as_str().unwrap_or(""),
-                        payload["content"].as_str().unwrap_or(""),
-                        payload["category"].as_str().unwrap_or("Uncategorized"),
-                    ).await?;
-                    let tx = conn.transaction()?;
-                    notes::mark_synced(&tx, &op.entity_id, &updated.updated_at)?;
-                    tx.commit()?;
-                    Ok(())
+                ("note", "update") => match client.update_note(
+                    &op.entity_id,
+                    payload["title"].as_str().unwrap_or(""),
+                    payload["content"].as_str().unwrap_or(""),
+                    payload["category"].as_str().unwrap_or("Uncategorized"),
+                ).await {
+                    Ok(updated) => {
+                        let tx = conn.transaction()?;
+                        notes::mark_synced(&tx, &op.entity_id, &updated.updated_at)?;
+                        tx.commit()?;
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
                 }
                 ("note", "delete") => client.delete_note(&op.entity_id).await,
-                ("checklist", "create") => {
-                    let created = client.create_checklist(
-                        payload["title"].as_str().unwrap_or(""),
-                        payload["category"].as_str().unwrap_or("Uncategorized"),
-                    ).await?;
-                    let new_id = created.id.clone();
-                    {
-                        let tx = conn.transaction()?;
-                        tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
-                        let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
-                        tx.execute("UPDATE checklists SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
-                        tx.execute("UPDATE checklists SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
-                        tx.execute("UPDATE checklist_items SET checklist_id=?2 WHERE checklist_id=?1", rusqlite::params![old_id, new_id])?;
-                        tx.execute("UPDATE outbox SET payload=json_set(payload, '$.checklist_id', ?2) WHERE state='pending' AND json_extract(payload, '$.checklist_id')=?1", rusqlite::params![old_id, new_id])?;
-                        outbox::remap_entity_id(&tx, "checklist", &old_id, &new_id)?;
-                        tx.commit()?;
+                ("checklist", "create") => match client.create_checklist(
+                    payload["title"].as_str().unwrap_or(""),
+                    payload["category"].as_str().unwrap_or("Uncategorized"),
+                ).await {
+                    Ok(created) => {
+                        let new_id = created.id.clone();
+                        {
+                            let tx = conn.transaction()?;
+                            tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+                            let old_id = payload["temp_id"].as_str().unwrap_or(&op.entity_id).to_string();
+                            tx.execute("UPDATE checklists SET id=?2, dirty=0 WHERE id=?1", rusqlite::params![old_id, new_id])?;
+                            tx.execute("UPDATE checklists SET updated_at=?2 WHERE id=?1", rusqlite::params![new_id, created.updated_at])?;
+                            tx.execute("UPDATE checklist_items SET checklist_id=?2 WHERE checklist_id=?1", rusqlite::params![old_id, new_id])?;
+                            tx.execute("UPDATE outbox SET payload=json_set(payload, '$.checklist_id', ?2) WHERE state='pending' AND json_extract(payload, '$.checklist_id')=?1", rusqlite::params![old_id, new_id])?;
+                            tx.execute("DELETE FROM lists_fts WHERE id=?1", rusqlite::params![old_id])?;
+                            outbox::remap_entity_id(&tx, "checklist", &old_id, &new_id)?;
+                            tx.commit()?;
+                        }
+                        Ok(())
                     }
-                    Ok(())
+                    Err(e) => Err(e),
                 }
-                ("checklist", "update") => {
-                    client.update_checklist(
-                        &op.entity_id,
-                        payload["title"].as_str().unwrap_or(""),
-                        payload["category"].as_str().unwrap_or("Uncategorized"),
-                    ).await?;
-                    let tx = conn.transaction()?;
-                    checklists::mark_list_synced(&tx, &op.entity_id, &chrono::Utc::now().to_rfc3339())?;
-                    tx.commit()?;
-                    Ok(())
+                ("checklist", "update") => match client.update_checklist(
+                    &op.entity_id,
+                    payload["title"].as_str().unwrap_or(""),
+                    payload["category"].as_str().unwrap_or("Uncategorized"),
+                ).await {
+                    Ok(()) => {
+                        let tx = conn.transaction()?;
+                        checklists::mark_list_synced(&tx, &op.entity_id, &chrono::Utc::now().to_rfc3339())?;
+                        tx.commit()?;
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
                 }
                 ("checklist", "delete") => client.delete_checklist(&op.entity_id).await,
                 _ => Err(crate::error::AppError::Other(format!("unknown op {}/{}", op.entity, op.op_type))),
@@ -202,6 +211,10 @@ mod tests {
             "SELECT payload FROM outbox WHERE entity='checklist_item' AND state='conflict'", [], |r| r.get(0)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&op_payload).unwrap();
         assert_eq!(v["checklist_id"], "srv-l");
+        // (review ruling 2026-09-17): the create remap deletes the stale temp-id lists_fts row
+        // (written by insert_local -> items::fts_refresh under the TEMP id; permanent orphan otherwise)
+        let stale_fts: i64 = conn.query_row("SELECT count(*) FROM lists_fts WHERE id=?1", [&local.id], |r| r.get(0)).unwrap();
+        assert_eq!(stale_fts, 0);
     }
 
     #[tokio::test]
@@ -225,6 +238,28 @@ mod tests {
         let conflicts = crate::db::outbox::next_batch(&conn, 10).unwrap();
         // gone-1 is conflict (not pending); gone-2 → 500 → record_attempt, run stops (FIFO)
         assert!(conflicts.iter().any(|o| o.entity_id == "gone-2"));
+    }
+
+    #[tokio::test]
+    async fn note_update_404_becomes_conflict_and_queue_continues() {
+        let s = MockServer::start().await;
+        // vanished target: note deleted server-side while locally dirty — brief line 20's
+        // first-class case; the update arm must route it to mark_conflict (not an Err escape)
+        Mock::given(method("PUT")).and(path("/api/notes/gone-1"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("nope"))
+            .mount(&s).await;
+        // a delete op queued behind must still replay after the conflict (FIFO continues)
+        Mock::given(method("DELETE")).and(path("/api/notes/gone-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        outbox::enqueue(&conn, "update", "note", "gone-1", &serde_json::json!({"id":"gone-1","title":"T","content":"c","category":"Home"})).unwrap();
+        outbox::enqueue(&conn, "delete", "note", "gone-2", &serde_json::json!({})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
     #[tokio::test]
