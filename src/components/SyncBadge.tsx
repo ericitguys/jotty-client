@@ -11,11 +11,12 @@ export default function SyncBadge({ onOpenConflicts }: { onOpenConflicts: () => 
   if (!syncStatus) return null;
   const state = conflicts > 0 ? 'conflict' : syncStatus.pending > 0 ? 'pending' : 'synced';
   return (
-    <footer id="sync-badge" className={state}>
+    <footer id="sync-badge" className={state} title={syncStatus.lastError ?? undefined}>
       <span className="dot" />
       {state === 'conflict' && <button onClick={onOpenConflicts}>{conflicts} conflicts</button>}
       {state === 'pending' && <span>{syncStatus.pending} pending</span>}
       {state === 'synced' && <span>synced</span>}
+      {syncStatus.lastError && <span className="sync-error">— {syncStatus.lastError}</span>}
       <button onClick={() => api.triggerSync()}>sync now</button>
     </footer>
   );

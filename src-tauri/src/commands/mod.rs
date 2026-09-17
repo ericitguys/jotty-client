@@ -384,7 +384,16 @@ pub(crate) fn sync_status_inner(conn: &Connection, syncing: bool) -> AppResult<S
     let last_sync_at: Option<String> = conn
         .query_row("SELECT value FROM sync_state WHERE key='last_sync_at'", [], |r| r.get(0))
         .optional()?;
-    Ok(SyncStatusDto { pending, last_sync_at, syncing })
+    // newest recorded failure across pending + conflict rows (FIFO head is what
+    // blocks the queue, so order by seq — first failed op is the blocker)
+    let last_error: Option<String> = conn
+        .query_row(
+            "SELECT last_error FROM outbox WHERE last_error IS NOT NULL AND state IN ('pending','conflict') ORDER BY seq LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(SyncStatusDto { pending, last_sync_at, syncing, last_error })
 }
 
 pub(crate) fn get_settings_inner(conn: &Connection) -> AppResult<SettingsDto> {
@@ -665,5 +674,21 @@ mod tests {
         let ops = outbox::next_batch(&conn, 10).unwrap();
         let kinds: Vec<&str> = ops.iter().map(|o| o.op_type.as_str()).collect();
         assert_eq!(kinds, vec!["create", "create", "check", "reorder"]);
+    }
+
+    #[tokio::test]
+    async fn sync_status_surfaces_oldest_outbox_error() {
+        let conn = db();
+        // no failures -> clean
+        let s = sync_status_inner(&conn, false).unwrap();
+        assert!(s.last_error.is_none());
+        // two failed ops: the FIFO head (lowest seq) is the reported blocker
+        outbox::enqueue(&conn, "update", "note", "n1", &serde_json::json!({})).unwrap();
+        outbox::enqueue(&conn, "update", "note", "n2", &serde_json::json!({})).unwrap();
+        outbox::record_attempt(&conn, 1, "connection refused").unwrap();
+        outbox::record_attempt(&conn, 2, "500 server error").unwrap();
+        let s = sync_status_inner(&conn, false).unwrap();
+        assert_eq!(s.pending, 2);
+        assert_eq!(s.last_error.as_deref(), Some("connection refused"));
     }
 }

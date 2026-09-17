@@ -24,7 +24,11 @@ impl JottyClient {
             return Err(AppError::InvalidConfig("instance url must be https (http only allowed for localhost)".into()));
         }
         Ok(Self {
-            http: reqwest::Client::new(),
+            // 30s per-request timeout: without it a hung connection (dropped
+            // packets, stalled server) wedges do_sync's `syncing` flag forever
+            // and every later sync silently no-ops.
+            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()
+                .map_err(|e| AppError::InvalidConfig(format!("http client: {e}")))?,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
         })
@@ -231,6 +235,22 @@ mod tests {
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         let err = c.get_notes().await.unwrap_err();
         assert!(matches!(err, AppError::Api { status: 401, .. }));
+    }
+
+    #[tokio::test]
+    async fn hung_request_times_out_instead_of_blocking_forever() {
+        // regression: reqwest::Client::new() had no timeout — a stalled server
+        // wedged do_sync's `syncing` flag and every later sync silently no-oped.
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/notes"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(90))
+                .set_body_json(serde_json::json!({"notes":[]})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let started = std::time::Instant::now();
+        let err = c.get_notes().await.unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(35), "must fail fast via the 30s timeout, took {:?}", started.elapsed());
+        assert!(!matches!(err, AppError::Api { .. }), "a timeout is a transport error, not an HTTP status error");
     }
 
     #[tokio::test]

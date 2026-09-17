@@ -180,5 +180,8 @@ pub struct SyncStatusDto {
     pub pending: i64,
     pub last_sync_at: Option<String>,
     pub syncing: bool,
+    // most recent outbox failure (pending or conflict rows), None when clean —
+    // surfaced in the badge so "sync now does nothing" becomes "sync failed: <why>"
+    pub last_error: Option<String>,
 }
 

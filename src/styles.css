@@ -381,6 +381,13 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   color: var(--fg);
 }
 #sync-badge button:hover { background: var(--accent-soft); border: none; }
+#sync-badge .sync-error {
+  color: var(--danger);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---------- modals ---------- */
 .modal-backdrop {
