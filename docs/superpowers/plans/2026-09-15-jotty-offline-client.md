@@ -2839,6 +2839,73 @@ mod tests {
         assert_eq!(items[0].text, "b");
         assert_eq!(items[1].text, "a");
     }
+
+    #[tokio::test]
+    async fn item_update_renames_via_stored_path_without_text_conflict() {
+        let s = MockServer::start().await;
+        // server still holds the OLD text at path 0 — the row text is the NEW text
+        // (update_local mutated it command-time); the update arm must patch the
+        // stored path WITHOUT text equality (review ruling: path-existence)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"old","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "old".into(),
+        }).unwrap();
+        // synced earlier at path "0", then renamed OFFLINE: row text = new, server text = old
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=1, text='new' WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "update", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "text": "new"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "rename must patch the stored path even though server text differs");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_multi_op_same_run() {
+        let s = MockServer::start().await;
+        // check then uncheck the SAME item in one run: the own-claim memo must
+        // let the second op resolve to the same path (no spurious conflict)
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/uncheck"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": true})).unwrap();
+        outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "checked": false})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "check then uncheck on the SAME item must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
 ```
 
 - [ ] **Step 3: Implement item-op arms + resolve, run to green**
@@ -2850,8 +2917,8 @@ Implementation notes for `push.rs`:
 - After a checklist's ops finish: re-fetch all lists once, `items::reconcile` for that list, `checklists::mark_list_synced` with its `updatedAt`.
 - RULING (pre-dispatch scan, reorder): after the rebuild's HTTP ops and BEFORE the reconcile(empty) → re-fetch → reconcile(new), the reorder arm MUST clear dirty on that checklist's items: `conn.execute("UPDATE checklist_items SET dirty=0 WHERE checklist_id=?1", [&list_id])?`. Why: reconcile step-3 deletes only clean non-pending rows and step-2 adoption requires `server_path` IS NULL — production reorder marks items dirty=1 (T5 reorder_local), so dirty rows with stale server_paths are skipped by step-2 and duplicated by fresh INSERTs. Test-neutral (the reorder test's rows are pre-forced clean).
 
-Run: `cd /coding/jotty/src-tauri && cargo test resolve push`
-Expected: all PASS (3 resolve + 3 new push + 5 from Task 11 = 11); full suite 36 → 42.
+Run: `cd /coding/jotty/src-tauri && cargo test -- resolve push`
+Expected: all PASS (3 resolve + 5 new push + 5 from Task 11 = 13); full suite 42 → 44.
 
 - [ ] **Step 4: Commit**
 
@@ -2870,14 +2937,7 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): item-op replay with
 > (`PUT items/0/check`) for the recreated completed item. Reconcile then adopts
 > local rows by text (stale `server_path` values must not duplicate rows).
 >
-> **NB (pre-dispatch scan, 2026-09-17):** the reorder arm clears dirty on the
-> checklist's items (`UPDATE checklist_items SET dirty=0 WHERE checklist_id=?`)
-> after the rebuild's HTTP ops, BEFORE reconcile(empty) → re-fetch →
-> reconcile(new) — production reorder marks items dirty=1 (T5 reorder_local);
-> reconcile step-3 deletes only clean non-pending rows and step-2 adoption
-> requires `server_path` IS NULL, so uncleaned dirty rows would be skipped and
-> duplicated by fresh INSERTs. Test-neutral (the test's rows are pre-forced
-> clean).
+> **NB (review ruling, 2026-09-17 — fix round):** the Task 12 review returned Needs fixes with three plan-inherent Importants; all ruled here. (1) UPDATE ARM resolves via PATH-EXISTENCE: server_path Some(p) and p in the fresh snapshot → `client.patch_item(list_id, p, text)` — text equality NOT required (row text is the NEW text; the stored path is the identity anchor; residual drift-swap risk accepted). server_path None → text-fallback (may conflict if renamed — bounded edge). Path missing → sentinel conflict. (2) CLAIMS become (item_local_id, path, text@path-at-claim) triples + own-claim exclusion: per op (a) prune claims whose (path, text@path) no longer matches the fresh snapshot; (b) own-claim memo — a surviving claim for THIS item resolves to its path directly (check→uncheck both replay; stored-path identity hits likewise exempt); (c) resolve()'s `claimed` vec = OTHER items' claim paths only (resolve.rs UNTOUCHED); (d) fallback success records (local_id, path, text@path). Two DIFFERENT identical-text items never share a server item in a run. (3) Post-reorder item ops: NO code change — production-safe via R1 (T14 enqueues entity_id=item local_id → reconcile's pending shield works); BINDING NOTE to T14: R1 is LOAD-BEARING. (4) REORDER GUARD: before the DELETE phase, validate every top-level local row's local_id appears in `ordered_top_level_ids`; missing → sentinel conflict BEFORE any server deletion. (5) Comment rider on `children_of`'s ORDER BY position. NEW TESTS `item_update_renames_via_stored_path_without_text_conflict` + `item_multi_op_same_run` (in the test fence; RED: rename → conflict pushed 0/conflicts 1; multi-op → second op conflicts pushed 1/conflicts 1). Suite 42 → 44 (filter 13). NOTE: patch_item = PATCH `/api/checklists/{list_id}/items/{path}` body `{"text": ...}`; uncheck = PUT `.../items/0/uncheck` (client.rs:122-137).
 
 ### Task 13: Sync orchestration (run = push→pull) + scheduler
 
