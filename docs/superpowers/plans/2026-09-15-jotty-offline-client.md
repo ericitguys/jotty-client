@@ -2752,22 +2752,43 @@ mod tests {
     #[tokio::test]
     async fn reorder_replays_as_rebuild() {
         let s = MockServer::start().await;
-        // server has items a,b (paths 0,1)
+        // GET /api/checklists is CALL-COUNTED (binding ruling): call 1 returns the
+        // original order [a(false), b(true)]; calls 2+ return the rebuilt order
+        // [b(true), a(false)] — the post-rebuild reconcile fetch must see the new
+        // server state. The impl makes exactly 2 GET calls for one reorder op
+        // (group snapshot + post-group re-fetch).
+        let get_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         Mock::given(method("GET")).and(path("/api/checklists"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
-                    {"id":"srv-a","index":0,"text":"a","completed":false},
-                    {"id":"srv-b","index":1,"text":"b","completed":true}
-                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
-            })))
+            .respond_with(move |_req: &_| {
+                let n = get_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let items = if n == 0 {
+                    serde_json::json!([
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-b","index":1,"text":"b","completed":true}
+                    ])
+                } else {
+                    serde_json::json!([
+                        {"id":"srv-b","index":0,"text":"b","completed":true},
+                        {"id":"srv-a","index":1,"text":"a","completed":false}
+                    ])
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "checklists": [{"id":"l1","title":"L","category":"Home","items": items,
+                        "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                }))
+            })
             .mount(&s).await;
-        // rebuild: delete 1 (b) then 0 (a); recreate b, a
+        // rebuild: delete 1 (b) then 0 (a); recreate b, a; then re-check the recreated completed item
         for p in ["1", "0"] {
             Mock::given(method("DELETE")).and(path(format!("/api/checklists/l1/items/{p}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
                 .mount(&s).await;
         }
         Mock::given(method("POST")).and(path("/api/checklists/l1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        // re-check the recreated completed item (b recreated first -> path "0")
+        Mock::given(method("PUT")).and(path("/api/checklists/l1/items/0/check"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
             .mount(&s).await;
         let mut conn = db();
@@ -2799,6 +2820,7 @@ Implementation notes for `push.rs`:
 - For the first item op of a checklist in this run: fetch `client.get_checklists().await` once, find the list by id; keep `claimed: Vec<String>` for resolution within the run; after each item mutation (check/patch/delete) the server state changes — for correctness, re-fetch the checklist before EACH resolve if more than one op targets the same list (cheap at personal scale), or optimistically reuse the flattened snapshot and trust index math: v1 correctness rule = re-fetch before each op.
 - `item_create` parent resolution: parent item's `server_path` must be non-NULL (it was synced earlier); if NULL → parent is also new: parent's create op must appear earlier in FIFO (guaranteed by enqueue order in Task 14); resolve parent via text from that op's effects. If still unresolvable → conflict.
 - After a checklist's ops finish: re-fetch all lists once, `items::reconcile` for that list, `checklists::mark_list_synced` with its `updatedAt`.
+- RULING (pre-dispatch scan, reorder): after the rebuild's HTTP ops and BEFORE the reconcile(empty) → re-fetch → reconcile(new), the reorder arm MUST clear dirty on that checklist's items: `conn.execute("UPDATE checklist_items SET dirty=0 WHERE checklist_id=?1", [&list_id])?`. Why: reconcile step-3 deletes only clean non-pending rows and step-2 adoption requires `server_path` IS NULL — production reorder marks items dirty=1 (T5 reorder_local), so dirty rows with stale server_paths are skipped by step-2 and duplicated by fresh INSERTs. Test-neutral (the reorder test's rows are pre-forced clean).
 
 Run: `cd /coding/jotty/src-tauri && cargo test resolve push`
 Expected: all PASS (3 resolve + 3 new push + 4 from Task 11).
@@ -2819,6 +2841,15 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): item-op replay with
 > DELETE items/0, then POST items in local order (b, a), then a re-check call
 > (`PUT items/0/check`) for the recreated completed item. Reconcile then adopts
 > local rows by text (stale `server_path` values must not duplicate rows).
+>
+> **NB (pre-dispatch scan, 2026-09-17):** the reorder arm clears dirty on the
+> checklist's items (`UPDATE checklist_items SET dirty=0 WHERE checklist_id=?`)
+> after the rebuild's HTTP ops, BEFORE reconcile(empty) → re-fetch →
+> reconcile(new) — production reorder marks items dirty=1 (T5 reorder_local);
+> reconcile step-3 deletes only clean non-pending rows and step-2 adoption
+> requires `server_path` IS NULL, so uncleaned dirty rows would be skipped and
+> duplicated by fresh INSERTs. Test-neutral (the test's rows are pre-forced
+> clean).
 
 ### Task 13: Sync orchestration (run = push→pull) + scheduler
 
@@ -3008,7 +3039,7 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
 (This code assumes `state.rs` from Task 14; implement scheduler INSIDE Task 14 after state exists — the ordering test above is pure sync-module and lands in this task.)
 
 Run: `cd /coding/jotty/src-tauri && cargo test sync`
-Expected: ordering test PASS.
+Expected: ordering test PASS. (The filter matches ALL sync-module tests, not just the ordering test — 12 at this task's start = 2 T10-pull + 4 T11-push + 3 T12-resolve + 3 T12-push; 13 at green including the ordering test. Full suite expectation: 41 → 42.)
 
 - [ ] **Step 3: Commit**
 
@@ -3017,6 +3048,20 @@ cd /coding/jotty && git add -A && git commit -m "feat(sync): run() push-then-pul
 ```
 
 ---
+
+> **Controller pre-dispatch rulings (binding, 2026-09-17):**
+> (1) SyncReport RELOCATION: Task 10 landed `pub struct SyncReport` in pull.rs
+> (Debug/Default/Clone; zero references outside pull.rs). This task DELETES that
+> pull.rs definition when it adds the sync/mod.rs one (Step 2 block verbatim,
+> extended with serde::Serialize + camelCase rename + to_dto) — pure relocation;
+> pull.rs needs no other change.
+> (2) The Files header lists lib.rs — SUPERSEDED by the pre-flight ruling: this
+> task delivers `run()` + the ordering test ONLY (scheduler_tick/do_sync/
+> spawn_scheduler land in Task 14 after state.rs exists; see the NB under Step 2).
+> Do not modify lib.rs in this task.
+> (3) The Step 1 PUT mock's `data` omits "owner" — verified safe: ServerNote.owner
+> is Option<String>; serde parses a missing Option<T> as None (Task 6 Created<T>
+> precedent).
 
 ### Task 14: AppState + Tauri commands (connect, CRUD, search, conflicts, settings, sync trigger)
 
