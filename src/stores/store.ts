@@ -10,11 +10,18 @@ interface AppState {
   syncStatus: T.SyncStatusDto | null;
   selectedNoteId: string | null;
   selectedChecklistId: string | null;
+  selectedCategory: CategoryFilter | null;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
+  selectCategory: (c: CategoryFilter | null) => void;
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
+}
+
+export interface CategoryFilter {
+  type: 'notes' | 'checklists';
+  path: string;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -25,6 +32,7 @@ export const useStore = create<AppState>((set, get) => ({
   syncStatus: null,
   selectedNoteId: null,
   selectedChecklistId: null,
+  selectedCategory: null,
   refreshAll: async () => {
     const [connection, notes, checklists, categories, syncStatus] = await Promise.all([
       api.getConnection(), api.listNotes(), api.listChecklists(), api.listCategories(), api.syncStatus(),
@@ -36,6 +44,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
   selectChecklist: (id) => {
     set({ selectedChecklistId: id, selectedNoteId: null });
+  },
+  selectCategory: (c) => {
+    set({ selectedCategory: c });
   },
   createNote: async (title, category) => {
     const note = await api.createNote(title, category);

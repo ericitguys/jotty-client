@@ -12,10 +12,20 @@ import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectNote, selectChecklist, refreshAll } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, selectNote, selectChecklist, refreshAll } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // Category filter: exact path match or a descendant (prefix) — clicking the
+  // parent "Work" also shows notes in "Work/Projects".
+  const inCategory = (cat: string, path: string) => cat === path || cat.startsWith(`${path}/`);
+  const filteredNotes = selectedCategory?.type === 'notes'
+    ? notes.filter((n) => inCategory(n.category, selectedCategory.path))
+    : notes;
+  const filteredChecklists = selectedCategory?.type === 'checklists'
+    ? checklists.filter((c) => inCategory(c.category, selectedCategory.path))
+    : checklists;
 
   useEffect(() => {
     refreshAll();
@@ -47,8 +57,8 @@ export default function App() {
     <div id="app">
       <Sidebar onOpenSettings={() => setShowSettings(true)} />
       <main>
-        <NoteList notes={notes} />
-        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : <ChecklistList checklists={checklists}/>}
+        <NoteList notes={filteredNotes} />
+        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : <ChecklistList checklists={filteredChecklists}/>}
       </main>
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}

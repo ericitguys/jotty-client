@@ -152,8 +152,17 @@ input::placeholder { color: var(--muted); }
   margin: 1px 0;
   border-radius: 7px;
   color: #d5d7e6;
-  cursor: default;
+  cursor: pointer;
   transition: background 0.12s, color 0.12s;
+}
+#sidebar .clear-filter {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 9px;
+  margin-bottom: 6px;
+  color: #c9aef7;
+  background: var(--accent-soft);
+  border-color: transparent;
 }
 #sidebar li:hover { background: var(--row-hover); color: var(--fg); }
 #sidebar li.selected { background: var(--accent); color: #fff; }
