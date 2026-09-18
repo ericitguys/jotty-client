@@ -12,6 +12,8 @@ const note = (id: string, category: string, dirty = false): NoteDto => ({
   updatedAt: null,
   deletedAt: null,
   dirty,
+  audioPath: null,
+  audioDurationSecs: null,
 });
 
 const list = (id: string, category: string, dirty = false): ChecklistDto => ({

@@ -46,9 +46,23 @@ mod tests {
             "sync_state",
             "notes_fts",
             "lists_fts",
+            "voice_recordings",
         ] {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn migration_v2_adds_voice_staging_and_note_audio_columns() {
+        let (_d, conn) = tmp_db();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(notes)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .map(Result::unwrap).collect();
+        assert!(cols.iter().any(|c| c == "audio_path"), "notes.audio_path missing");
+        assert!(cols.iter().any(|c| c == "audio_duration_secs"), "notes.audio_duration_secs missing");
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 2);
     }
 
     #[test]

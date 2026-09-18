@@ -29,7 +29,7 @@ describe('NoteList creation', () => {
   });
 
   it('renders provided notes', async () => {
-    render(<NoteList notes={[{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false }]} />);
+    render(<NoteList notes={[{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null }]} />);
     expect(screen.getByText('Groceries')).toBeInTheDocument();
   });
 });

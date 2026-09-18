@@ -21,6 +21,8 @@ pub struct NoteDto {
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
     pub dirty: bool,
+    pub audio_path: Option<String>,
+    pub audio_duration_secs: Option<f64>,
 }
 
 impl From<notes::NoteRow> for NoteDto {
@@ -34,6 +36,8 @@ impl From<notes::NoteRow> for NoteDto {
             updated_at: r.updated_at,
             deleted_at: r.deleted_at,
             dirty: r.dirty,
+            audio_path: r.audio_path,
+            audio_duration_secs: r.audio_duration_secs,
         }
     }
 }

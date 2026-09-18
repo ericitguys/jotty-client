@@ -15,6 +15,8 @@ pub struct NoteRow {
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
     pub dirty: bool,
+    pub audio_path: Option<String>,
+    pub audio_duration_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,10 +57,12 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<NoteRow> {
         updated_at: r.get(5)?,
         deleted_at: r.get(6)?,
         dirty: r.get::<_, i64>(7)? != 0,
+        audio_path: r.get(8)?,
+        audio_duration_secs: r.get(9)?,
     })
 }
 
-const COLS: &str = "id, title, content, category, created_at, updated_at, deleted_at, dirty";
+const COLS: &str = "id, title, content, category, created_at, updated_at, deleted_at, dirty, audio_path, audio_duration_secs";
 
 pub fn upsert_from_server(conn: &Connection, n: &ServerNote) -> AppResult<bool> {
     let existing = conn
@@ -203,6 +207,22 @@ mod tests {
         assert!(upsert_from_server(&conn, &server_note(&local.id, "new-title", "2027-01-01T00:00:00.000Z")).unwrap());
         let after = get(&conn, &local.id).unwrap().unwrap();
         assert_eq!(after.title, "new-title");
+        assert!(!after.dirty);
+    }
+
+    #[test]
+    fn upsert_from_server_never_touches_local_audio_columns() {
+        let conn = db();
+        let n = insert_local(&conn, &NewNote { title: "t".into(), content: "".into(), category: "Home".into() }).unwrap();
+        conn.execute("UPDATE notes SET audio_path='/tmp/x.wav', audio_duration_secs=12.5 WHERE id=?1", [&n.id]).unwrap();
+        // clear the dirty flag (insert_local always sets it) so the newer server
+        // copy can win on LWW — mirrors upsert_respects_lww_and_dirty
+        mark_synced(&conn, &n.id, "2026-01-01T00:00:00.000Z").unwrap();
+        // a NEWER server copy must win on LWW but must not clobber the local-only columns
+        assert!(upsert_from_server(&conn, &server_note(&n.id, "theirs", "2099-01-01T00:00:00.000Z")).unwrap());
+        let after = get(&conn, &n.id).unwrap().unwrap();
+        assert_eq!(after.audio_path.as_deref(), Some("/tmp/x.wav"));
+        assert_eq!(after.audio_duration_secs, Some(12.5));
         assert!(!after.dirty);
     }
 

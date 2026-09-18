@@ -53,6 +53,23 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE VIRTUAL TABLE notes_fts USING fts5(id UNINDEXED, title, content);
     CREATE VIRTUAL TABLE lists_fts USING fts5(id UNINDEXED, title, item_text);
     "#,
+    // v2 — voice notes (2026-09-18): staging table + local-only audio columns.
+    // audio_path/audio_duration_secs are LOCAL-ONLY: they must never reach the
+    // sync engine (spec §5). Sync code uses explicit column lists everywhere.
+    r#"
+    ALTER TABLE notes ADD COLUMN audio_path TEXT;
+    ALTER TABLE notes ADD COLUMN audio_duration_secs REAL;
+    CREATE TABLE voice_recordings (
+        id TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
+        duration_secs REAL NOT NULL DEFAULT 0,
+        raw_transcript TEXT,
+        tidied_transcript TEXT,
+        state TEXT NOT NULL DEFAULT 'recording',
+        last_error TEXT,
+        created_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

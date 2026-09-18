@@ -1,6 +1,7 @@
 export interface NoteDto {
   id: string; title: string; content: string; category: string;
   createdAt: string | null; updatedAt: string | null; deletedAt: string | null; dirty: boolean;
+  audioPath: string | null; audioDurationSecs: number | null;
 }
 export interface ItemDto {
   localId: string; checklistId: string; parentLocalId: string | null;
