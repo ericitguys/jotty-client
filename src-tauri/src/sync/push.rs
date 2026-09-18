@@ -181,7 +181,13 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                 }
                 Err(AppError::Api { status: 404, .. })
                 | Err(AppError::Api { status: 409, .. })
-                | Err(AppError::Api { status: 410, .. }) => {
+                | Err(AppError::Api { status: 410, .. })
+                // client-error refusals are permanent for this op as-written:
+                // 400 "Permission denied" (shared item the api user can't edit,
+                // vanished grant, ...) would otherwise stay pending forever AND
+                // the FIFO stop below would block every op queued behind it.
+                | Err(AppError::Api { status: 400, .. })
+                | Err(AppError::Api { status: 403, .. }) => {
                     outbox::mark_conflict(conn, op.seq, &format!("{:?}", AppError::Api { status: 0, body: "gone".into() }))?;
                     stats.conflicts += 1;
                 }
@@ -588,6 +594,29 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.conflicts, 1);
         assert_eq!(stats.pushed, 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn permission_denied_400_becomes_conflict_and_queue_continues() {
+        // regression: 400 "Permission denied" (shared-item edit the api user can't
+        // edit, revoked grant, ...) fell into the transient bucket — the op stayed
+        // pending FOREVER and the FIFO stop blocked every op queued behind it.
+        let s = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/api/checklists/cl-1"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("{\"error\":\"Permission denied\"}"))
+            .mount(&s).await;
+        // the op queued behind the blocked head must still replay in the same run
+        Mock::given(method("PUT")).and(path("/api/checklists/cl-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let mut conn = db();
+        outbox::enqueue(&conn, "update", "checklist", "cl-1", &serde_json::json!({"title":"T","category":"Home"})).unwrap();
+        outbox::enqueue(&conn, "update", "checklist", "cl-2", &serde_json::json!({"title":"T2","category":"Home"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1, "400 must be a conflict, not a transient retry");
+        assert_eq!(stats.pushed, 1, "the op behind the refused head must still replay");
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
