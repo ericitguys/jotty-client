@@ -352,7 +352,6 @@ pub struct VoiceRecorder {
 
 struct Session {
     recording_id: String,
-    path: std::path::PathBuf,
     ctrl: mpsc::Sender<Ctrl>,
     handle: std::thread::JoinHandle<f64>,
 }
@@ -368,7 +367,6 @@ impl VoiceRecorder {
     pub fn start(
         &self,
         recording_id: &str,
-        path: std::path::PathBuf,
         prepared: PreparedInput,
         writer: hound::WavWriter<BufWriter<std::fs::File>>,
     ) -> Result<(), String> {
@@ -386,7 +384,6 @@ impl VoiceRecorder {
         });
         *guard = Some(Session {
             recording_id: recording_id.into(),
-            path,
             ctrl: tx,
             handle,
         });

@@ -803,10 +803,11 @@ pub(crate) fn voice_start_recording_inner(
         Ok(w) => w,
         Err(e) => {
             let _ = crate::db::voice::delete_staging(conn, &id);
+            let _ = std::fs::remove_file(&path);
             return Err(crate::error::AppError::Other(format!("open wav: {e}")));
         }
     };
-    if let Err(msg) = recorder.start(&id, path.clone(), prepared, writer) {
+    if let Err(msg) = recorder.start(&id, prepared, writer) {
         let _ = crate::db::voice::delete_staging(conn, &id);
         let _ = std::fs::remove_file(&path);
         return Err(crate::error::AppError::Other(msg));
