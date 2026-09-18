@@ -38,7 +38,7 @@ fn to_data_url(src: &str, bytes: &[u8]) -> String {
     format!("data:{};base64,{}", icon_mime(src), b64)
 }
 
-fn is_local(url: &reqwest::Url) -> bool {
+pub(crate) fn is_local(url: &reqwest::Url) -> bool {
     match url.host_str() {
         Some("localhost") | Some("127.0.0.1") | Some("::1") => true,
         _ => false,

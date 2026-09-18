@@ -7,6 +7,7 @@ pub mod keys;
 pub mod state;
 pub mod sync;
 pub mod updater;
+pub mod voice_ai;
 
 pub use sync::spawn_scheduler;
 
