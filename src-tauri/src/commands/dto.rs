@@ -69,6 +69,10 @@ pub struct ChecklistDto {
     pub deleted_at: Option<String>,
     pub dirty: bool,
     #[serde(default)]
+    pub completed: bool,
+    #[serde(default)]
+    pub list_type: String,
+    #[serde(default)]
     pub items: Vec<ItemDto>,
 }
 
@@ -82,6 +86,8 @@ impl From<checklists::ChecklistRow> for ChecklistDto {
             updated_at: r.updated_at,
             deleted_at: r.deleted_at,
             dirty: r.dirty,
+            completed: false,
+            list_type: r.list_type,
             items: Vec::new(),
         }
     }

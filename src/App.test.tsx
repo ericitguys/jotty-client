@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invoke = vi.fn();
@@ -142,5 +142,91 @@ describe('App shell', () => {
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Settings'));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument());
+  });
+});
+
+describe('web preference mirroring', () => {
+  const prefs = (p: Record<string, unknown>) => ({
+    preferredTheme: null, defaultNoteFilter: null, defaultChecklistFilter: null,
+    checklistItemClickAction: null, hideConnectionIndicator: null,
+    pinnedNotes: [], pinnedLists: [], ...p,
+  });
+
+  it('app root follows preferredTheme: light, dark, and system', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const root = document.getElementById('app');
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'light' }) }));
+    expect(root).toHaveAttribute('data-theme', 'light');
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'dark' }) }));
+    expect(root).toHaveAttribute('data-theme', 'dark');
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'system' }) }));
+    expect(root).toHaveAttribute('data-theme', 'dark'); // no matchMedia in jsdom -> guard yields dark
+  });
+
+  it('defaultNoteFilter=recent orders notes by updatedAt desc', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'n1', title: 'Old', content: '', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false },
+        { id: 'n2', title: 'New', content: '', category: 'Home', updatedAt: '2026-02-01T00:00:00.000Z', dirty: false },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_prefs') return Promise.resolve(prefs({ defaultNoteFilter: 'recent' }));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false, lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('New')).toBeInTheDocument());
+    const first = document.querySelector('#notes li .item-title')?.textContent;
+    expect(first).toBe('New');
+  });
+
+  it('defaultNoteFilter=pinned shows only pinned notes', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'n1', title: 'PinnedNote', content: '', category: 'Home', updatedAt: null, dirty: false },
+        { id: 'n2', title: 'Unpinned', content: '', category: 'Home', updatedAt: null, dirty: false },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_prefs') return Promise.resolve(prefs({ defaultNoteFilter: 'pinned', pinnedNotes: ['n1'] }));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false, lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('PinnedNote')).toBeInTheDocument());
+    expect(screen.queryByText('Unpinned')).not.toBeInTheDocument();
+  });
+
+  it('defaultChecklistFilter=incomplete hides fully-completed lists', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      // the backend stamps per-list completion on the list payload
+      if (cmd === 'list_checklists') return Promise.resolve([
+        { id: 'l1', title: 'OpenList', category: 'Home', dirty: false, completed: false, listType: 'checklist' },
+        { id: 'l2', title: 'DoneList', category: 'Home', dirty: false, completed: true, listType: 'checklist' },
+      ]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_prefs') return Promise.resolve(prefs({ defaultChecklistFilter: 'incomplete' }));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false, lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    // switch to the checklists section
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
+    await waitFor(() => expect(screen.getByText('OpenList')).toBeInTheDocument());
+    expect(screen.queryByText('DoneList')).not.toBeInTheDocument();
+  });
+
+  it('hideConnectionIndicator=enable removes the sync badge', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    expect(document.getElementById('sync-badge')).toBeInTheDocument();
+    act(() => useStore.setState({ prefs: prefs({ hideConnectionIndicator: 'enable' }) }));
+    expect(document.getElementById('sync-badge')).not.toBeInTheDocument();
   });
 });

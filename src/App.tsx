@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import Sidebar from './components/Sidebar';
 import NoteList from './components/NoteList';
@@ -12,7 +12,7 @@ import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -26,6 +26,39 @@ export default function App() {
   const filteredChecklists = selectedCategory?.type === 'checklists'
     ? checklists.filter((c) => inCategory(c.category, selectedCategory.path))
     : checklists;
+
+  // Web preference mirror: default filters (read-only — edited on the web).
+  const noteFilter = prefs?.defaultNoteFilter ?? 'all';
+  const listFilter = prefs?.defaultChecklistFilter ?? 'all';
+  const visibleNotes = (() => {
+    let list = filteredNotes;
+    if (noteFilter === 'pinned' && prefs) list = list.filter((n) => prefs.pinnedNotes.includes(n.id));
+    if (noteFilter === 'recent') list = [...list].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+    return list;
+  })();
+  const visibleChecklists = (() => {
+    let list = filteredChecklists;
+    if (listFilter === 'pinned' && prefs) list = list.filter((c) => prefs.pinnedLists.includes(c.id));
+    if (listFilter === 'completed') list = list.filter((c) => c.completed);
+    if (listFilter === 'incomplete') list = list.filter((c) => !c.completed);
+    if (listFilter === 'task' || listFilter === 'simple') list = list.filter((c) => c.listType === listFilter);
+    return list;
+  })();
+
+  // Theme mirror: light/dark/system (any custom theme id falls back to dark).
+  // "system" follows the OS live via prefers-color-scheme. matchMedia is
+  // feature-detected (jsdom lacks it; every real webview has it).
+  const mq = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const systemPrefersDark = useSyncExternalStore(
+    (cb) => { mq?.addEventListener('change', cb); return () => mq?.removeEventListener('change', cb); },
+    () => mq?.matches ?? true,
+    () => true, // jsdom/server snapshot: dark
+  );
+  const themeId = prefs?.preferredTheme ?? 'dark';
+  const dataTheme = themeId === 'light' ? 'light'
+    : themeId === 'system' ? (systemPrefersDark ? 'dark' : 'light')
+    : 'dark';
 
   useEffect(() => {
     refreshAll();
@@ -55,10 +88,10 @@ export default function App() {
   }
 
   return (
-    <div id="app">
-      <Sidebar onOpenSettings={() => setShowSettings(true)} />
-      <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
-        {listMode === 'notes' ? <NoteList notes={filteredNotes} /> : <ChecklistList checklists={filteredChecklists} />}
+    <div id="app" data-theme={dataTheme}>
+    <Sidebar onOpenSettings={() => setShowSettings(true)} />
+    <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
+      {listMode === 'notes' ? <NoteList notes={visibleNotes} /> : <ChecklistList checklists={visibleChecklists} />}
         {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />

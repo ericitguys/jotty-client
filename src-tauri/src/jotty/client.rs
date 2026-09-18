@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote};
+use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, UserPrefs};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone)]
@@ -77,6 +77,15 @@ impl JottyClient {
         let v = self.api_get::<serde_json::Value>("/api/categories").await?;
         Ok(serde_json::from_value(v["categories"].clone())
             .map_err(|e| AppError::Other(format!("parse /api/categories: {e}")))?)
+    }
+
+    /// Per-user preferences mirror (theme, default filters, click action...).
+    /// Wire shape: {user: {...}} — unwrap like the other envelope getters.
+    /// Upstream source: app/api/user/route.ts (withApiAuth → safeUserData).
+    pub async fn get_user_prefs(&self) -> AppResult<UserPrefs> {
+        let v = self.api_get::<serde_json::Value>("/api/user").await?;
+        Ok(serde_json::from_value(v["user"].clone())
+            .map_err(|e| AppError::Other(format!("parse /api/user: {e}")))?)
     }
 
     pub async fn create_note(&self, title: &str, content: &str, category: &str) -> AppResult<ServerNote> {
@@ -224,6 +233,54 @@ mod tests {
         assert_eq!(cats.notes[1].path, "Work/Projects");
         assert_eq!(cats.checklists.len(), 1);
         assert_eq!(cats.checklists[0].name, "Shopping");
+    }
+
+    #[tokio::test]
+    async fn get_user_prefs_unwraps_envelope() {
+        // REAL wire shape (upstream app/api/user/route.ts: withApiAuth returns
+        // {user: safeUserData} minus passwordHash/apiKey). Same defect class as
+        // the get_categories envelope bug — a bare parse + serde(default) would
+        // silently produce all-None prefs.
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "user": {
+                    "username": "eric",
+                    "isAdmin": false,
+                    "preferredTheme": "light",
+                    "defaultNoteFilter": "recent",
+                    "defaultChecklistFilter": "incomplete",
+                    "checklistItemClickAction": "edit",
+                    "hideConnectionIndicator": "enable",
+                    "pinnedNotes": ["n1", "n2"],
+                    "pinnedLists": ["l1"]
+                }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let prefs = c.get_user_prefs().await.unwrap();
+        assert_eq!(prefs.preferred_theme.as_deref(), Some("light"));
+        assert_eq!(prefs.default_note_filter.as_deref(), Some("recent"));
+        assert_eq!(prefs.default_checklist_filter.as_deref(), Some("incomplete"));
+        assert_eq!(prefs.checklist_item_click_action.as_deref(), Some("edit"));
+        assert_eq!(prefs.hide_connection_indicator.as_deref(), Some("enable"));
+        assert_eq!(prefs.pinned_notes, vec!["n1", "n2"]);
+        assert_eq!(prefs.pinned_lists, vec!["l1"]);
+    }
+
+    #[tokio::test]
+    async fn get_user_prefs_tolerates_absent_fields() {
+        // an older/newer server may omit any preference — parse must not fail
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "user": { "username": "eric" }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let prefs = c.get_user_prefs().await.unwrap();
+        assert_eq!(prefs.preferred_theme, None);
+        assert!(prefs.pinned_notes.is_empty());
     }
 
     #[tokio::test]

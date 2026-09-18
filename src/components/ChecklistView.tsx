@@ -6,6 +6,7 @@ import { useStore } from '../stores/store';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
   const refreshAll = useStore((s) => s.refreshAll);
+  const clickAction = useStore((s) => s.prefs?.checklistItemClickAction ?? 'toggle');
   const [items, setItems] = useState<ItemDto[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
@@ -71,6 +72,17 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     await refreshAll();
   };
 
+  // Web preference mirror: checklistItemClickAction toggle|edit. Web default
+  // is toggle; "edit" makes a text click start the rename instead.
+  const onTextClick = (item: ItemDto) => {
+    if (clickAction === 'edit') {
+      const row = document.getElementById(`item-${item.localId}`);
+      row?.querySelector<HTMLInputElement>('input:not([type=checkbox])')?.focus();
+      return;
+    }
+    toggle(item);
+  };
+
   return (
     <div id="checklist-view">
       <div id="checklist-head">
@@ -96,7 +108,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
       </div>
       <ul>
         {top.map((item) => (
-          <li key={item.localId}
+          <li key={item.localId} id={`item-${item.localId}`}
               className={item.completed ? 'completed-item' : ''}
               draggable
               onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
@@ -104,7 +116,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
               onDrop={(e) => onDrop(item.localId, e)}>
             <div className="row-line">
               <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
-              <span className="item-text">{item.text}</span>
+              <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
               <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
               <button onClick={() => remove(item)}>✕</button>
             </div>
@@ -113,7 +125,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
                 <li key={c.localId} className="child">
                   <div className="row-line">
                     <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
-                    <span className="item-text">{c.text}</span>
+                    <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
                     <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
                     <button onClick={() => remove(c)}>✕</button>
                   </div>

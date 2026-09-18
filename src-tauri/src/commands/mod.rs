@@ -110,7 +110,47 @@ pub(crate) fn delete_checklist_inner(conn: &mut Connection, id: &str) -> AppResu
 }
 
 pub(crate) fn list_checklists_inner(conn: &Connection) -> AppResult<Vec<ChecklistDto>> {
-    Ok(checklists::list_checklists(conn, false)?.into_iter().map(ChecklistDto::from).collect())
+    // Per-list completion (web-pref mirror: defaultChecklistFilter). One grouped
+    // query: a list is completed when it HAS items and none are open. Empty
+    // lists count as open (there is nothing "done" about an empty list).
+    let mut open_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT checklist_id, COUNT(*) FROM checklist_items
+             WHERE completed = 0 GROUP BY checklist_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (id, open_count) = row?;
+            open_counts.insert(id, open_count);
+        }
+    }
+    let item_counts: std::collections::HashMap<String, i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT checklist_id, COUNT(*) FROM checklist_items GROUP BY checklist_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        let mut m: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for row in rows {
+            let (id, n) = row?;
+            m.insert(id, n);
+        }
+        m
+    };
+    let mut dtos: Vec<ChecklistDto> = checklists::list_checklists(conn, false)?
+        .into_iter()
+        .map(ChecklistDto::from)
+        .collect();
+    for d in &mut dtos {
+        let total = *item_counts.get(&d.id).unwrap_or(&0);
+        let open = *open_counts.get(&d.id).unwrap_or(&0);
+        d.completed = total > 0 && open == 0;
+    }
+    Ok(dtos)
 }
 
 // Ruling I: get_checklist nests ItemDto from list_for_checklist's flat rows
@@ -578,6 +618,14 @@ pub async fn list_categories(state: tauri::State<'_, AppState>) -> Result<Catego
 }
 
 #[tauri::command]
+pub async fn get_prefs(state: tauri::State<'_, AppState>) -> Result<crate::jotty::models::UserPrefs, String> {
+    let Some(client) = state.client.read().await.clone() else {
+        return Err(AppError::NotConnected.to_string());
+    };
+    client.get_user_prefs().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn search(state: tauri::State<'_, AppState>, query: String) -> Result<SearchResultsDto, String> {
     let conn = state.db.lock().await;
     search_inner(&conn, &query).map_err(|e| e.to_string())
@@ -699,6 +747,23 @@ mod tests {
         let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert_eq!(ops[1].op_type, "update");
         assert_eq!(p2["content"], "body");
+    }
+
+    #[tokio::test]
+    async fn list_checklists_inner_reports_completion() {
+        // web-preference mirror: defaultChecklistFilter completed/incomplete
+        // needs per-list completion state on the LIST payload.
+        let mut conn = db();
+        let done = create_checklist_inner(&mut conn, "Done", "Home").unwrap();
+        let open = create_checklist_inner(&mut conn, "Open", "Home").unwrap();
+        let di = add_item_inner(&mut conn, &done.id, "d", None).unwrap();
+        set_item_checked_inner(&mut conn, &done.id, &di.local_id, true).unwrap();
+        add_item_inner(&mut conn, &open.id, "o", None).unwrap();
+        let lists = list_checklists_inner(&conn).unwrap();
+        let done_dto = lists.iter().find(|l| l.id == done.id).unwrap();
+        let open_dto = lists.iter().find(|l| l.id == open.id).unwrap();
+        assert!(done_dto.completed, "all items checked -> completed");
+        assert!(!open_dto.completed, "open item -> not completed");
     }
 
     #[tokio::test]

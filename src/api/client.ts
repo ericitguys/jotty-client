@@ -31,3 +31,4 @@ export const checkUpdate = () => invoke<T.UpdateInfo>('check_update');
 export const downloadUpdate = (url: string) => invoke<string>('download_update', { url });
 export const installUpdate = (path: string) => invoke<void>('install_update', { path });
 export const restartApp = () => invoke<void>('restart_app');
+export const getPrefs = () => invoke<T.UserPrefs>('get_prefs');

@@ -14,6 +14,7 @@ interface AppState {
   listMode: ListMode;
   updateInfo: T.UpdateInfo | null;
   refreshUpdate: () => Promise<void>;
+  prefs: T.UserPrefs | null;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -41,6 +42,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedCategory: null,
   listMode: 'notes',
   updateInfo: null,
+  prefs: null,
   refreshUpdate: async () => {
     try {
       const info = await api.checkUpdate();
@@ -50,10 +52,11 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   refreshAll: async () => {
-    const [connection, notes, checklists, categories, syncStatus] = await Promise.all([
+    const [connection, notes, checklists, categories, syncStatus, prefs] = await Promise.all([
       api.getConnection(), api.listNotes(), api.listChecklists(), api.listCategories(), api.syncStatus(),
+      api.getPrefs().catch(() => null), // prefs are a mirror — never block the sync refresh on them
     ]);
-    set({ connection, notes, checklists, categories, syncStatus });
+    set({ connection, notes, checklists, categories, syncStatus, prefs });
   },
   selectNote: (id) => {
     // selecting an entity of a type implies browsing that section

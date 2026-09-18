@@ -7,11 +7,12 @@ export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {
 }) {
   const syncStatus = useStore((s) => s.syncStatus);
   const updateInfo = useStore((s) => s.updateInfo);
+  const hideBadge = useStore((s) => s.prefs?.hideConnectionIndicator === 'enable');
   const [conflicts, setConflicts] = useState(0);
   useEffect(() => {
     api.listConflicts().then((c) => setConflicts(Array.isArray(c) ? c.length : 0));
   }, [syncStatus]);
-  if (!syncStatus) return null;
+  if (!syncStatus || hideBadge) return null;
   const state = conflicts > 0 ? 'conflict' : syncStatus.pending > 0 ? 'pending' : 'synced';
   return (
     <footer id="sync-badge" className={state} title={syncStatus.lastError ?? undefined}>

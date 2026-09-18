@@ -20,6 +20,26 @@
   --amber: #ebb355;
   --radius: 10px;
 }
+
+/* light theme (web preference mirror: preferredTheme light|dark|system).
+   Upstream light values: background 249 249 249, fg dark, same violet accent. */
+#app[data-theme='light'] {
+  --bg: #f4f2fb;
+  --panel: #ffffff;
+  --row: #f1ecfc;
+  --row-hover: #e7e0fa;
+  --secondary: #ede4fd;
+  --fg: #1c1533;
+  --muted: #6b6784;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-soft: rgba(124, 58, 237, 0.14);
+  --border: #e3ddf5;
+  --border-soft: #e6e1f4;
+  --danger: #dc2626;
+  --green: #16a34a;
+  --amber: #b45309;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {

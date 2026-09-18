@@ -32,7 +32,8 @@ pub fn run() {
             commands::add_item, commands::set_item_text, commands::set_item_checked, commands::delete_item, commands::reorder_items,
             commands::list_categories, commands::search, commands::trigger_sync, commands::sync_status,
             commands::list_conflicts, commands::resolve_conflict, commands::get_settings, commands::set_sync_interval,
-            commands::check_update, commands::download_update, commands::install_update, commands::restart_app
+            commands::check_update, commands::download_update, commands::install_update, commands::restart_app,
+            commands::get_prefs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

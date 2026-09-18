@@ -108,6 +108,29 @@ pub struct Categories {
     pub checklists: Vec<CategoryNode>,
 }
 
+/// The subset of the upstream per-user preferences the desktop client acts
+/// on. Source: GET /api/user → {user: {...}} (withApiAuth), fields per
+/// upstream app/_types/user.ts. Everything optional: an older/newer server
+/// must never break the parse.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPrefs {
+    #[serde(default)]
+    pub preferred_theme: Option<String>,   // "system" | "light" | "dark" | <custom theme id>
+    #[serde(default)]
+    pub default_note_filter: Option<String>,       // "all" | "recent" | "pinned"
+    #[serde(default)]
+    pub default_checklist_filter: Option<String>,  // "all" | "completed" | "incomplete" | "pinned" | ...
+    #[serde(default)]
+    pub checklist_item_click_action: Option<String>, // "toggle" | "edit"
+    #[serde(default)]
+    pub hide_connection_indicator: Option<String>,   // "enable" | "disable"
+    #[serde(default)]
+    pub pinned_notes: Vec<String>,
+    #[serde(default)]
+    pub pinned_lists: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Created<T> {
