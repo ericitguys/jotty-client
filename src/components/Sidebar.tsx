@@ -2,22 +2,20 @@ import { useStore } from '../stores/store';
 import type { CategoryFilter } from '../stores/store';
 
 export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { categories, selectedCategory, selectCategory, selectNote, selectChecklist, refreshAll } = useStore();
+  const { categories, selectedCategory, selectCategory, listMode, setListMode, refreshAll } = useStore();
   const toggle = (type: CategoryFilter['type'], c: { name: string; path: string }) => {
     const active = selectedCategory?.type === type && selectedCategory.path === c.path;
     selectCategory(active ? null : { type, path: c.path });
-    if (type === 'checklists') {
-      // browsing checklists: close any open editor/view so the list is what's on screen
-      selectNote(null);
-      selectChecklist(null);
-    }
   };
   return (
     <nav id="sidebar">
       <div className="brand">jotty·desktop</div>
-      <h2>Categories</h2>
+      <h2>Sections</h2>
       {selectedCategory && <button className="clear-filter" onClick={() => selectCategory(null)}>Show all</button>}
-      <h3>Notes</h3>
+      <button
+        className={`sec-toggle${listMode === 'notes' ? ' selected' : ''}`}
+        onClick={() => setListMode('notes')}
+      >Notes</button>
       <ul>
         {categories?.notes.map((c) => (
           <li key={c.path}
@@ -25,7 +23,10 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => voi
               onClick={() => toggle('notes', c)}>{c.name} <span className="count">{c.count}</span></li>
         ))}
       </ul>
-      <h3>Checklists</h3>
+      <button
+        className={`sec-toggle${listMode === 'checklists' ? ' selected' : ''}`}
+        onClick={() => setListMode('checklists')}
+      >Checklists</button>
       <ul>
         {categories?.checklists.map((c) => (
           <li key={`cl-${c.path}`}

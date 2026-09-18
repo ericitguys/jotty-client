@@ -12,7 +12,7 @@ import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, selectNote, selectChecklist, refreshAll } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, selectNote, selectChecklist, refreshAll } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -56,9 +56,9 @@ export default function App() {
   return (
     <div id="app">
       <Sidebar onOpenSettings={() => setShowSettings(true)} />
-      <main>
-        <NoteList notes={filteredNotes} />
-        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : <ChecklistList checklists={filteredChecklists}/>}
+      <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
+        {listMode === 'notes' ? <NoteList notes={filteredNotes} /> : <ChecklistList checklists={filteredChecklists} />}
+        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}

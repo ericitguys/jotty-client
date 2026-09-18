@@ -96,6 +96,8 @@ input::placeholder { color: var(--muted); }
   overflow: auto;
   align-content: start;
 }
+/* nothing open: the single active list spans the full width */
+#app > main.list-only { grid-template-columns: 1fr; }
 #app > main > section {
   background: var(--panel);
   border: 1px solid var(--border-soft);
@@ -143,6 +145,19 @@ input::placeholder { color: var(--muted); }
   box-shadow: 0 0 10px var(--accent-soft);
 }
 #sidebar h2 { margin-bottom: 6px; }
+#sidebar .sec-toggle {
+  align-self: flex-start;
+  margin: 10px 0 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #d5d7e6;
+  background: var(--row);
+  border-color: var(--border-soft);
+  cursor: pointer;
+}
+#sidebar .sec-toggle:hover { background: var(--row-hover); color: var(--fg); }
+#sidebar .sec-toggle.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
 #sidebar ul { list-style: none; padding: 0; margin: 0 0 4px; }
 #sidebar li {
   display: flex;

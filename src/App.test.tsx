@@ -11,7 +11,7 @@ import { useStore } from './stores/store';
 beforeEach(() => {
   invoke.mockReset();
   // the store is a module singleton — UI state leaks between tests without a reset
-  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null });
+  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'notes' });
   invoke.mockImplementation((cmd: string) => {
     if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
     if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
@@ -23,10 +23,24 @@ beforeEach(() => {
 });
 
 describe('App shell', () => {
-  it('loads and renders notes and checklists from the backend', async () => {
+  it('shows only the active section: notes by default, checklists via the section header', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
-    expect(screen.getByText('Errands')).toBeInTheDocument();
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // one list at a time
+    expect(document.querySelector('main')).toHaveClass('list-only'); // nothing open -> the list spans the width
+    // switching sections: only the checklists list shows
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
+    await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
+    expect(screen.queryByText('Groceries')).not.toBeInTheDocument();
+  });
+
+  it('opening an item narrows the list beside its editor', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Groceries'));
+    await waitFor(() => expect(screen.getByPlaceholderText('Note title')).toBeInTheDocument());
+    expect(document.querySelector('main')).not.toHaveClass('list-only');
+    expect(screen.getByText('Groceries')).toBeInTheDocument(); // the list stays visible beside the editor
   });
 
   it('not-connected screen auto-opens onboarding modal', async () => {
@@ -80,6 +94,8 @@ describe('App shell', () => {
       return Promise.resolve(null);
     });
     render(<App />);
+    // checklists are only visible in the checklists section
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
     await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
     fireEvent.click(within(screen.getByRole('navigation')).getByText('Trips'));
     await waitFor(() => expect(screen.queryByText('Errands')).not.toBeInTheDocument());

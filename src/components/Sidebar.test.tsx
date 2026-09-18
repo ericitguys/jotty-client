@@ -12,7 +12,8 @@ const cats = {
 };
 
 beforeEach(() => {
-  useStore.setState({ categories: cats, selectedCategory: null });
+  // the store is a module singleton — reset ALL ui state between tests
+  useStore.setState({ categories: cats, selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'notes' });
 });
 
 describe('Sidebar category filtering', () => {
@@ -30,12 +31,14 @@ describe('Sidebar category filtering', () => {
     expect(useStore.getState().selectedCategory).toBeNull();
   });
 
-  it('selecting a checklist category clears open selections so the list is visible', () => {
-    useStore.setState({ selectedCategory: null, selectedNoteId: 'n1', selectedChecklistId: null });
+  it('selecting a checklist category switches to checklists mode and clears open selections', () => {
+    useStore.setState({ selectedCategory: null, selectedNoteId: 'n1', selectedChecklistId: null, listMode: 'notes' });
     render(<Sidebar />);
     fireEvent.click(screen.getByText('Errands'));
-    expect(useStore.getState().selectedCategory).toEqual({ type: 'checklists', path: 'Errands' });
-    expect(useStore.getState().selectedNoteId).toBeNull();
+    const s = useStore.getState();
+    expect(s.selectedCategory).toEqual({ type: 'checklists', path: 'Errands' });
+    expect(s.listMode).toBe('checklists');
+    expect(s.selectedNoteId).toBeNull();
   });
 
   it('show all button clears an active filter', () => {
@@ -43,5 +46,33 @@ describe('Sidebar category filtering', () => {
     render(<Sidebar />);
     fireEvent.click(screen.getByText('Show all'));
     expect(useStore.getState().selectedCategory).toBeNull();
+  });
+});
+
+describe('Sidebar section switching', () => {
+  it('clicking the Checklists header switches to checklists mode and closes open items', () => {
+    useStore.setState({ listMode: 'notes', selectedNoteId: 'n1', selectedCategory: { type: 'notes', path: 'Home' } });
+    render(<Sidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Checklists' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('checklists');
+    expect(s.selectedNoteId).toBeNull();
+    expect(s.selectedCategory).toBeNull();
+  });
+
+  it('clicking the Notes header switches back to notes mode and closes open checklists', () => {
+    useStore.setState({ listMode: 'checklists', selectedChecklistId: 'l1' });
+    render(<Sidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('notes');
+    expect(s.selectedChecklistId).toBeNull();
+  });
+
+  it('the active section header is highlighted', () => {
+    useStore.setState({ listMode: 'checklists' });
+    render(<Sidebar />);
+    expect(screen.getByRole('button', { name: 'Checklists' })).toHaveClass('selected');
+    expect(screen.getByRole('button', { name: 'Notes' })).not.toHaveClass('selected');
   });
 });
