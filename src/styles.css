@@ -145,12 +145,14 @@ input::placeholder { color: var(--muted); }
   box-shadow: 0 0 10px var(--accent-soft);
 }
 #sidebar h2 { margin-bottom: 6px; }
+#sidebar .sec-tabs { display: flex; gap: 6px; margin: 10px 0 6px; }
 #sidebar .sec-toggle {
-  align-self: flex-start;
-  margin: 10px 0 6px;
-  padding: 4px 12px;
+  flex: 1;
+  padding: 4px 6px;
   font-size: 13px;
   font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
   color: #d5d7e6;
   background: var(--row);
   border-color: var(--border-soft);

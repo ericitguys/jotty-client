@@ -103,7 +103,7 @@ describe('App shell', () => {
     expect(within(screen.getByRole('navigation')).getByText('Trips').closest('li')).toHaveClass('selected');
   });
 
-  it('clicking a checklist category shows the checklists list, not the open note', async () => {
+  it('switching to the checklists tab closes an open note; its categories filter the list', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.25.0' });
       if (cmd === 'list_notes') return Promise.resolve([
@@ -126,10 +126,14 @@ describe('App shell', () => {
     // open the note editor
     fireEvent.click(screen.getByText('Groceries'));
     await waitFor(() => expect(screen.getByPlaceholderText('Note title')).toBeInTheDocument());
-    // browse the Trips checklist category -> editor closes, filtered checklists show
-    fireEvent.click(within(screen.getByRole('navigation')).getByText('Trips'));
+    // switch to the checklists tab -> editor closes, checklists show
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
     await waitFor(() => expect(screen.queryByPlaceholderText('Note title')).not.toBeInTheDocument());
-    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // filtered out
+    expect(screen.getByText('Errands')).toBeInTheDocument();
+    expect(screen.getByText('Packing list')).toBeInTheDocument();
+    // a checklist category then filters the list
+    fireEvent.click(within(screen.getByRole('navigation')).getByText('Trips'));
+    await waitFor(() => expect(screen.queryByText('Errands')).not.toBeInTheDocument()); // filtered out
     expect(screen.getByText('Packing list')).toBeInTheDocument();
   });
 

@@ -31,8 +31,9 @@ describe('Sidebar category filtering', () => {
     expect(useStore.getState().selectedCategory).toBeNull();
   });
 
-  it('selecting a checklist category switches to checklists mode and clears open selections', () => {
-    useStore.setState({ selectedCategory: null, selectedNoteId: 'n1', selectedChecklistId: null, listMode: 'notes' });
+  it('selecting a checklist category filters and clears open selections', () => {
+    // checklist categories are only reachable in the checklists tab
+    useStore.setState({ selectedCategory: null, selectedNoteId: 'n1', selectedChecklistId: null, listMode: 'checklists' });
     render(<Sidebar />);
     fireEvent.click(screen.getByText('Errands'));
     const s = useStore.getState();
@@ -74,5 +75,14 @@ describe('Sidebar section switching', () => {
     render(<Sidebar />);
     expect(screen.getByRole('button', { name: 'Checklists' })).toHaveClass('selected');
     expect(screen.getByRole('button', { name: 'Notes' })).not.toHaveClass('selected');
+  });
+
+  it('only the active section shows its categories', () => {
+    render(<Sidebar />);
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // checklist cats hidden in notes mode
+    fireEvent.click(screen.getByRole('button', { name: 'Checklists' }));
+    expect(screen.getByText('Errands')).toBeInTheDocument();
+    expect(screen.queryByText('Work')).not.toBeInTheDocument(); // notes cats hidden in checklists mode
+    expect(screen.queryByText('Home')).not.toBeInTheDocument();
   });
 });
