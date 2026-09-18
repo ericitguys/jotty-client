@@ -10,7 +10,7 @@ use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
     CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit,
-    SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto,
+    SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, VoiceRecordingDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -767,6 +767,108 @@ pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
 
+// ---- voice notes (spec 2026-09-18) -----------------------------------------
+
+fn voice_dto(conn: &Connection, id: &str) -> AppResult<VoiceRecordingDto> {
+    Ok(crate::db::voice::get(conn, id)?
+        .ok_or_else(|| crate::error::AppError::Other("recording vanished".into()))?
+        .into())
+}
+
+pub(crate) fn voice_start_recording_inner(
+    conn: &Connection,
+    voice_dir: &std::path::Path,
+    recorder: &crate::audio::VoiceRecorder,
+    prepare: impl FnOnce() -> Result<crate::audio::PreparedInput, String>,
+) -> AppResult<VoiceRecordingDto> {
+    // device probe FIRST: no partial state on failure (spec §7)
+    let prepared = match prepare() {
+        Ok(p) => p,
+        Err(msg) => return Err(crate::error::AppError::Other(msg)),
+    };
+    std::fs::create_dir_all(voice_dir)
+        .map_err(|e| crate::error::AppError::Other(format!("voice dir: {e}")))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = voice_dir.join(format!("{id}.wav"));
+    crate::db::voice::create_staging(conn, &id, path.to_string_lossy().as_ref())?;
+    // open the WAV now: the file exists from recording start, so a crash
+    // leaves a valid partial file (spec §4)
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: crate::audio::TARGET_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let writer = match hound::WavWriter::create(&path, spec) {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = crate::db::voice::delete_staging(conn, &id);
+            return Err(crate::error::AppError::Other(format!("open wav: {e}")));
+        }
+    };
+    if let Err(msg) = recorder.start(&id, path.clone(), prepared, writer) {
+        let _ = crate::db::voice::delete_staging(conn, &id);
+        let _ = std::fs::remove_file(&path);
+        return Err(crate::error::AppError::Other(msg));
+    }
+    voice_dto(conn, &id)
+}
+
+pub(crate) fn voice_stop_recording_inner(
+    conn: &Connection,
+    recorder: &crate::audio::VoiceRecorder,
+) -> AppResult<VoiceRecordingDto> {
+    let (id, duration) = recorder.stop().map_err(crate::error::AppError::Other)?;
+    crate::db::voice::mark_recorded(conn, &id, duration)?;
+    voice_dto(conn, &id)
+}
+
+pub(crate) fn voice_delete_recording_inner(
+    conn: &Connection,
+    recorder: &crate::audio::VoiceRecorder,
+    recording_id: &str,
+) -> AppResult<()> {
+    // cancel-anytime: if this row owns the live session, stop it first (spec §6)
+    if recorder.active_id().as_deref() == Some(recording_id) {
+        let _ = recorder.stop(); // duration discarded — the row is being deleted
+    }
+    if let Some(rec) = crate::db::voice::get(conn, recording_id)? {
+        let _ = std::fs::remove_file(&rec.path);
+        crate::db::voice::delete_staging(conn, recording_id)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn voice_start_recording(
+    state: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, crate::audio::VoiceRecorder>,
+) -> Result<VoiceRecordingDto, String> {
+    let conn = state.db.lock().await;
+    let dir = crate::audio::voice_dir(&state.db_path);
+    voice_start_recording_inner(&conn, &dir, &recorder, crate::audio::prepare_default_input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_stop_recording(
+    state: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, crate::audio::VoiceRecorder>,
+) -> Result<VoiceRecordingDto, String> {
+    let conn = state.db.lock().await;
+    voice_stop_recording_inner(&conn, &recorder).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_delete_recording(
+    state: tauri::State<'_, AppState>,
+    recorder: tauri::State<'_, crate::audio::VoiceRecorder>,
+    recording_id: String,
+) -> Result<(), String> {
+    let conn = state.db.lock().await;
+    voice_delete_recording_inner(&conn, &recorder, &recording_id).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,5 +1062,99 @@ mod tests {
         let notes: Vec<&str> = cats.notes.iter().map(|n| n.path.as_str()).collect();
         assert_eq!(notes, vec!["ServerCat"]);
         assert_eq!(cats.notes[0].count, 7);
+    }
+
+    #[test]
+    fn voice_start_no_device_creates_no_partial_state() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let voice_dir = std::path::Path::new(dir.path()).join("voice");
+        std::mem::forget(dir);
+        let recorder = crate::audio::VoiceRecorder::default();
+        let err = voice_start_recording_inner(
+            &conn,
+            &voice_dir,
+            &recorder,
+            || Err("no microphone available".into()),
+        ).unwrap_err();
+        assert!(err.to_string().contains("no microphone"));
+        // nothing created: no staging row, no file, no live session
+        assert!(crate::db::voice::list_unsaved(&conn).unwrap().is_empty());
+        assert!(recorder.active_id().is_none());
+    }
+
+    #[test]
+    fn voice_start_stream_build_failure_cleans_up_row_and_file() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let voice_dir = std::path::Path::new(dir.path()).join("voice");
+        std::mem::forget(dir);
+        let recorder = crate::audio::VoiceRecorder::default();
+        let prepared = crate::audio::PreparedInput {
+            config: cpal::StreamConfig {
+                channels: 1,
+                sample_rate: 48_000,
+                buffer_size: cpal::BufferSize::Default,
+            },
+            sample_format: cpal::SampleFormat::F32,
+            build: Box::new(|_tx| Err("open mic stream: boom".into())),
+        };
+        let err = voice_start_recording_inner(&conn, &voice_dir, &recorder, || Ok(prepared)).unwrap_err();
+        assert!(err.to_string().contains("boom"));
+        let rows = crate::db::voice::list_unsaved(&conn).unwrap();
+        let _ = rows; // row deleted below; also assert no file survived
+        let files: Vec<_> = std::fs::read_dir(&voice_dir)
+            .map(|rd| rd.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        assert!(files.is_empty(), "wav must be cleaned up");
+        assert!(recorder.active_id().is_none());
+        // the staging row was deleted too (list_unsaved excludes 'recording', so query directly)
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM voice_recordings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn voice_stop_without_session_errors() {
+        let conn = db();
+        let recorder = crate::audio::VoiceRecorder::default();
+        let err = voice_stop_recording_inner(&conn, &recorder).unwrap_err();
+        assert!(err.to_string().contains("not recording"));
+    }
+
+    #[test]
+    fn voice_delete_removes_row_and_file_and_stops_active_session() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.wav");
+        std::mem::forget(dir);
+        std::fs::write(&path, b"fake").unwrap();
+        crate::db::voice::create_staging(&conn, "r1", path.to_string_lossy().as_ref()).unwrap();
+        let recorder = crate::audio::VoiceRecorder::default();
+        voice_delete_recording_inner(&conn, &recorder, "r1").unwrap();
+        assert!(crate::db::voice::get(&conn, "r1").unwrap().is_none());
+        assert!(!path.exists());
+        // unknown id: no-op, no error
+        voice_delete_recording_inner(&conn, &recorder, "gone").unwrap();
+    }
+
+    #[test]
+    fn voice_recording_dto_serializes_camel_case() {
+        let dto = crate::commands::dto::VoiceRecordingDto {
+            id: "r1".into(),
+            path: "/tmp/r1.wav".into(),
+            duration_secs: 12.5,
+            raw_transcript: Some("hi".into()),
+            tidied_transcript: None,
+            state: "transcribed".into(),
+            last_error: None,
+            created_at: "2026-09-18T00:00:00+00:00".into(),
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert!(v.get("durationSecs").is_some());
+        assert!(v.get("rawTranscript").is_some());
+        assert!(v.get("tidiedTranscript").is_some());
+        assert!(v.get("lastError").is_some());
+        assert!(v.get("createdAt").is_some());
+        assert!(v.get("duration_secs").is_none());
     }
 }

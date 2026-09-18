@@ -25,6 +25,7 @@ log = "0.4"
 semver = "1"
 base64 = "0.22"
 hound = "3.5"
+cpal = "0.18"
 
 [dev-dependencies]
 wiremock = "0.6"

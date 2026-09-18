@@ -276,3 +276,136 @@ mod tests {
         assert!(hound::WavReader::open(&path).is_ok()); // valid header despite no Stop
     }
 }
+
+// --- recorder (cpal) --------------------------------------------------------
+// Headless-untestable except the injected failure paths (spec §8: capture
+// device access is gated). Real-mic capture is a MANUAL release smoke gate.
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+pub struct PreparedInput {
+    pub config: cpal::StreamConfig,
+    pub sample_format: cpal::SampleFormat,
+    /// Builds the input stream for this device; boxed so tests can inject
+    /// a build failure and prove the cleanup path.
+    pub build: Box<dyn FnOnce(mpsc::Sender<Ctrl>) -> Result<cpal::Stream, String> + Send>,
+}
+
+/// Probe the default input device and its best config. Device-native rate and
+/// channel count are captured here; normalization to 16 kHz mono happens in
+/// the writer thread (spec §4).
+pub fn prepare_default_input() -> Result<PreparedInput, String> {
+    let device = cpal::default_host()
+        .default_input_device()
+        .ok_or("no microphone available")?;
+    let supported = device
+        .supported_input_configs()
+        .map_err(|e| format!("query microphone configs: {e}"))?
+        .next()
+        .ok_or("microphone exposes no input configuration")?
+        .with_max_sample_rate();
+    let config: cpal::StreamConfig = supported.clone().into();
+    let sample_format = supported.sample_format();
+    let dev = device.clone();
+    let cfg = config.clone();
+    Ok(PreparedInput {
+        config,
+        sample_format,
+        build: Box::new(move |tx: mpsc::Sender<Ctrl>| {
+            let err_fn = |e| log::warn!("audio input error: {e}");
+            // manual conversion avoids depending on cpal sample-conversion traits
+            let stream = match sample_format {
+                cpal::SampleFormat::F32 => dev.build_input_stream(
+                    cfg,
+                    move |d: &[f32], _: &cpal::InputCallbackInfo| { let _ = tx.send(Ctrl::Samples(d.to_vec())); },
+                    err_fn,
+                    None,
+                ),
+                cpal::SampleFormat::I16 => dev.build_input_stream(
+                    cfg,
+                    move |d: &[i16], _: &cpal::InputCallbackInfo| {
+                        let _ = tx.send(Ctrl::Samples(d.iter().map(|s| *s as f32 / 32768.0).collect()));
+                    },
+                    err_fn,
+                    None,
+                ),
+                cpal::SampleFormat::U16 => dev.build_input_stream(
+                    cfg,
+                    move |d: &[u16], _: &cpal::InputCallbackInfo| {
+                        let _ = tx.send(Ctrl::Samples(d.iter().map(|s| (*s as f32 - 32768.0) / 32768.0).collect()));
+                    },
+                    err_fn,
+                    None,
+                ),
+                other => return Err(format!("unsupported microphone sample format: {other:?}")),
+            }
+            .map_err(|e| format!("open mic stream: {e}"))?;
+            stream.play().map_err(|e| format!("start mic stream: {e}"))?;
+            Ok(stream)
+        }),
+    })
+}
+
+#[derive(Default)]
+pub struct VoiceRecorder {
+    session: std::sync::Mutex<Option<Session>>,
+}
+
+struct Session {
+    recording_id: String,
+    path: std::path::PathBuf,
+    ctrl: mpsc::Sender<Ctrl>,
+    handle: std::thread::JoinHandle<f64>,
+}
+
+impl VoiceRecorder {
+    pub fn active_id(&self) -> Option<String> {
+        self.session.lock().unwrap().as_ref().map(|s| s.recording_id.clone())
+    }
+
+    /// Begin capture: spawn the writer thread and hand over the stream.
+    /// The stream lives on the recorder thread (its callback feeds `tx`), so
+    /// cpal's Send-ness never crosses a thread boundary here.
+    pub fn start(
+        &self,
+        recording_id: &str,
+        path: std::path::PathBuf,
+        prepared: PreparedInput,
+        writer: hound::WavWriter<BufWriter<std::fs::File>>,
+    ) -> Result<(), String> {
+        let mut guard = self.session.lock().unwrap();
+        if guard.is_some() {
+            return Err("a recording is already active".into());
+        }
+        let PreparedInput { config, build, .. } = prepared;
+        let (rate, channels) = (config.sample_rate, config.channels);
+        let (tx, rx) = mpsc::channel::<Ctrl>();
+        let stream = build(tx.clone())?;
+        let handle = std::thread::spawn(move || {
+            let _keepalive = stream; // dropping the stream ends the callback
+            run_writer(rx, writer, rate, channels)
+        });
+        *guard = Some(Session {
+            recording_id: recording_id.into(),
+            path,
+            ctrl: tx,
+            handle,
+        });
+        Ok(())
+    }
+
+    /// Stop capture, wait for the writer to finalize, return (id, duration).
+    /// Blocking join is fine here: the writer thread is parked in recv() and
+    /// exits promptly on Ctrl::Stop.
+    pub fn stop(&self) -> Result<(String, f64), String> {
+        let mut guard = self.session.lock().unwrap();
+        let Some(session) = guard.take() else {
+            return Err("not recording".into());
+        };
+        let _ = session.ctrl.send(Ctrl::Stop);
+        let duration = session
+            .handle
+            .join()
+            .map_err(|_| "recorder thread crashed".to_string())?;
+        Ok((session.recording_id, duration))
+    }
+}

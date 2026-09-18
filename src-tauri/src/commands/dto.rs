@@ -203,3 +203,31 @@ pub struct SyncStatusDto {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceRecordingDto {
+    pub id: String,
+    pub path: String,
+    pub duration_secs: f64,
+    pub raw_transcript: Option<String>,
+    pub tidied_transcript: Option<String>,
+    pub state: String,
+    pub last_error: Option<String>,
+    pub created_at: String,
+}
+
+impl From<crate::db::voice::VoiceRecordingRow> for VoiceRecordingDto {
+    fn from(r: crate::db::voice::VoiceRecordingRow) -> Self {
+        VoiceRecordingDto {
+            id: r.id,
+            path: r.path,
+            duration_secs: r.duration_secs,
+            raw_transcript: r.raw_transcript,
+            tidied_transcript: r.tidied_transcript,
+            state: r.state,
+            last_error: r.last_error,
+            created_at: r.created_at,
+        }
+    }
+}
+

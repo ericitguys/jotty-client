@@ -19,6 +19,7 @@ pub fn run() {
             std::fs::create_dir_all(&db_dir)?;
             let conn = db::open(&db_dir.join("jotty.db"))?;
             db::migrations::run(&conn)?;
+            app.manage(crate::audio::VoiceRecorder::default());
             // restore connection if instance_url exists
             let state = state::AppState::new(conn, Box::new(keys::OsKeyStore))?;
             state.restore_connection(app.handle().clone()); // spawns task: rebuild client from url+keyring, no auto-sync
@@ -34,7 +35,8 @@ pub fn run() {
             commands::list_categories, commands::search, commands::trigger_sync, commands::sync_status,
             commands::list_conflicts, commands::resolve_conflict, commands::get_settings, commands::set_sync_interval,
             commands::check_update, commands::download_update, commands::install_update, commands::restart_app,
-            commands::get_prefs, commands::get_branding
+            commands::get_prefs, commands::get_branding,
+            commands::voice_start_recording, commands::voice_stop_recording, commands::voice_delete_recording,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
