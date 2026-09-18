@@ -1,3 +1,4 @@
+pub mod categories;
 pub mod checklists;
 pub mod items;
 pub mod migrations;

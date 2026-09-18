@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as api from '../api/client';
+import { deriveCategories } from '../api/categories';
 import type * as T from '../api/types';
 
 interface AppState {
@@ -68,6 +69,12 @@ export const useStore = create<AppState>((set, get) => ({
     // Mirror-only fields overwrite only on a successful fetch so a transient
     // failure keeps the last known value (offline-safe, no flicker).
     if (categories) set({ categories });
+    else if (!get().categories) {
+      // Cold-start offline fallback: there is no last-known value to preserve,
+      // so derive the tree from the local rows fetched above — the same
+      // derivation the server performs on its own rows (api/categories.ts).
+      set({ categories: deriveCategories(notes ?? [], checklists ?? []) });
+    }
     if (prefs) set({ prefs });
     if (branding) set({ branding });
   },

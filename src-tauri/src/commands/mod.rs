@@ -623,12 +623,27 @@ pub async fn reorder_items(
 }
 
 // Ruling K: via the state client's get_categories (DTO wrapper shape here).
+// v0.9.2 offline fallback: the live fetch stays the online source of truth
+// (server-side sharing/permission filtering + custom order file); on ANY
+// failure — or when no client is configured/restored yet — the tree is
+// derived locally from the synced note/checklist category strings
+// (db::categories::derive_local). A fresh offline start previously rendered
+// an empty sidebar tree. The connect-time auth probe (inner_connect) keeps
+// calling get_categories directly and is unaffected.
+pub(crate) async fn inner_list_categories(state: &AppState) -> AppResult<crate::jotty::models::Categories> {
+    let client = state.client.read().await.clone();
+    if let Some(client) = client {
+        if let Ok(cats) = client.get_categories().await {
+            return Ok(cats);
+        }
+    }
+    let conn = state.db.lock().await;
+    crate::db::categories::derive_local(&conn)
+}
+
 #[tauri::command]
 pub async fn list_categories(state: tauri::State<'_, AppState>) -> Result<CategoriesDto, String> {
-    let Some(client) = state.client.read().await.clone() else {
-        return Err(AppError::NotConnected.to_string());
-    };
-    let cats = client.get_categories().await.map_err(|e| e.to_string())?;
+    let cats = inner_list_categories(&state).await.map_err(|e| e.to_string())?;
     Ok(CategoriesDto::from(cats))
 }
 
@@ -876,5 +891,74 @@ mod tests {
         state.keystore.set("ck_key").unwrap();
         // key present but no instance_url row: never connected -> None
         assert!(inner_get_connection(&state).await.unwrap().is_none());
+    }
+
+    // ---- v0.9.2 offline categories: live fetch first, local derivation fallback ----
+
+    #[tokio::test]
+    async fn list_categories_derives_locally_when_client_is_none() {
+        use crate::keys::MockKeyStore;
+        let mut conn = db();
+        create_note_inner(&mut conn, "A", "Work/Projects").unwrap();
+        create_note_inner(&mut conn, "B", "Home").unwrap();
+        create_checklist_inner(&mut conn, "C", "Home").unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        // client deliberately None (offline start): the command must still resolve
+        let cats = inner_list_categories(&state).await.unwrap();
+        let notes: Vec<&str> = cats.notes.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(notes, vec!["Home", "Work", "Work/Projects"]);
+        let work = cats.notes.iter().find(|n| n.path == "Work").unwrap();
+        assert_eq!(work.count, 0);
+        let projects = cats.notes.iter().find(|n| n.path == "Work/Projects").unwrap();
+        assert_eq!(projects.count, 1);
+        let checklists: Vec<&str> = cats.checklists.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(checklists, vec!["Home"]);
+    }
+
+    #[tokio::test]
+    async fn list_categories_falls_back_to_local_when_live_fetch_fails() {
+        use crate::jotty::client::JottyClient;
+        use crate::keys::MockKeyStore;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let mut conn = db();
+        create_note_inner(&mut conn, "A", "Home").unwrap();
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/categories"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&s).await;
+        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        *state.client.write().await = Some(JottyClient::new(&s.uri(), "ck").unwrap());
+        // live fetch 500s -> the locally derived tree is served (offline UX)
+        let cats = inner_list_categories(&state).await.unwrap();
+        let notes: Vec<&str> = cats.notes.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(notes, vec!["Home"]);
+    }
+
+    #[tokio::test]
+    async fn list_categories_prefers_live_server_tree() {
+        use crate::jotty::client::JottyClient;
+        use crate::keys::MockKeyStore;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let mut conn = db();
+        // local row in a category the server tree does NOT report:
+        // the live server tree must win untouched
+        create_note_inner(&mut conn, "A", "Home").unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/categories"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "categories": {
+                    "notes": [{"name": "ServerCat", "path": "ServerCat", "count": 7, "level": 0}],
+                    "checklists": []
+                }
+            })))
+            .mount(&s).await;
+        *state.client.write().await = Some(JottyClient::new(&s.uri(), "ck").unwrap());
+        let cats = inner_list_categories(&state).await.unwrap();
+        let notes: Vec<&str> = cats.notes.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(notes, vec!["ServerCat"]);
+        assert_eq!(cats.notes[0].count, 7);
     }
 }

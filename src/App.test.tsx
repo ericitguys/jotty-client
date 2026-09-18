@@ -12,7 +12,7 @@ import { listen } from '@tauri-apps/api/event';
 beforeEach(() => {
   invoke.mockReset();
   // the store is a module singleton — UI state leaks between tests without a reset
-  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'notes' });
+  useStore.setState({ categories: null, selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'notes' });
   invoke.mockImplementation((cmd: string) => {
     if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
     if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
@@ -53,10 +53,13 @@ describe('App shell', () => {
     await waitFor(() => expect(screen.getByText('Connect to jotty')).toBeInTheDocument());
   });
 
-  it('offline start: local data renders even when the live categories fetch fails', async () => {
+  it('offline start: local data renders, categories derive from local rows even though the live fetch fails', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: null });
-      if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false },
+        { id: 'n2', title: 'Worklog', content: 'x', category: 'Work/Deep', updatedAt: '2026-01-02T00:00:00.000Z', dirty: false },
+      ]);
       if (cmd === 'list_checklists') return Promise.resolve([]);
       if (cmd === 'list_categories') return Promise.reject(new Error('network unreachable')); // live fetch, offline
       if (cmd === 'sync_status') return Promise.resolve({ pending: 2, last_sync_at: null, syncing: false, lastError: 'network unreachable' });
@@ -65,6 +68,11 @@ describe('App shell', () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument()); // the local copy renders
     expect(screen.queryByText('Connect to jotty')).not.toBeInTheDocument(); // no onboarding prompt
+    // categories are derived from the local rows when the live fetch failed:
+    const nav = within(screen.getByRole('navigation'));
+    expect(nav.getByText('Home')).toBeInTheDocument();
+    expect(nav.getByText('Work')).toBeInTheDocument(); // intermediate node of Work/Deep
+    expect(nav.getByText('Deep')).toBeInTheDocument();
   });
 
   it('a failed categories refresh keeps the last categories and still refreshes the rest', async () => {
