@@ -12,6 +12,8 @@ interface AppState {
   selectedChecklistId: string | null;
   selectedCategory: CategoryFilter | null;
   listMode: ListMode;
+  updateInfo: T.UpdateInfo | null;
+  refreshUpdate: () => Promise<void>;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -38,6 +40,15 @@ export const useStore = create<AppState>((set, get) => ({
   selectedChecklistId: null,
   selectedCategory: null,
   listMode: 'notes',
+  updateInfo: null,
+  refreshUpdate: async () => {
+    try {
+      const info = await api.checkUpdate();
+      set({ updateInfo: info });
+    } catch {
+      // offline / rate-limited / private repo: never surface update errors unprompted
+    }
+  },
   refreshAll: async () => {
     const [connection, notes, checklists, categories, syncStatus] = await Promise.all([
       api.getConnection(), api.listNotes(), api.listChecklists(), api.listCategories(), api.syncStatus(),

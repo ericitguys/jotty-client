@@ -386,6 +386,27 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
 }
 #sync-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+#sync-badge .update-chip {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+#sync-badge .update-chip:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* settings: self-update */
+.updater {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-soft);
+}
+.updater-version { color: var(--muted); font-size: 12px; }
+.updater-avail { color: var(--amber); font-size: 13px; font-weight: 600; }
+.updater-ok { color: #7ee2a8; font-size: 13px; }
 #sync-badge.synced .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
 #sync-badge.pending .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
 #sync-badge.conflict .dot { background: var(--danger); box-shadow: 0 0 8px var(--danger); }

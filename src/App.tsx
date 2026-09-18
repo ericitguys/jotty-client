@@ -12,7 +12,7 @@ import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, selectNote, selectChecklist, refreshAll } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -29,9 +29,10 @@ export default function App() {
 
   useEffect(() => {
     refreshAll();
+    refreshUpdate();
     const un = listen('sync-updated', () => refreshAll());
     return () => { un.then((f) => f()); };
-  }, [refreshAll]);
+  }, [refreshAll, refreshUpdate]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -60,7 +61,7 @@ export default function App() {
         {listMode === 'notes' ? <NoteList notes={filteredNotes} /> : <ChecklistList checklists={filteredChecklists} />}
         {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
-      <SyncBadge onOpenConflicts={() => setShowConflicts(true)} />
+      <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}
       {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) => selectChecklist(id)} />}
       {showSettings && <SettingsModal mode="settings" onClose={() => setShowSettings(false)} />}

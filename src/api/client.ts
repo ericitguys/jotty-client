@@ -27,3 +27,7 @@ export const connectInstance = (url: string, apiKey: string) => invoke<T.Connect
 export const disconnectInstance = () => invoke<void>('disconnect_instance');
 export const getSettings = () => invoke<{ instanceUrl: string | null; syncIntervalMinutes: number }>('get_settings');
 export const setSyncInterval = (minutes: number) => invoke<void>('set_sync_interval', { minutes });
+export const checkUpdate = () => invoke<T.UpdateInfo>('check_update');
+export const downloadUpdate = (url: string) => invoke<string>('download_update', { url });
+export const installUpdate = (path: string) => invoke<void>('install_update', { path });
+export const restartApp = () => invoke<void>('restart_app');

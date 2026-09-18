@@ -5,6 +5,7 @@ pub mod jotty;
 pub mod keys;
 pub mod state;
 pub mod sync;
+pub mod updater;
 
 pub use sync::spawn_scheduler;
 
@@ -30,7 +31,8 @@ pub fn run() {
             commands::list_checklists, commands::get_checklist, commands::create_checklist, commands::update_checklist, commands::delete_checklist,
             commands::add_item, commands::set_item_text, commands::set_item_checked, commands::delete_item, commands::reorder_items,
             commands::list_categories, commands::search, commands::trigger_sync, commands::sync_status,
-            commands::list_conflicts, commands::resolve_conflict, commands::get_settings, commands::set_sync_interval
+            commands::list_conflicts, commands::resolve_conflict, commands::get_settings, commands::set_sync_interval,
+            commands::check_update, commands::download_update, commands::install_update, commands::restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

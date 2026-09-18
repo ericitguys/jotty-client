@@ -3,6 +3,7 @@
 //! the outbox op inside ONE `conn.transaction()`.
 pub mod dto;
 
+use tauri::Manager;
 use crate::db::{checklists, items, notes, outbox};
 use crate::error::{AppError, AppResult};
 use crate::jotty::client::JottyClient;
@@ -623,6 +624,42 @@ pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<SettingsD
 pub async fn set_sync_interval(state: tauri::State<'_, AppState>, minutes: i64) -> Result<(), String> {
     let conn = state.db.lock().await;
     set_sync_interval_inner(&conn, minutes).map_err(|e| e.to_string())
+}
+
+// ---- self-update ----
+
+#[tauri::command]
+pub async fn check_update() -> Result<crate::updater::UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION");
+    crate::updater::check("https://api.github.com", current).await
+}
+
+#[tauri::command]
+pub async fn download_update(
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("no cache dir: {e}"))?
+        .join("updates");
+    let path = crate::updater::download(&url, &dir).await?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn install_update(path: String) -> Result<(), String> {
+    // blocking process spawn (pkexec waits for the polkit dialog) — keep it
+    // off the async runtime's worker threads
+    tokio::task::spawn_blocking(move || crate::updater::install(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| format!("installer task failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[cfg(test)]
