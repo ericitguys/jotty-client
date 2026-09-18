@@ -7,6 +7,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => async () => 
 
 import App from './App';
 import { useStore } from './stores/store';
+import { listen } from '@tauri-apps/api/event';
 
 beforeEach(() => {
   invoke.mockReset();
@@ -50,6 +51,40 @@ describe('App shell', () => {
     });
     render(<App />);
     await waitFor(() => expect(screen.getByText('Connect to jotty')).toBeInTheDocument());
+  });
+
+  it('offline start: local data renders even when the live categories fetch fails', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: null });
+      if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.reject(new Error('network unreachable')); // live fetch, offline
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 2, last_sync_at: null, syncing: false, lastError: 'network unreachable' });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument()); // the local copy renders
+    expect(screen.queryByText('Connect to jotty')).not.toBeInTheDocument(); // no onboarding prompt
+  });
+
+  it('a failed categories refresh keeps the last categories and still refreshes the rest', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    // the instance becomes unreachable mid-session: the live categories fetch fails
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([{ id: 'n2', title: 'Standup', content: 'x', category: 'Work', updatedAt: '2026-01-02T00:00:00.000Z', dirty: false }]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.reject(new Error('network unreachable'));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 1, last_sync_at: null, syncing: false });
+      return Promise.resolve(null);
+    });
+    const calls = vi.mocked(listen).mock.calls;
+    const handler = calls[calls.length - 1][1] as () => Promise<void>;
+    await act(async () => { await handler(); });
+    await waitFor(() => expect(screen.getByText('Standup')).toBeInTheDocument()); // the rest still refreshes
+    expect(within(screen.getByRole('navigation')).getByText('Home')).toBeInTheDocument(); // categories preserved
+    expect(screen.queryByText('Connect to jotty')).not.toBeInTheDocument();
   });
 
   it('clicking a sidebar category filters notes; clicking again clears', async () => {

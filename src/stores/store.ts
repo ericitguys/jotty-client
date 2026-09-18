@@ -55,13 +55,20 @@ export const useStore = create<AppState>((set, get) => ({
   },
   refreshAll: async () => {
     const [connection, notes, checklists, categories, syncStatus, prefs, branding] = await Promise.all([
-      api.getConnection(), api.listNotes(), api.listChecklists(), api.listCategories(), api.syncStatus(),
-      api.getPrefs().catch(() => null), // prefs are a mirror — never block the sync refresh on them
-      api.getBranding().catch(() => null), // same for instance branding (name + logo)
+      api.getConnection(), api.listNotes(), api.listChecklists(),
+      // listCategories is a LIVE server fetch: offline it fails, and an unguarded
+      // rejection killed the WHOLE refresh — connection stayed null and the app
+      // fell back to the onboarding screen on an offline start (v0.9.1 fix).
+      api.listCategories().catch(() => null),
+      api.syncStatus(),
+      api.getPrefs().catch(() => null),
+      api.getBranding().catch(() => null),
     ]);
-    set({ connection, notes, checklists, categories, syncStatus, prefs });
-    // branding: only overwrite on a successful fetch so a transient failure
-    // keeps the last known name/logo instead of flickering back to defaults
+    set({ connection, notes, checklists, syncStatus });
+    // Mirror-only fields overwrite only on a successful fetch so a transient
+    // failure keeps the last known value (offline-safe, no flicker).
+    if (categories) set({ categories });
+    if (prefs) set({ prefs });
     if (branding) set({ branding });
   },
   selectNote: (id) => {

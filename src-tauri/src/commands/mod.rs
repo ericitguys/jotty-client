@@ -390,16 +390,31 @@ pub(crate) async fn inner_disconnect(state: &AppState) -> AppResult<()> {
 }
 
 // Ruling P: get_connection returns version None in v1 (no network in a getter).
+// Offline-launch fix (v0.9.1): "configured" is a LOCAL fact — the instance_url
+// row plus a key in the keystore. The restore task rebuilds the in-memory
+// client asynchronously, so a mount-time getter racing that restore must still
+// report the configured instance; offline there is no sync-updated event to
+// re-fetch later, and stranding on the onboarding screen (asking again for the
+// URL + API key) defeated the whole point of the offline client.
 pub(crate) async fn inner_get_connection(state: &AppState) -> AppResult<Option<ConnectInfo>> {
-    let connected = state.client.read().await.is_some();
-    if !connected {
-        return Ok(None);
+    let url: Option<String> = {
+        let conn = state.db.lock().await;
+        conn.query_row(
+            "SELECT value FROM sync_state WHERE key='instance_url'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?
+    };
+    let Some(url) = url else { return Ok(None) };
+    // fast path: the client is already live (fresh connect or finished restore)
+    if state.client.read().await.is_some() {
+        return Ok(Some(ConnectInfo { instance_url: url, version: None }));
     }
-    let conn = state.db.lock().await;
-    let url: Option<String> = conn
-        .query_row("SELECT value FROM sync_state WHERE key='instance_url'", [], |r| r.get(0))
-        .optional()?;
-    Ok(url.map(|u| ConnectInfo { instance_url: u, version: None }))
+    // restore still pending (launch window): decide from the keystore — local,
+    // no network. Missing key = genuinely unusable -> None (onboarding stays).
+    let key = state.keystore.get().unwrap_or(None);
+    Ok(key.map(|_| ConnectInfo { instance_url: url, version: None }))
 }
 
 // The verbatim sync::do_sync (Task 13 transplant) returns () and reports via the
@@ -819,5 +834,47 @@ mod tests {
         let s = sync_status_inner(&conn, false).unwrap();
         assert_eq!(s.pending, 2);
         assert_eq!(s.last_error.as_deref(), Some("connection refused"));
+    }
+
+    // ---- offline-launch fix: get_connection must report CONFIGURED
+    // deterministically from local state, not from the async restore task ----
+
+    #[tokio::test]
+    async fn get_connection_reports_configured_before_client_restore() {
+        use crate::keys::MockKeyStore;
+        let conn = db();
+        conn.execute(
+            "INSERT INTO sync_state(key,value) VALUES ('instance_url','http://localhost:1122')",
+            [],
+        ).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        state.keystore.set("ck_key").unwrap();
+        // client deliberately None: the restore task hasn't rebuilt it yet
+        let info = inner_get_connection(&state).await.unwrap();
+        let info = info.expect("configured (url row + keystore key) must be Some before the client is restored");
+        assert_eq!(info.instance_url, "http://localhost:1122");
+        assert!(info.version.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_connection_none_when_keystore_key_missing() {
+        use crate::keys::MockKeyStore;
+        let conn = db();
+        conn.execute(
+            "INSERT INTO sync_state(key,value) VALUES ('instance_url','http://localhost:1122')",
+            [],
+        ).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        // url row but no key: unusable connection -> onboarding stays correct
+        assert!(inner_get_connection(&state).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn get_connection_none_when_never_configured() {
+        use crate::keys::MockKeyStore;
+        let state = AppState::new(db(), Box::new(MockKeyStore::default())).unwrap();
+        state.keystore.set("ck_key").unwrap();
+        // key present but no instance_url row: never connected -> None
+        assert!(inner_get_connection(&state).await.unwrap().is_none());
     }
 }
