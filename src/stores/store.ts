@@ -15,6 +15,7 @@ interface AppState {
   updateInfo: T.UpdateInfo | null;
   refreshUpdate: () => Promise<void>;
   prefs: T.UserPrefs | null;
+  branding: T.Branding | null;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -43,6 +44,7 @@ export const useStore = create<AppState>((set, get) => ({
   listMode: 'notes',
   updateInfo: null,
   prefs: null,
+  branding: null,
   refreshUpdate: async () => {
     try {
       const info = await api.checkUpdate();
@@ -52,11 +54,15 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   refreshAll: async () => {
-    const [connection, notes, checklists, categories, syncStatus, prefs] = await Promise.all([
+    const [connection, notes, checklists, categories, syncStatus, prefs, branding] = await Promise.all([
       api.getConnection(), api.listNotes(), api.listChecklists(), api.listCategories(), api.syncStatus(),
       api.getPrefs().catch(() => null), // prefs are a mirror — never block the sync refresh on them
+      api.getBranding().catch(() => null), // same for instance branding (name + logo)
     ]);
     set({ connection, notes, checklists, categories, syncStatus, prefs });
+    // branding: only overwrite on a successful fetch so a transient failure
+    // keeps the last known name/logo instead of flickering back to defaults
+    if (branding) set({ branding });
   },
   selectNote: (id) => {
     // selecting an entity of a type implies browsing that section

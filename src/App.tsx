@@ -12,8 +12,21 @@ import SettingsModal from './components/SettingsModal';
 import { useStore } from './stores/store';
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
+
+  // Branding mirror: window title follows the instance's app name. The native
+  // setTitle call is best-effort (skipped outside a real webview, e.g. tests).
+  const title = branding?.name ?? 'jotty·desktop';
+  useEffect(() => {
+    document.title = title;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().setTitle(title);
+      } catch { /* not in a Tauri webview (vitest) or unsupported */ }
+    })();
+  }, [title]);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 

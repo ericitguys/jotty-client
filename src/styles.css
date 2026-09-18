@@ -164,6 +164,15 @@ input::placeholder { color: var(--muted); }
   background: var(--accent);
   box-shadow: 0 0 10px var(--accent-soft);
 }
+/* custom instance logo replaces the default square */
+#sidebar .brand:has(.brand-icon)::before { display: none; }
+#sidebar .brand-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
 #sidebar h2 { margin-bottom: 6px; }
 #sidebar .sec-tabs { display: flex; gap: 6px; margin: 10px 0 6px; }
 #sidebar .sec-toggle {

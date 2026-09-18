@@ -2,6 +2,14 @@
 use crate::db::{checklists, items, notes};
 use serde::Serialize;
 
+/// Instance branding (v0.9.0): name + icon data-URL from /api/manifest.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrandingDto {
+    pub name: Option<String>,
+    pub icon_data_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteDto {

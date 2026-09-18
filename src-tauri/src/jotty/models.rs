@@ -1,5 +1,28 @@
 use serde::{Deserialize, Serialize};
 
+/// PWA manifest served publicly at /api/manifest. Upstream regenerates
+/// data/site.webmanifest from settings on every page render, so `name` and the
+/// icon list always reflect the admin's current branding (v0.9.0).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct WebManifest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub short_name: Option<String>,
+    #[serde(default)]
+    pub icons: Vec<ManifestIcon>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ManifestIcon {
+    pub src: String,
+    #[serde(default)]
+    pub sizes: String,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    pub mime: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerNote {

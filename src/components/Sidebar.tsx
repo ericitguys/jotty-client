@@ -2,14 +2,17 @@ import { useStore } from '../stores/store';
 import type { CategoryFilter } from '../stores/store';
 
 export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const { categories, selectedCategory, selectCategory, listMode, setListMode, refreshAll } = useStore();
+  const { categories, selectedCategory, selectCategory, listMode, setListMode, refreshAll, branding } = useStore();
   const toggle = (type: CategoryFilter['type'], c: { name: string; path: string }) => {
     const active = selectedCategory?.type === type && selectedCategory.path === c.path;
     selectCategory(active ? null : { type, path: c.path });
   };
   return (
     <nav id="sidebar">
-      <div className="brand">jotty·desktop</div>
+      <div className="brand">
+        {branding?.iconDataUrl && <img src={branding.iconDataUrl} alt="" className="brand-icon" />}
+        {branding?.name ?? 'jotty·desktop'}
+      </div>
       <h2>Sections</h2>
       {selectedCategory && <button className="clear-filter" onClick={() => selectCategory(null)}>Show all</button>}
       <div className="sec-tabs">

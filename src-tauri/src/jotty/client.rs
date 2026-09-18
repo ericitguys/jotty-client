@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, UserPrefs};
+use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, UserPrefs, WebManifest};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone)]
@@ -7,6 +7,35 @@ pub struct JottyClient {
     http: reqwest::Client,
     base_url: String,
     api_key: String,
+}
+
+/// Instance branding resolved from /api/manifest (v0.9.0).
+#[derive(Debug, Clone)]
+pub struct BrandingData {
+    pub name: Option<String>,
+    pub icon_data_url: Option<String>,
+    /// raw icon bytes — used by the command layer for the best-effort
+    /// window/taskbar icon (set_icon); never serialized to the frontend.
+    pub icon_bytes: Option<Vec<u8>>,
+}
+
+fn icon_mime(src: &str) -> &'static str {
+    let ext = src.rsplit(['.', '/', '?']).next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+fn to_data_url(src: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("data:{};base64,{}", icon_mime(src), b64)
 }
 
 fn is_local(url: &reqwest::Url) -> bool {
@@ -86,6 +115,45 @@ impl JottyClient {
         let v = self.api_get::<serde_json::Value>("/api/user").await?;
         Ok(serde_json::from_value(v["user"].clone())
             .map_err(|e| AppError::Other(format!("parse /api/user: {e}")))?)
+    }
+
+    /// Instance branding (v0.9.0). Upstream writes the live app name + icon
+    /// URLs into data/site.webmanifest on every page render and serves it
+    /// publicly at /api/manifest; uploaded icon files are served publicly at
+    /// /api/app-icons/<filename> — both without auth, so branding mirrors even
+    /// for read-only API-key users.
+    pub async fn get_branding(&self) -> AppResult<BrandingData> {
+        let manifest: WebManifest = self.api_get("/api/manifest").await?;
+        let icon = manifest
+            .icons
+            .iter()
+            .max_by_key(|i| i.sizes.split(['x', 'X']).next()
+                .and_then(|w| w.parse::<u32>().ok())
+                .unwrap_or(0))
+            .cloned();
+        let (icon_data_url, icon_bytes) = match icon {
+            None => (None, None),
+            Some(icon) => match self.get_bytes(&icon.src).await {
+                Err(_) => (None, None), // name survives a failed icon download
+                Ok(bytes) => (Some(to_data_url(&icon.src, &bytes)), Some(bytes)),
+            },
+        };
+        Ok(BrandingData { name: manifest.name, icon_data_url, icon_bytes })
+    }
+
+    async fn get_bytes(&self, path: &str) -> AppResult<Vec<u8>> {
+        // absolute URLs pass through; anything else resolves against the instance
+        let url = if path.starts_with("http://") || path.starts_with("https://") {
+            path.to_string()
+        } else {
+            self.url(path)
+        };
+        let resp = self.http.get(url).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(AppError::Api { status: status.as_u16(), body: resp.text().await.unwrap_or_default() });
+        }
+        Ok(resp.bytes().await?.to_vec())
     }
 
     pub async fn create_note(&self, title: &str, content: &str, category: &str) -> AppResult<ServerNote> {
@@ -377,5 +445,69 @@ mod tests {
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         let err = c.check_item("l", "9", true).await.unwrap_err();
         assert!(matches!(err, AppError::Api { status: 400, .. }));
+    }
+
+    // ---- branding mirror (v0.9.0) ------------------------------------------
+    // Upstream writes the live name + icon URLs into data/site.webmanifest on
+    // every page render (app/layout.tsx generateMetadata), served PUBLIC at
+    // /api/manifest; uploaded icons are served PUBLIC at /api/app-icons/<file>.
+
+    const PNG_1PX_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    #[tokio::test]
+    async fn get_branding_happy_path_prefers_largest_icon() {
+        let png = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.decode(PNG_1PX_B64).unwrap()
+        };
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "Acme Notes",
+                "short_name": "Acme",
+                "icons": [
+                    {"src": "/app-icons/favicon-32x32.png", "sizes": "32x32", "type": "image/png"},
+                    {"src": "/api/app-icons/512x512Icon-123.png", "sizes": "512x512", "type": "image/png"}
+                ]
+            })))
+            .mount(&s).await;
+        // only the 512 icon is mounted: picking the 32px one would 404 and fail the test
+        Mock::given(method("GET")).and(path("/api/app-icons/512x512Icon-123.png"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_bytes(png.clone())
+                .insert_header("content-type", "image/png"))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let b = c.get_branding().await.unwrap();
+        assert_eq!(b.name.as_deref(), Some("Acme Notes"));
+        assert_eq!(b.icon_data_url.as_deref(), Some(&*format!("data:image/png;base64,{PNG_1PX_B64}")));
+        assert_eq!(b.icon_bytes.as_deref(), Some(png.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn get_branding_manifest_error_is_err() {
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        assert!(c.get_branding().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_branding_name_survives_icon_download_failure() {
+        // name still mirrors when the icon file 404s — degraded, not broken
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "Acme Notes",
+                "icons": [{"src": "/api/app-icons/gone.png", "sizes": "512x512", "type": "image/png"}]
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let b = c.get_branding().await.unwrap();
+        assert_eq!(b.name.as_deref(), Some("Acme Notes"));
+        assert_eq!(b.icon_data_url, None);
+        assert_eq!(b.icon_bytes, None);
     }
 }

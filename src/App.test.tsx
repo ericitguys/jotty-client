@@ -229,4 +229,20 @@ describe('web preference mirroring', () => {
     act(() => useStore.setState({ prefs: prefs({ hideConnectionIndicator: 'enable' }) }));
     expect(document.getElementById('sync-badge')).not.toBeInTheDocument();
   });
+
+  it('window title mirrors the instance name (branding)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_branding') return Promise.resolve({ name: 'Acme Notes', iconDataUrl: null });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false, lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(document.title).toBe('Acme Notes'));
+    act(() => useStore.setState({ branding: null }));
+    expect(document.title).toBe('jotty·desktop');
+  });
 });

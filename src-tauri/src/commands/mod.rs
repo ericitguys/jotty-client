@@ -625,6 +625,33 @@ pub async fn get_prefs(state: tauri::State<'_, AppState>) -> Result<crate::jotty
     client.get_user_prefs().await.map_err(|e| e.to_string())
 }
 
+/// Instance branding mirror (v0.9.0): name + best icon from the public
+/// /api/manifest. Also sets the window/taskbar icon best-effort (X11;
+/// some Wayland compositors ignore runtime icon changes; the installed
+/// .desktop launcher icon is baked into the bundle and cannot follow).
+#[tauri::command]
+pub async fn get_branding(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<crate::commands::dto::BrandingDto, String> {
+    let Some(client) = state.client.read().await.clone() else {
+        return Err(AppError::NotConnected.to_string());
+    };
+    let data = client.get_branding().await.map_err(|e| e.to_string())?;
+    if let Some(bytes) = &data.icon_bytes {
+        best_effort_set_icon(&app, bytes);
+    }
+    Ok(crate::commands::dto::BrandingDto { name: data.name, icon_data_url: data.icon_data_url })
+}
+
+fn best_effort_set_icon(app: &tauri::AppHandle, bytes: &[u8]) {
+    use tauri::Manager as _;
+    // Best-effort by design: undecodable bytes (e.g. svg) or a missing window
+    // must never fail the branding command — the sidebar icon still mirrors.
+    if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.set_icon(img);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn search(state: tauri::State<'_, AppState>, query: String) -> Result<SearchResultsDto, String> {
     let conn = state.db.lock().await;

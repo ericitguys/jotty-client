@@ -32,3 +32,4 @@ export const downloadUpdate = (url: string) => invoke<string>('download_update',
 export const installUpdate = (path: string) => invoke<void>('install_update', { path });
 export const restartApp = () => invoke<void>('restart_app');
 export const getPrefs = () => invoke<T.UserPrefs>('get_prefs');
+export const getBranding = () => invoke<T.Branding>('get_branding');

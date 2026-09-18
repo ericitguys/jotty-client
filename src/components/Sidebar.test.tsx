@@ -86,3 +86,23 @@ describe('Sidebar section switching', () => {
     expect(screen.queryByText('Home')).not.toBeInTheDocument();
   });
 });
+
+describe('Sidebar branding mirror', () => {
+  it('brand shows the instance name and logo when branding is set', () => {
+    useStore.setState({
+      branding: { name: 'Acme Notes', iconDataUrl: 'data:image/png;base64,AAA' },
+    });
+    render(<Sidebar />);
+    expect(screen.getByText('Acme Notes')).toBeInTheDocument();
+    const img = document.querySelector('.brand-icon');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,AAA');
+  });
+
+  it('brand falls back to jotty·desktop with no logo when branding is null', () => {
+    useStore.setState({ branding: null });
+    render(<Sidebar />);
+    expect(screen.getByText('jotty·desktop')).toBeInTheDocument();
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+});

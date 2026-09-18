@@ -12,6 +12,7 @@ export interface ChecklistDto {
   createdAt: string | null; updatedAt: string | null; deletedAt: string | null;
   dirty: boolean; completed: boolean; listType: string; items: ItemDto[];
 }
+export interface Branding { name: string | null; iconDataUrl: string | null; }
 export interface CategoryNode { name: string; path: string; count: number; level: number; }
 export interface CategoriesDto { notes: CategoryNode[]; checklists: CategoryNode[]; }
 export interface SearchResultsDto {
