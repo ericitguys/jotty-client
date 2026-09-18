@@ -4,6 +4,7 @@ pub mod items;
 pub mod migrations;
 pub mod notes;
 pub mod outbox;
+pub mod voice;
 
 use std::path::Path;
 use crate::error::AppResult;
