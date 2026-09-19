@@ -40,6 +40,7 @@ pub fn run() {
             commands::voice_start_recording, commands::voice_stop_recording, commands::voice_delete_recording,
             commands::get_ai_settings, commands::set_ai_settings, commands::ai_get_models,
             commands::voice_transcribe, commands::voice_tidy, commands::voice_list_unsaved,
+            commands::voice_save_note, commands::voice_transcribe_note, commands::voice_delete_note_audio,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

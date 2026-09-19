@@ -42,6 +42,12 @@ impl From<notes::NoteRow> for NoteDto {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscribeDto {
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemDto {

@@ -10,7 +10,8 @@ use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
     AiSettingsDto, CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto,
-    NoteHit, SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
+    NoteHit, NoteTranscribeDto, SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto,
+    VoiceRecordingDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -19,17 +20,30 @@ use rusqlite::OptionalExtension;
 
 pub(crate) fn create_note_inner(conn: &mut Connection, title: &str, category: &str) -> AppResult<NoteDto> {
     let tx = conn.transaction()?;
-    let row = notes::insert_local(&tx, &notes::NewNote {
+    let row = create_note_tx(&tx, title, "", category)?;
+    tx.commit()?;
+    Ok(NoteDto::from(row))
+}
+
+/// Single source of truth for note creation (entity + outbox create op with
+/// temp_id). Used by create_note_inner and voice_save_note so the sync
+/// invariants stay untouched (spec §5). BEHAVIOR-IDENTICAL refactor.
+pub(crate) fn create_note_tx(
+    tx: &rusqlite::Transaction,
+    title: &str,
+    content: &str,
+    category: &str,
+) -> AppResult<crate::db::notes::NoteRow> {
+    let row = notes::insert_local(tx, &notes::NewNote {
         title: title.into(),
-        content: String::new(),
+        content: content.into(),
         category: category.into(),
     })?;
     // Ruling E: note create payload = {temp_id (REQUIRED — push remaps via it), title, content, category}.
-    outbox::enqueue(&tx, "create", "note", &row.id, &serde_json::json!({
+    outbox::enqueue(tx, "create", "note", &row.id, &serde_json::json!({
         "temp_id": &row.id, "title": &row.title, "content": &row.content, "category": &row.category
     }))?;
-    tx.commit()?;
-    Ok(NoteDto::from(row))
+    Ok(row)
 }
 
 // Ruling H: enqueue the post-patch MERGED row values (full copy — push's update
@@ -1076,6 +1090,111 @@ pub async fn voice_list_unsaved(state: tauri::State<'_, AppState>) -> Result<Vec
     voice_list_unsaved_inner(&conn).map_err(|e| e.to_string())
 }
 
+pub(crate) fn voice_save_note_inner(
+    conn: &mut Connection,
+    recording_id: &str,
+    title: &str,
+    category: &str,
+    use_tidied: bool,
+    content_override: Option<String>,
+) -> AppResult<NoteDto> {
+    let tx = conn.transaction()?;
+    let rec = crate::db::voice::get(&tx, recording_id)?
+        .ok_or_else(|| crate::error::AppError::Other(format!("recording {recording_id} not found")))?;
+    if rec.state == crate::db::voice::ST_RECORDING {
+        return Err(crate::error::AppError::Other("recording still in progress".into()));
+    }
+    // Content = tidied if useTidied && exists, else raw (spec §6); an explicit
+    // override (review/edit -> save, spec §2) wins over both (plan ruling 3).
+    let content = content_override.unwrap_or_else(|| {
+        if use_tidied {
+            rec.tidied_transcript.clone().unwrap_or_else(|| rec.raw_transcript.clone().unwrap_or_default())
+        } else {
+            rec.raw_transcript.clone().unwrap_or_default()
+        }
+    });
+    let row = create_note_tx(&tx, title, &content, category)?;
+    tx.execute(
+        "UPDATE notes SET audio_path=?2, audio_duration_secs=?3 WHERE id=?1",
+        rusqlite::params![row.id, rec.path, rec.duration_secs],
+    )?;
+    crate::db::voice::delete_staging(&tx, recording_id)?;
+    tx.commit()?;
+    // re-read so the DTO carries the audio columns
+    let saved = crate::db::notes::get(conn, &row.id)?
+        .ok_or_else(|| crate::error::AppError::Other("saved note vanished".into()))?;
+    Ok(NoteDto::from(saved))
+}
+
+#[tauri::command]
+pub async fn voice_save_note(
+    state: tauri::State<'_, AppState>,
+    recording_id: String,
+    title: String,
+    category: String,
+    use_tidied: bool,
+    content_override: Option<String>,
+) -> Result<NoteDto, String> {
+    let mut conn = state.db.lock().await;
+    voice_save_note_inner(&mut conn, &recording_id, &title, &category, use_tidied, content_override)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn voice_transcribe_note_inner(
+    conn: &mut Connection,
+    ai: &crate::voice_ai::VoiceAiClient,
+    language: Option<&str>,
+    note_id: &str,
+) -> AppResult<NoteTranscribeDto> {
+    let note = crate::db::notes::get(conn, note_id)?
+        .ok_or_else(|| crate::error::AppError::Other(format!("note {note_id} not found")))?;
+    let path = note
+        .audio_path
+        .ok_or_else(|| crate::error::AppError::Other("note has no audio recording".into()))?;
+    let (text, sfx) = ai.transcribe(std::path::Path::new(&path), language).await?;
+    persist_ai_suffix(conn, sfx)?;
+    Ok(NoteTranscribeDto { text })
+}
+
+#[tauri::command]
+pub async fn voice_transcribe_note(
+    state: tauri::State<'_, AppState>,
+    note_id: String,
+) -> Result<NoteTranscribeDto, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let hint = { let conn = state.db.lock().await; ai_language_hint(&conn).map_err(|e| e.to_string())? };
+    let language = if hint.trim().is_empty() { None } else { Some(hint.trim().to_string()) };
+    let mut conn = state.db.lock().await;
+    voice_transcribe_note_inner(&mut conn, &ai, language.as_deref(), &note_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn voice_delete_note_audio_inner(conn: &mut Connection, note_id: &str) -> AppResult<NoteDto> {
+    let note = crate::db::notes::get(conn, note_id)?
+        .ok_or_else(|| crate::error::AppError::Other(format!("note {note_id} not found")))?;
+    if let Some(p) = &note.audio_path {
+        let _ = std::fs::remove_file(p); // best-effort
+    }
+    // LOCAL-ONLY metadata: no dirty flag, NO outbox op — sync must never see it
+    conn.execute(
+        "UPDATE notes SET audio_path=NULL, audio_duration_secs=NULL WHERE id=?1",
+        [note_id],
+    )?;
+    let updated = crate::db::notes::get(conn, note_id)?
+        .ok_or_else(|| crate::error::AppError::Other("note vanished".into()))?;
+    Ok(NoteDto::from(updated))
+}
+
+#[tauri::command]
+pub async fn voice_delete_note_audio(
+    state: tauri::State<'_, AppState>,
+    note_id: String,
+) -> Result<NoteDto, String> {
+    let mut conn = state.db.lock().await;
+    voice_delete_note_audio_inner(&mut conn, &note_id).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1609,5 +1728,147 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "r1");
         assert_eq!(rows[0].state, crate::db::voice::ST_TRANSCRIBED);
+    }
+
+    #[test]
+    fn create_note_inner_behavior_unchanged_after_tx_refactor() {
+        // byte-equivalence fence: refactor must not alter create-note invariants
+        let mut conn = db();
+        let dto = create_note_inner(&mut conn, "T", "Home").unwrap();
+        let ops = crate::db::outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "create");
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["temp_id"], dto.id);
+        assert_eq!(payload["content"], "");
+        let note = crate::db::notes::get(&conn, &dto.id).unwrap().unwrap();
+        assert!(note.dirty);
+        assert_eq!(note.content, "");
+    }
+
+    fn stage_transcribed_with_file(dir: &tempfile::TempDir, conn: &Connection, id: &str, raw: Option<&str>, tidied: Option<&str>, duration: f64) -> String {
+        let wav = dir.path().join(format!("{id}.wav"));
+        std::fs::write(&wav, b"RIFF").unwrap();
+        crate::db::voice::create_staging(conn, id, wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(conn, id, duration).unwrap();
+        if let Some(r) = raw { crate::db::voice::set_transcript(conn, id, r).unwrap(); }
+        if let Some(t) = tidied { crate::db::voice::set_tidied(conn, id, t).unwrap(); }
+        wav.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn voice_save_note_one_tx_note_audio_outbox_staging_delete() {
+        let mut conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = stage_transcribed_with_file(&dir, &conn, "r1", Some("hello memo"), None, 12.5);
+        let note = voice_save_note_inner(&mut conn, "r1", "My Memo", "Home", false, None).unwrap();
+        // note created with raw content + audio columns
+        assert_eq!(note.content, "hello memo");
+        assert_eq!(note.audio_path.as_deref(), Some(path.as_str()));
+        assert_eq!(note.audio_duration_secs, Some(12.5));
+        // exactly ONE outbox op: create with temp_id + content
+        let ops = crate::db::outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "create");
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["temp_id"], note.id);
+        assert_eq!(payload["content"], "hello memo");
+        // staging row deleted; file kept on disk
+        assert!(crate::db::voice::get(&conn, "r1").unwrap().is_none());
+        assert!(std::path::Path::new(&path).exists());
+        // FTS: transcript is searchable (spec §5)
+        let hits: Vec<String> = conn
+            .prepare("SELECT id FROM notes_fts WHERE notes_fts MATCH 'memo'").unwrap()
+            .query_map([], |r| r.get(0)).unwrap()
+            .map(Result::unwrap).collect();
+        assert_eq!(hits, vec![note.id]);
+    }
+
+    #[test]
+    fn voice_save_note_tidied_and_override_rules() {
+        let mut conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let _ = stage_transcribed_with_file(&dir, &conn, "r2", Some("raw text"), Some("Raw, tidied."), 3.0);
+        let a = voice_save_note_inner(&mut conn, "r2", "t", "Home", true, None).unwrap();
+        assert_eq!(a.content, "Raw, tidied.");
+        let mut conn2 = db();
+        let _ = stage_transcribed_with_file(&dir, &conn2, "r3", Some("raw text"), None, 3.0);
+        // useTidied but no tidied stored -> raw fallback (spec §6)
+        let b = voice_save_note_inner(&mut conn2, "r3", "t", "Home", true, None).unwrap();
+        assert_eq!(b.content, "raw text");
+        // override wins over both (spec §2 review/edit -> save; plan ruling 3)
+        // (setup amendment: b's single-tx save already consumed staging row r3,
+        // so re-stage it with raw + tidied to prove override beats BOTH)
+        let _ = stage_transcribed_with_file(&dir, &conn2, "r3", Some("raw text"), Some("Tidied!"), 3.0);
+        let c = voice_save_note_inner(&mut conn2, "r3", "t", "Home", false, Some("user edited text".into())).unwrap();
+        assert_eq!(c.content, "user edited text");
+    }
+
+    #[test]
+    fn voice_save_note_empty_transcript_saves_with_pending_state() {
+        let mut conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let _ = stage_transcribed_with_file(&dir, &conn, "r4", None, None, 5.0);
+        let note = voice_save_note_inner(&mut conn, "r4", "t", "Home", false, None).unwrap();
+        assert_eq!(note.content, "");
+        assert!(note.audio_path.is_some()); // retry hook will fill content later
+    }
+
+    #[test]
+    fn voice_save_note_unknown_or_recording_row_errors_rolls_back() {
+        let mut conn = db();
+        assert!(voice_save_note_inner(&mut conn, "nope", "t", "Home", false, None).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        crate::db::voice::create_staging(&conn, "live", dir.path().join("l.wav").to_string_lossy().as_ref()).unwrap();
+        assert!(voice_save_note_inner(&mut conn, "live", "t", "Home", false, None).is_err());
+        // nothing half-saved
+        assert_eq!(crate::db::outbox::next_batch(&conn, 10).unwrap().len(), 0);
+        assert_eq!(crate::db::notes::list(&conn, true).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn voice_transcribe_note_requires_audio_and_transcribes() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"text": "note transcript", "filename": "x.wav"})))
+            .mount(&s).await;
+        let mut conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("n.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n1','t','','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1,?1)",
+            rusqlite::params![wav.to_string_lossy().as_ref()],
+        ).unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let res = voice_transcribe_note_inner(&mut conn, &ai, None, "n1").await.unwrap();
+        assert_eq!(res.text, "note transcript");
+        // note without audio errors; unknown note errors
+        conn.execute("UPDATE notes SET audio_path=NULL WHERE id='n1'", []).unwrap();
+        assert!(voice_transcribe_note_inner(&mut conn, &ai, None, "n1").await.is_err());
+        assert!(voice_transcribe_note_inner(&mut conn, &ai, None, "ghost").await.is_err());
+    }
+
+    #[test]
+    fn voice_delete_note_audio_is_local_only() {
+        let mut conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("n.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path,audio_duration_secs) VALUES ('n1','t','keep text','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0,?1,9.0)",
+            rusqlite::params![wav.to_string_lossy().as_ref()],
+        ).unwrap();
+        let note = voice_delete_note_audio_inner(&mut conn, "n1").unwrap();
+        assert!(note.audio_path.is_none());
+        assert_eq!(note.content, "keep text");
+        assert!(!wav.exists(), "file removed");
+        // LOCAL-ONLY: no outbox op, no dirty flag (sync must never see this)
+        assert_eq!(crate::db::outbox::next_batch(&conn, 10).unwrap().len(), 0);
+        let row = crate::db::notes::get(&conn, "n1").unwrap().unwrap();
+        assert!(!row.dirty);
+        assert_eq!(row.audio_duration_secs, None);
     }
 }
