@@ -22,7 +22,7 @@ pub fn run() {
             db::migrations::run(&conn)?;
             app.manage(crate::audio::VoiceRecorder::default());
             // restore connection if instance_url exists
-            let state = state::AppState::new(conn, Box::new(keys::OsKeyStore))?;
+            let state = state::AppState::new(conn, Box::new(keys::OsKeyStore), Box::new(keys::AiOsKeyStore))?;
             state.restore_connection(app.handle().clone()); // spawns task: rebuild client from url+keyring, no auto-sync
             app.manage(state);
             sync::spawn_scheduler(app.handle().clone());
@@ -38,6 +38,7 @@ pub fn run() {
             commands::check_update, commands::download_update, commands::install_update, commands::restart_app,
             commands::get_prefs, commands::get_branding,
             commands::voice_start_recording, commands::voice_stop_recording, commands::voice_delete_recording,
+            commands::get_ai_settings, commands::set_ai_settings, commands::ai_get_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -9,8 +9,8 @@ use crate::error::{AppError, AppResult};
 use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
-    CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit,
-    SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, VoiceRecordingDto,
+    AiSettingsDto, CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto,
+    NoteHit, SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, VoiceRecordingDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -870,10 +870,133 @@ pub async fn voice_delete_recording(
     voice_delete_recording_inner(&conn, &recorder, &recording_id).map_err(|e| e.to_string())
 }
 
+// ---- AI server settings (voice notes, spec §2.5/§4) ------------------------
+// Key ONLY in the keyring; everything else is a plain sync_state pref.
+
+pub(crate) fn kv_set(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO sync_state(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+fn kv_get_or(conn: &Connection, key: &str, default: &str) -> AppResult<String> {
+    let v: Option<String> = conn
+        .query_row("SELECT value FROM sync_state WHERE key=?1", [key], |r| r.get(0))
+        .optional()?;
+    Ok(v.unwrap_or_else(|| default.to_string()))
+}
+
+pub(crate) fn ai_base_url(conn: &Connection) -> AppResult<String> { kv_get_or(conn, "ai_base_url", "") }
+pub(crate) fn ai_model(conn: &Connection) -> AppResult<String> { kv_get_or(conn, "ai_model", "") }
+pub(crate) fn ai_language_hint(conn: &Connection) -> AppResult<String> { kv_get_or(conn, "ai_language_hint", "") }
+pub(crate) fn ai_suffix(conn: &Connection) -> AppResult<crate::voice_ai::Suffix> {
+    Ok(crate::voice_ai::Suffix::from_storage(&kv_get_or(conn, "ai_api_suffix", "v1")?))
+}
+pub(crate) fn persist_ai_suffix(conn: &Connection, effective: crate::voice_ai::Suffix) -> AppResult<()> {
+    if ai_suffix(conn)? != effective {
+        kv_set(conn, "ai_api_suffix", effective.as_str())?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn build_ai_client(state: &tauri::State<'_, AppState>) -> AppResult<crate::voice_ai::VoiceAiClient> {
+    let (base, suffix) = {
+        let conn = state.db.lock().await;
+        (ai_base_url(&conn)?, ai_suffix(&conn)?)
+    };
+    if base.trim().is_empty() {
+        return Err(crate::error::AppError::Other("AI server not configured".into()));
+    }
+    let key = state
+        .ai_keystore
+        .get()?
+        .ok_or_else(|| crate::error::AppError::Other("AI server API key not set".into()))?;
+    crate::voice_ai::VoiceAiClient::new(&base, &key, suffix)
+}
+
+pub(crate) fn get_ai_settings_inner(conn: &Connection, ai_keystore: &dyn crate::keys::KeyStore) -> AppResult<AiSettingsDto> {
+    Ok(AiSettingsDto {
+        base_url: ai_base_url(conn)?,
+        model: ai_model(conn)?,
+        language_hint: ai_language_hint(conn)?,
+        api_path_suffix: ai_suffix(conn)?.as_str().into(),
+        has_key: ai_keystore.get()?.is_some(),
+    })
+}
+
+pub(crate) fn set_ai_settings_inner(
+    conn: &Connection,
+    ai_keystore: &dyn crate::keys::KeyStore,
+    base_url: Option<String>,
+    model: Option<String>,
+    language_hint: Option<String>,
+    api_key: Option<String>,
+) -> AppResult<AiSettingsDto> {
+    if let Some(u) = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // validate with the same rule the client enforces (https, or http on localhost)
+        let _ = crate::voice_ai::VoiceAiClient::new(u, "unused", crate::voice_ai::Suffix::V1)?;
+        kv_set(conn, "ai_base_url", u)?;
+    }
+    if let Some(m) = model.as_deref().map(str::trim) {
+        kv_set(conn, "ai_model", m)?; // empty clears
+    }
+    if let Some(l) = language_hint.as_deref().map(str::trim) {
+        kv_set(conn, "ai_language_hint", l)?; // empty clears
+    }
+    if let Some(k) = api_key.as_deref().map(str::trim) {
+        if k.is_empty() {
+            ai_keystore.delete()?;
+        } else {
+            ai_keystore.set(k)?;
+        }
+    }
+    get_ai_settings_inner(conn, ai_keystore)
+}
+
+pub(crate) async fn ai_models_core(
+    ai: &crate::voice_ai::VoiceAiClient,
+    db: &tokio::sync::Mutex<Connection>,
+) -> AppResult<Vec<String>> {
+    // rusqlite::Connection is !Sync, so the db lock must NOT be held across the
+    // network await — tauri commands require Send futures.
+    let (models, sfx) = ai.models().await?;
+    let conn = db.lock().await;
+    persist_ai_suffix(&conn, sfx)?;
+    Ok(models)
+}
+
+#[tauri::command]
+pub async fn get_ai_settings(state: tauri::State<'_, AppState>) -> Result<AiSettingsDto, String> {
+    let conn = state.db.lock().await;
+    get_ai_settings_inner(&conn, state.ai_keystore.as_ref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_ai_settings(
+    state: tauri::State<'_, AppState>,
+    base_url: Option<String>,
+    model: Option<String>,
+    language_hint: Option<String>,
+    api_key: Option<String>,
+) -> Result<AiSettingsDto, String> {
+    let conn = state.db.lock().await;
+    set_ai_settings_inner(&conn, state.ai_keystore.as_ref(), base_url, model, language_hint, api_key)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ai_get_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    ai_models_core(&ai, &state.db).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::{migrations, open, outbox};
+    use crate::keys::KeyStore as _;
     use rusqlite::Connection;
 
     fn db() -> Connection {
@@ -965,7 +1088,7 @@ mod tests {
             "INSERT INTO sync_state(key,value) VALUES ('instance_url','http://localhost:1122')",
             [],
         ).unwrap();
-        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         state.keystore.set("ck_key").unwrap();
         // client deliberately None: the restore task hasn't rebuilt it yet
         let info = inner_get_connection(&state).await.unwrap();
@@ -982,7 +1105,7 @@ mod tests {
             "INSERT INTO sync_state(key,value) VALUES ('instance_url','http://localhost:1122')",
             [],
         ).unwrap();
-        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         // url row but no key: unusable connection -> onboarding stays correct
         assert!(inner_get_connection(&state).await.unwrap().is_none());
     }
@@ -990,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn get_connection_none_when_never_configured() {
         use crate::keys::MockKeyStore;
-        let state = AppState::new(db(), Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(db(), Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         state.keystore.set("ck_key").unwrap();
         // key present but no instance_url row: never connected -> None
         assert!(inner_get_connection(&state).await.unwrap().is_none());
@@ -1005,7 +1128,7 @@ mod tests {
         create_note_inner(&mut conn, "A", "Work/Projects").unwrap();
         create_note_inner(&mut conn, "B", "Home").unwrap();
         create_checklist_inner(&mut conn, "C", "Home").unwrap();
-        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         // client deliberately None (offline start): the command must still resolve
         let cats = inner_list_categories(&state).await.unwrap();
         let notes: Vec<&str> = cats.notes.iter().map(|n| n.path.as_str()).collect();
@@ -1030,7 +1153,7 @@ mod tests {
         Mock::given(method("GET")).and(path("/api/categories"))
             .respond_with(wiremock::ResponseTemplate::new(500))
             .mount(&s).await;
-        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         *state.client.write().await = Some(JottyClient::new(&s.uri(), "ck").unwrap());
         // live fetch 500s -> the locally derived tree is served (offline UX)
         let cats = inner_list_categories(&state).await.unwrap();
@@ -1048,7 +1171,7 @@ mod tests {
         // local row in a category the server tree does NOT report:
         // the live server tree must win untouched
         create_note_inner(&mut conn, "A", "Home").unwrap();
-        let state = AppState::new(conn, Box::new(MockKeyStore::default())).unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         let s = MockServer::start().await;
         Mock::given(method("GET")).and(path("/api/categories"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1157,5 +1280,90 @@ mod tests {
         assert!(v.get("lastError").is_some());
         assert!(v.get("createdAt").is_some());
         assert!(v.get("duration_secs").is_none());
+    }
+
+    #[test]
+    fn get_ai_settings_defaults_are_empty_and_unkeyed() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        let s = get_ai_settings_inner(&conn, &ks).unwrap();
+        assert_eq!(s.base_url, "");
+        assert_eq!(s.model, "");
+        assert_eq!(s.language_hint, "");
+        assert_eq!(s.api_path_suffix, "v1");
+        assert!(!s.has_key);
+    }
+
+    #[test]
+    fn set_ai_settings_stores_prefs_and_key_round_trip() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        let s = set_ai_settings_inner(
+            &conn, &ks,
+            Some("https://ai.example.com".into()),
+            Some("llama3".into()),
+            Some("en".into()),
+            Some("sk-abc".into()),
+        ).unwrap();
+        assert_eq!(s.base_url, "https://ai.example.com");
+        assert_eq!(s.model, "llama3");
+        assert_eq!(s.language_hint, "en");
+        assert!(s.has_key);
+        assert_eq!(ks.get().unwrap().as_deref(), Some("sk-abc"));
+        // empty key clears the keyring entry
+        let s2 = set_ai_settings_inner(&conn, &ks, None, None, None, Some("".into())).unwrap();
+        assert!(!s2.has_key);
+        assert_eq!(ks.get().unwrap(), None);
+    }
+
+    #[test]
+    fn set_ai_settings_rejects_non_local_http() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        let err = set_ai_settings_inner(&conn, &ks, Some("http://example.com".into()), None, None, None).unwrap_err();
+        assert!(err.to_string().contains("https"));
+        // nothing persisted
+        assert_eq!(ai_base_url(&conn).unwrap(), "");
+    }
+
+    #[test]
+    fn ai_suffix_defaults_to_v1_and_persists_effective() {
+        let conn = db();
+        assert_eq!(ai_suffix(&conn).unwrap(), crate::voice_ai::Suffix::V1);
+        persist_ai_suffix(&conn, crate::voice_ai::Suffix::Plain).unwrap();
+        assert_eq!(ai_suffix(&conn).unwrap(), crate::voice_ai::Suffix::Plain);
+        persist_ai_suffix(&conn, crate::voice_ai::Suffix::Plain).unwrap(); // idempotent
+        let v: String = conn.query_row("SELECT value FROM sync_state WHERE key='ai_api_suffix'", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "plain");
+    }
+
+    #[tokio::test]
+    async fn ai_models_core_returns_models_and_persists_fallback_suffix() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/v1/models"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&s).await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/models"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"data": [{"id": "m1"}]})))
+            .mount(&s).await;
+        let conn = tokio::sync::Mutex::new(db());
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let models = ai_models_core(&ai, &conn).await.unwrap();
+        assert_eq!(models, vec!["m1"]);
+        let g = conn.lock().await;
+        assert_eq!(ai_suffix(&g).unwrap(), crate::voice_ai::Suffix::Plain);
+    }
+
+    #[test]
+    fn app_state_holds_two_keystores() {
+        let conn = db();
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(crate::keys::MockKeyStore::default())).unwrap();
+        state.ai_keystore.set("sk-1").unwrap();
+        state.keystore.set("ck-1").unwrap();
+        assert_eq!(state.ai_keystore.get().unwrap().as_deref(), Some("sk-1"));
+        assert_eq!(state.keystore.get().unwrap().as_deref(), Some("ck-1"));
     }
 }

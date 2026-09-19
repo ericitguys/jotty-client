@@ -231,3 +231,13 @@ impl From<crate::db::voice::VoiceRecordingRow> for VoiceRecordingDto {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettingsDto {
+    pub base_url: String,
+    pub model: String,
+    pub language_hint: String,
+    pub api_path_suffix: String,
+    pub has_key: bool,
+}
+

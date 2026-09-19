@@ -12,12 +12,17 @@ pub struct AppState {
     pub db: tokio::sync::Mutex<rusqlite::Connection>,
     pub client: tokio::sync::RwLock<Option<JottyClient>>,
     pub keystore: Box<dyn keys::KeyStore>,
+    pub ai_keystore: Box<dyn keys::KeyStore>,
     pub syncing: AtomicBool,
     pub db_path: PathBuf,
 }
 
 impl AppState {
-    pub fn new(conn: rusqlite::Connection, keystore: Box<dyn keys::KeyStore>) -> AppResult<Self> {
+    pub fn new(
+        conn: rusqlite::Connection,
+        keystore: Box<dyn keys::KeyStore>,
+        ai_keystore: Box<dyn keys::KeyStore>,
+    ) -> AppResult<Self> {
         // Ruling G: derive the db path from the connection itself (no extra arg).
         // rusqlite 0.32.1's Connection::path() returns Option<&str>.
         let db_path = PathBuf::from(conn.path().unwrap_or_default());
@@ -25,6 +30,7 @@ impl AppState {
             db: tokio::sync::Mutex::new(conn),
             client: tokio::sync::RwLock::new(None),
             keystore,
+            ai_keystore,
             syncing: AtomicBool::new(false),
             db_path,
         })

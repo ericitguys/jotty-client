@@ -27,28 +27,46 @@ pub struct OsKeyStore;
 
 const SERVICE: &str = "jotty-desktop";
 const ACCOUNT: &str = "api-key";
+pub const AI_ACCOUNT: &str = "openwebui-key";
+
+fn entry(account: &str) -> AppResult<keyring::Entry> {
+    keyring::Entry::new(SERVICE, account).map_err(|e| AppError::Keyring(e.to_string()))
+}
+
+fn get_for(account: &str) -> AppResult<Option<String>> {
+    match entry(account)?.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(AppError::Keyring(e.to_string())),
+    }
+}
+
+fn set_for(account: &str, key: &str) -> AppResult<()> {
+    entry(account)?.set_password(key).map_err(|e| AppError::Keyring(e.to_string()))
+}
+
+fn delete_for(account: &str) -> AppResult<()> {
+    match entry(account)?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(AppError::Keyring(e.to_string())),
+    }
+}
 
 impl KeyStore for OsKeyStore {
-    fn get(&self) -> AppResult<Option<String>> {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| AppError::Keyring(e.to_string()))?;
-        match entry.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(AppError::Keyring(e.to_string())),
-        }
-    }
-    fn set(&self, key: &str) -> AppResult<()> {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| AppError::Keyring(e.to_string()))?;
-        entry.set_password(key).map_err(|e| AppError::Keyring(e.to_string()))
-    }
-    fn delete(&self) -> AppResult<()> {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| AppError::Keyring(e.to_string()))?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(()),
-            Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(AppError::Keyring(e.to_string())),
-        }
-    }
+    fn get(&self) -> AppResult<Option<String>> { get_for(ACCOUNT) }
+    fn set(&self, key: &str) -> AppResult<()> { set_for(ACCOUNT, key) }
+    fn delete(&self) -> AppResult<()> { delete_for(ACCOUNT) }
+}
+
+/// Same service, AI account (spec §4: jotty-desktop / openwebui-key).
+/// Untestable headlessly — desktop smoke check remains a release gate.
+pub struct AiOsKeyStore;
+
+impl KeyStore for AiOsKeyStore {
+    fn get(&self) -> AppResult<Option<String>> { get_for(AI_ACCOUNT) }
+    fn set(&self, key: &str) -> AppResult<()> { set_for(AI_ACCOUNT, key) }
+    fn delete(&self) -> AppResult<()> { delete_for(AI_ACCOUNT) }
 }
 
 #[cfg(test)]
