@@ -124,6 +124,13 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
         use tauri::Emitter;
         let _ = app.emit("sync-updated", serde_json::to_value(report).unwrap_or_default());
     }
+    // Voice-notes retry (spec §6): after a SUCCESSFUL sync the jotty server is
+    // reachable — give the AI transcription queue a chance. Spawned: do_sync's
+    // callers (scheduler + manual trigger) must not block on AI latency.
+    if result.is_ok() {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move { crate::voice_ai::maybe_retry(app2).await });
+    }
     Ok(())
 }
 

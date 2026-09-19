@@ -214,6 +214,97 @@ fn parse_choice(v: &Value) -> AppResult<String> {
         .ok_or_else(|| AppError::Other("chat response missing choices[0].message.content".into()))
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct RetryStats {
+    pub staging_retried: usize,
+    pub staging_succeeded: usize,
+    pub notes_filled: usize,
+}
+
+/// Auto-retry pass (spec §6): staging rows in transcription_failed (NOT
+/// failed_auth — 401/403 waits for the user to fix the key, spec §7), then
+/// saved notes whose audio_path is set and content is still empty. Runs after
+/// every SUCCESSFUL do_sync. Tidy is never auto-applied (spec §6).
+pub async fn retry_pending(
+    conn: &mut rusqlite::Connection,
+    ai: &VoiceAiClient,
+    language: Option<&str>,
+) -> AppResult<RetryStats> {
+    use crate::db::voice;
+    let mut stats = RetryStats::default();
+    for rec in voice::list_failed(conn)? {
+        stats.staging_retried += 1;
+        voice::mark_transcribing(conn, &rec.id)?;
+        match transcribe_file(ai, std::path::Path::new(&rec.path), language).await {
+            Ok(text) => {
+                voice::set_transcript(conn, &rec.id, &text)?;
+                stats.staging_succeeded += 1;
+            }
+            Err(e) => voice::mark_failed(conn, &rec.id, is_auth_error(&e), &e.to_string())?,
+        }
+    }
+    let pending: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, audio_path FROM notes WHERE audio_path IS NOT NULL AND content='' AND deleted_at IS NULL",
+        )?;
+        // Local binding (not a trailing expression): the MappedRows temporary
+        // borrows `stmt` and must drop before it leaves scope (E0597).
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (id, path) in pending {
+        if let Ok(text) = transcribe_file(ai, std::path::Path::new(&path), language).await {
+            crate::commands::update_note_inner(conn, &id, None, Some(text), None)?;
+            stats.notes_filled += 1;
+        }
+    }
+    Ok(stats)
+}
+
+pub async fn transcribe_file(ai: &VoiceAiClient, path: &Path, language: Option<&str>) -> AppResult<String> {
+    ai.transcribe(path, language).await.map(|(t, _)| t)
+}
+
+/// Glue after a successful sync (thin by design — each piece is tested; the
+/// composition mirrors do_sync's own app-level glue, untestable headlessly):
+/// read AI settings + key, build the client, run the retry pass, emit
+/// "voice-updated" so the UI refreshes the mic badges.
+pub async fn maybe_retry(app: tauri::AppHandle) {
+    use crate::commands::{ai_base_url, ai_language_hint, ai_suffix};
+    use tauri::Manager;
+    let state = app.state::<crate::state::AppState>();
+    let (base, suffix, hint) = {
+        let conn = state.db.lock().await;
+        (
+            ai_base_url(&conn).unwrap_or_default(),
+            ai_suffix(&conn).unwrap_or(Suffix::V1),
+            ai_language_hint(&conn).unwrap_or_default(),
+        )
+    };
+    if base.trim().is_empty() {
+        return;
+    }
+    let key = match state.ai_keystore.get() {
+        Ok(Some(k)) => k,
+        _ => return,
+    };
+    let Ok(ai) = VoiceAiClient::new(&base, &key, suffix) else { return };
+    let lang = if hint.trim().is_empty() { None } else { Some(hint.trim().to_string()) };
+    let mut conn = state.db.lock().await;
+    match retry_pending(&mut conn, &ai, lang.as_deref()).await {
+        Ok(stats) => {
+            if stats.staging_retried + stats.notes_filled > 0 {
+                log::info!("voice retry: {stats:?}");
+            }
+        }
+        Err(e) => log::warn!("voice retry failed: {e}"),
+    }
+    drop(conn);
+    use tauri::Emitter;
+    let _ = app.emit("voice-updated", ());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +495,105 @@ mod tests {
         assert!(VoiceAiClient::new("http://example.com", "k", Suffix::V1).is_err());
         assert!(VoiceAiClient::new("https://example.com", "k", Suffix::V1).is_ok());
         assert!(VoiceAiClient::new("http://localhost:3000", "k", Suffix::V1).is_ok());
+    }
+
+    fn db_conn() -> rusqlite::Connection {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("t.db")).unwrap();
+        std::mem::forget(dir);
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    fn client_at(uri: &str) -> VoiceAiClient {
+        VoiceAiClient::new(uri, "sk", Suffix::V1).unwrap()
+    }
+
+    #[tokio::test]
+    async fn retry_pending_retries_failed_staging_rows() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"text": "retried text", "filename": "x.wav"})))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("r.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db_conn();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        crate::db::voice::mark_failed(&conn, "r1", false, "earlier").unwrap();
+        let stats = retry_pending(&mut conn, &client_at(&s.uri()), None).await.unwrap();
+        assert_eq!(stats.staging_retried, 1);
+        assert_eq!(stats.staging_succeeded, 1);
+        let rec = crate::db::voice::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(rec.state, crate::db::voice::ST_TRANSCRIBED);
+        assert_eq!(rec.raw_transcript.as_deref(), Some("retried text"));
+    }
+
+    #[tokio::test]
+    async fn retry_pending_skips_auth_failed_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("r.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db_conn();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        crate::db::voice::mark_failed(&conn, "r1", true, "api error 401").unwrap();
+        let stats = retry_pending(&mut conn, &client_at("http://127.0.0.1:1"), None).await.unwrap();
+        assert_eq!(stats.staging_retried, 0, "401/403 never consume the retry loop (spec §7)");
+        assert_eq!(crate::db::voice::get(&conn, "r1").unwrap().unwrap().state, crate::db::voice::ST_FAILED_AUTH);
+    }
+
+    #[tokio::test]
+    async fn retry_pending_fills_saved_notes_via_the_normal_outbox_path() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"text": "filled text", "filename": "x.wav"})))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("n.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db_conn();
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n1','t','','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1,?1)",
+            rusqlite::params![wav.to_string_lossy().as_ref()],
+        ).unwrap();
+        let stats = retry_pending(&mut conn, &client_at(&s.uri()), None).await.unwrap();
+        assert_eq!(stats.notes_filled, 1);
+        let note = crate::db::notes::get(&conn, "n1").unwrap().unwrap();
+        assert_eq!(note.content, "filled text");
+        assert!(note.dirty);
+        // normal update_note path: exactly one update op enqueued
+        let ops = crate::db::outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "update");
+    }
+
+    #[tokio::test]
+    async fn retry_pending_never_touches_notes_with_content() {
+        let mut conn = db_conn();
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n1','t','already written','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0,'/tmp/x.wav')",
+            [],
+        ).unwrap();
+        let stats = retry_pending(&mut conn, &client_at("http://127.0.0.1:1"), None).await.unwrap();
+        assert_eq!(stats.notes_filled, 0);
+        assert_eq!(crate::db::notes::get(&conn, "n1").unwrap().unwrap().content, "already written");
+    }
+
+    #[tokio::test]
+    async fn retry_pending_missing_file_marks_staging_row_failed() {
+        let mut conn = db_conn();
+        crate::db::voice::create_staging(&conn, "r1", "/no/such/file.wav").unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        crate::db::voice::mark_failed(&conn, "r1", false, "earlier").unwrap();
+        let stats = retry_pending(&mut conn, &client_at("http://127.0.0.1:1"), None).await.unwrap();
+        assert_eq!(stats.staging_retried, 1);
+        assert_eq!(stats.staging_succeeded, 0);
+        let rec = crate::db::voice::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(rec.state, crate::db::voice::ST_FAILED);
+        assert!(rec.last_error.as_deref().unwrap().contains("read recording"));
     }
 }
