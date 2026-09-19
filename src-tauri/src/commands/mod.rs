@@ -10,7 +10,7 @@ use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
     AiSettingsDto, CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto,
-    NoteHit, SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, VoiceRecordingDto,
+    NoteHit, SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -992,6 +992,90 @@ pub async fn ai_get_models(state: tauri::State<'_, AppState>) -> Result<Vec<Stri
     ai_models_core(&ai, &state.db).await.map_err(|e| e.to_string())
 }
 
+pub(crate) async fn voice_transcribe_inner(
+    conn: &mut Connection,
+    ai: &crate::voice_ai::VoiceAiClient,
+    language: Option<&str>,
+    recording_id: &str,
+) -> AppResult<VoiceRecordingDto> {
+    let rec = crate::db::voice::get(conn, recording_id)?
+        .ok_or_else(|| crate::error::AppError::Other(format!("recording {recording_id} not found")))?;
+    if rec.state == crate::db::voice::ST_RECORDING {
+        return Err(crate::error::AppError::Other("recording still in progress".into()));
+    }
+    if rec.state == crate::db::voice::ST_TRANSCRIBED {
+        return Ok(rec.into()); // idempotent: no second request
+    }
+    // 'recorded' | 'transcribing' (stale after restart) | failed states are all retryable
+    crate::db::voice::mark_transcribing(conn, recording_id)?;
+    match ai.transcribe(std::path::Path::new(&rec.path), language).await {
+        Ok((text, sfx)) => {
+            persist_ai_suffix(conn, sfx)?;
+            crate::db::voice::set_transcript(conn, recording_id, &text)?;
+        }
+        Err(e) => {
+            crate::db::voice::mark_failed(conn, recording_id, crate::voice_ai::is_auth_error(&e), &e.to_string())?;
+        }
+    }
+    voice_dto(conn, recording_id)
+}
+
+#[tauri::command]
+pub async fn voice_transcribe(
+    state: tauri::State<'_, AppState>,
+    recording_id: String,
+) -> Result<VoiceRecordingDto, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let hint = { let conn = state.db.lock().await; ai_language_hint(&conn).map_err(|e| e.to_string())? };
+    let language = if hint.trim().is_empty() { None } else { Some(hint.trim().to_string()) };
+    let mut conn = state.db.lock().await;
+    voice_transcribe_inner(&mut conn, &ai, language.as_deref(), &recording_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn voice_tidy_inner(
+    conn: &mut Connection,
+    ai: &crate::voice_ai::VoiceAiClient,
+    model: &str,
+    recording_id: Option<&str>,
+    raw: &str,
+) -> AppResult<TidyDto> {
+    if model.trim().is_empty() {
+        return Err(crate::error::AppError::Other("tidy model not configured — pick one in Settings".into()));
+    }
+    let (tidied, sfx) = ai.tidy(model, raw).await?;
+    persist_ai_suffix(conn, sfx)?;
+    if let Some(id) = recording_id {
+        crate::db::voice::set_tidied(conn, id, &tidied)?;
+    }
+    Ok(TidyDto { tidied })
+}
+
+#[tauri::command]
+pub async fn voice_tidy(
+    state: tauri::State<'_, AppState>,
+    recording_id: Option<String>,
+    raw: String,
+) -> Result<TidyDto, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let model = { let conn = state.db.lock().await; ai_model(&conn).map_err(|e| e.to_string())? };
+    let mut conn = state.db.lock().await;
+    voice_tidy_inner(&mut conn, &ai, &model, recording_id.as_deref(), &raw)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn voice_list_unsaved_inner(conn: &Connection) -> AppResult<Vec<VoiceRecordingDto>> {
+    Ok(crate::db::voice::list_unsaved(conn)?.into_iter().map(Into::into).collect())
+}
+
+#[tauri::command]
+pub async fn voice_list_unsaved(state: tauri::State<'_, AppState>) -> Result<Vec<VoiceRecordingDto>, String> {
+    let conn = state.db.lock().await;
+    voice_list_unsaved_inner(&conn).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,5 +1449,165 @@ mod tests {
         state.keystore.set("ck-1").unwrap();
         assert_eq!(state.ai_keystore.get().unwrap().as_deref(), Some("sk-1"));
         assert_eq!(state.keystore.get().unwrap().as_deref(), Some("ck-1"));
+    }
+
+    // ---- Task 6: transcribe + tidy commands (state machine) + list_unsaved ----
+
+    fn staged(conn: &Connection, id: &str, _state: &str, raw: Option<&str>, tidied: Option<&str>) {
+        crate::db::voice::create_staging(conn, id, "/tmp/t.wav").unwrap();
+        if let Some(r) = raw { crate::db::voice::set_transcript(conn, id, r).unwrap(); }
+        if let Some(t) = tidied { crate::db::voice::set_tidied(conn, id, t).unwrap(); }
+    }
+
+    fn ai_mock_ok_text() -> crate::voice_ai::VoiceAiClient {
+        // unreachable endpoint (port 1): failure-path tests use this client;
+        // success-path tests build their own against a live MockServer
+        crate::voice_ai::VoiceAiClient::new("http://127.0.0.1:1", "sk", crate::voice_ai::Suffix::V1).unwrap()
+    }
+
+    #[tokio::test]
+    async fn transcribe_success_sets_transcribed_with_raw() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"text": "the transcript", "filename": "x.wav"})))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("t.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let dto = voice_transcribe_inner(&mut conn, &ai, None, "r1").await.unwrap();
+        assert_eq!(dto.state, crate::db::voice::ST_TRANSCRIBED);
+        assert_eq!(dto.raw_transcript.as_deref(), Some("the transcript"));
+        assert!(dto.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn transcribe_500_marks_retryable_failed_with_error_text() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("t.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let dto = voice_transcribe_inner(&mut conn, &ai, None, "r1").await.unwrap(); // Ok(dto), failed state
+        assert_eq!(dto.state, crate::db::voice::ST_FAILED);
+        assert!(dto.last_error.as_deref().unwrap().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn transcribe_401_marks_failed_auth_distinctly() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("bad key"))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("t.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let dto = voice_transcribe_inner(&mut conn, &ai, None, "r1").await.unwrap();
+        assert_eq!(dto.state, crate::db::voice::ST_FAILED_AUTH);
+        // retry hook only picks up ST_FAILED — this row is excluded there
+        assert!(crate::db::voice::list_failed(&conn).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn transcribe_fallback_persists_plain_suffix() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(404)).mount(&s).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/audio/transcriptions"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"text": "via plain", "filename": "x.wav"})))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("t.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        voice_transcribe_inner(&mut conn, &ai, None, "r1").await.unwrap();
+        assert_eq!(ai_suffix(&conn).unwrap(), crate::voice_ai::Suffix::Plain);
+    }
+
+    #[tokio::test]
+    async fn transcribe_while_recording_is_rejected_and_transcribed_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("t.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db();
+        let ai = ai_mock_ok_text();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        assert!(voice_transcribe_inner(&mut conn, &ai, None, "r1").await.is_err(), "still recording");
+        crate::db::voice::mark_recorded(&conn, "r1", 1.0).unwrap();
+        crate::db::voice::set_transcript(&conn, "r1", "done").unwrap();
+        let dto = voice_transcribe_inner(&mut conn, &ai, None, "r1").await.unwrap();
+        assert_eq!(dto.state, crate::db::voice::ST_TRANSCRIBED); // no second request (no server running)
+    }
+
+    #[tokio::test]
+    async fn tidy_persists_to_row_only_when_id_given() {
+        let s = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/chat/completions"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"choices": [{"message": {"content": "Tidied."}}]})))
+            .mount(&s).await;
+        let mut conn = db();
+        staged(&conn, "r1", crate::db::voice::ST_TRANSCRIBED, Some("raw"), None);
+        kv_set(&conn, "ai_model", "llama3").unwrap();
+        let ai = crate::voice_ai::VoiceAiClient::new(&s.uri(), "sk", crate::voice_ai::Suffix::V1).unwrap();
+        let dto = voice_tidy_inner(&mut conn, &ai, "llama3", Some("r1"), "raw").await.unwrap();
+        assert_eq!(dto.tidied, "Tidied.");
+        assert_eq!(crate::db::voice::get(&conn, "r1").unwrap().unwrap().tidied_transcript.as_deref(), Some("Tidied."));
+        // raw untouched
+        assert_eq!(crate::db::voice::get(&conn, "r1").unwrap().unwrap().raw_transcript.as_deref(), Some("raw"));
+        // no id: returned only, nothing persisted
+        let dto2 = voice_tidy_inner(&mut conn, &ai, "llama3", None, "raw2").await.unwrap();
+        assert_eq!(dto2.tidied, "Tidied.");
+        assert!(crate::db::voice::list_unsaved(&conn).unwrap().iter().all(|r| r.tidied_transcript.is_none() || r.id != "r9"));
+    }
+
+    #[tokio::test]
+    async fn tidy_failure_returns_err_and_leaves_row_untouched() {
+        let mut conn = db();
+        staged(&conn, "r1", crate::db::voice::ST_TRANSCRIBED, Some("raw"), None);
+        let ai = ai_mock_ok_text(); // unreachable server
+        assert!(voice_tidy_inner(&mut conn, &ai, "llama3", Some("r1"), "raw").await.is_err());
+        assert!(crate::db::voice::get(&conn, "r1").unwrap().unwrap().tidied_transcript.is_none());
+    }
+
+    #[tokio::test]
+    async fn tidy_requires_a_model() {
+        let mut conn = db();
+        let ai = ai_mock_ok_text();
+        assert!(voice_tidy_inner(&mut conn, &ai, "", None, "raw").await.is_err());
+    }
+
+    #[test]
+    fn list_unsaved_maps_rows_to_dtos() {
+        let conn = db();
+        staged(&conn, "r1", crate::db::voice::ST_TRANSCRIBED, Some("raw"), Some("tid"));
+        let rows = voice_list_unsaved_inner(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "r1");
+        assert_eq!(rows[0].state, crate::db::voice::ST_TRANSCRIBED);
     }
 }

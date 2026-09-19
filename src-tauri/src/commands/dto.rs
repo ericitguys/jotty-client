@@ -233,6 +233,12 @@ impl From<crate::db::voice::VoiceRecordingRow> for VoiceRecordingDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TidyDto {
+    pub tidied: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiSettingsDto {
     pub base_url: String,
     pub model: String,
