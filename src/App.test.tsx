@@ -353,4 +353,28 @@ describe('web preference mirroring', () => {
     fireEvent.click(screen.getByText('Discard'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_delete_recording', { recordingId: 'r1' }));
   });
+
+  it('menu button toggles the navigation drawer (mobile)', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const app = document.getElementById('app')!;
+    expect(app).not.toHaveClass('drawer-open');
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle navigation' }));
+    expect(app).toHaveClass('drawer-open');
+    expect(screen.getByRole('navigation')).toBeInTheDocument(); // sidebar reachable
+    fireEvent.click(document.querySelector('.drawer-backdrop')!);
+    expect(app).not.toHaveClass('drawer-open');
+ expect(screen.queryByRole('button', { name: 'Toggle navigation' })).toBeInTheDocument(); // toggle remains
+  });
+
+  it('back button clears the open editor (mobile)', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Groceries')); // open the editor
+    await waitFor(() => expect(document.getElementById('note-editor')).toBeInTheDocument());
+    expect(document.querySelector('main')).not.toHaveClass('list-only');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }));
+    await waitFor(() => expect(document.getElementById('note-editor')).not.toBeInTheDocument());
+    expect(document.querySelector('main')).toHaveClass('list-only');
+  });
 });

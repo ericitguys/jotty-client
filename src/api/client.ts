@@ -53,3 +53,27 @@ export const setAiSettings = (baseUrl: string | null, model: string | null, lang
 export const audioSrc = (path: string): string => {
   try { return convertFileSrc(path); } catch { return path; }
 };
+
+// Microphone permission (Android runtime prompt): the Rust recorder (cpal/
+// AAudio) cannot request RECORD_AUDIO itself, but wry's WebChromeClient maps a
+// webview AUDIO_CAPTURE request onto the native RECORD_AUDIO +
+// MODIFY_AUDIO_SETTINGS dialog. So: a one-shot getUserMedia({audio:true}) fires
+// the system prompt (first run) and resolves once granted; tracks are stopped
+// immediately — nothing is captured here, this only unlocks the permission.
+// Desktop (Linux) ignores this: no getUserMedia prompt, resolves instantly.
+export const ensureMicPermission = async (): Promise<void> => {
+  const md = navigator.mediaDevices as MediaDevices | undefined;
+  if (!md?.getUserMedia) return; // no mediaDevices (old webview / jsdom default): let the recorder surface any error
+  let stream: MediaStream | null = null;
+  try {
+    stream = await md.getUserMedia({ audio: true });
+  } catch (e) {
+    const name = (e as { name?: string })?.name ?? '';
+    throw new Error(
+      name === 'NotAllowedError' || name === 'SecurityError'
+        ? 'Microphone access denied — allow mic permission for jotty in Android settings, then retry.'
+        : `Microphone unavailable: ${String(e)}`,
+    );
+  }
+  for (const t of stream.getTracks()) t.stop();
+};

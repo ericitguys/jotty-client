@@ -40,6 +40,11 @@ export default function App() {
   }, [title]);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Mobile layout (Pixel 9 etc.): the sidebar becomes an off-canvas drawer and
+  // the editor takes the full screen; the desktop grid is untouched (CSS gates
+  // both behaviors behind a max-width media query).
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => { setDrawerOpen(false); }, [selectedNoteId, selectedChecklistId]);
 
   // Category filter: exact path match or a descendant (prefix) — clicking the
   // parent "Work" also shows notes in "Work/Projects".
@@ -133,7 +138,13 @@ export default function App() {
   }
 
   return (
-    <div id="app" data-theme={dataTheme}>
+    <div id="app" data-theme={dataTheme} className={drawerOpen ? 'drawer-open' : ''}>
+    <button
+      className="menu-btn"
+      aria-label="Toggle navigation"
+      onClick={() => setDrawerOpen((o) => !o)}
+    >☰</button>
+    {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
     <Sidebar onOpenSettings={() => setShowSettings(true)} />
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
       {listMode === 'notes'
@@ -141,6 +152,13 @@ export default function App() {
         : <ChecklistList checklists={visibleChecklists} />}
         {selectedNoteId ? <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
+      {(selectedNoteId || selectedChecklistId) && (
+        <button
+          className="back-btn"
+          aria-label="Back to list"
+          onClick={() => { selectNote(null); selectChecklist(null); }}
+        >←</button>
+      )}
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}
       {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) => selectChecklist(id)} />}

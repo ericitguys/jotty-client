@@ -13,6 +13,11 @@ const recordedRow = {
 
 beforeEach(() => {
   invoke.mockReset();
+  // jsdom has no mediaDevices: stub getUserMedia for the mic-permission gate.
+  // Default: granted — individual tests override for the denial path.
+  const gm = vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream);
+  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: gm } });
+  (globalThis as unknown as { __lastGum: unknown }).__lastGum = gm;
   invoke.mockImplementation((cmd: string) => {
     if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
     if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
@@ -64,6 +69,24 @@ describe('VoiceNoteReview', () => {
     // transcript (titleFromTranscript), so both elements carry the same value —
     // assert the transcript textarea itself.
     await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('now it works'));
+  });
+
+  it('requests mic permission (getUserMedia) before starting the recorder', async () => {
+    const gm = (globalThis as unknown as { __lastGum: ReturnType<typeof vi.fn> }).__lastGum;
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(gm).toHaveBeenCalledWith({ audio: true }));
+    // the recorder must NOT start before the prompt resolves
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_start_recording'));
+    await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
+  });
+
+  it('mic denial shows an error and never starts the recorder', async () => {
+    const gm = (globalThis as unknown as { __lastGum: ReturnType<typeof vi.fn> }).__lastGum;
+    // real webviews reject with a DOMException whose .name is NotAllowedError
+    gm.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'NotAllowedError' }));
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Microphone access denied/)).toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith('voice_start_recording');
   });
 
   it('tidy stores both texts, switches to the tidied view, raw toggle returns', async () => {

@@ -37,6 +37,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [atCap, setAtCap] = useState(false);
   const mounted = useRef(true);
+  const stoppedRef = useRef(false); // Stop pressed before the start-chain finished (permission prompt window)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const enterReview = (row: VoiceRecordingDto) => {
@@ -55,8 +56,11 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
       let cancelled = false;
       (async () => {
         try {
+          // Mic permission BEFORE the native recorder starts (Android runtime
+          // prompt via the webview AUDIO_CAPTURE bridge; desktop is a no-op).
+          await api.ensureMicPermission();
           const row = await api.voiceStartRecording();
-          if (cancelled) return;
+          if (cancelled || stoppedRef.current) return; // user already stopped (or closed) mid-start
           setRec(row);
           setPhase('recording');
         } catch (e) {
@@ -107,6 +111,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   }, [elapsed, phase]);
 
   const stopRecording = async (atCap = false) => {
+    stoppedRef.current = true; // late start-chain arrivals must not clobber this session
     setPhase('transcribing');
     setAtCap(atCap);
     try {
