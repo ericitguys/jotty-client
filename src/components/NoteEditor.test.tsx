@@ -62,4 +62,51 @@ describe('NoteEditor', () => {
     expect(updates.filter((c) => c[1]?.id === 'n1')).toEqual([]);
     for (const c of updates) expect(c[1]?.id).toBe('n2');
   });
+
+  it('shows the voice panel with playback and duration when the note has audio', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>hi</p>', category: 'Home', audioPath: '/data/voice/n1.wav', audioDurationSecs: 65, createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.voice-panel')).not.toBeNull());
+    const audio = document.querySelector('.voice-panel audio');
+    expect(audio).not.toBeNull();
+    expect(audio?.getAttribute('src')).toContain('/data/voice/n1.wav');
+    expect(document.querySelector('.voice-panel')?.textContent).toContain('1:05');
+  });
+
+  it('no audio_path means no voice panel', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    expect(document.querySelector('.voice-panel')).toBeNull();
+  });
+
+  it('delete audio clears the panel without touching content', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>hi</p>', category: 'Home', audioPath: '/data/voice/n1.wav', audioDurationSecs: 65, createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'voice_delete_note_audio') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>hi</p>', category: 'Home', audioPath: null, audioDurationSecs: null, createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.voice-panel')).not.toBeNull());
+    fireEvent.click(screen.getByText('Delete audio'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_delete_note_audio', { noteId: 'n1' }));
+    await waitFor(() => expect(document.querySelector('.voice-panel')).toBeNull());
+  });
+
+  it('re-transcribe button calls onRetranscribe with the note id', async () => {
+    const onRetranscribe = vi.fn();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>hi</p>', category: 'Home', audioPath: '/data/voice/n1.wav', audioDurationSecs: 65, createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" onRetranscribe={onRetranscribe} />);
+    await waitFor(() => expect(document.querySelector('.voice-panel')).not.toBeNull());
+    fireEvent.click(screen.getByText('Re-transcribe'));
+    expect(onRetranscribe).toHaveBeenCalledWith('n1');
+  });
 });

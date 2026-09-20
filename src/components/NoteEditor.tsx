@@ -7,10 +7,12 @@ import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import type { NoteDto } from '../api/types';
 
-export default function NoteEditor({ noteId, onRetranscribe: _onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
+export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
   const refreshAll = useStore((s) => s.refreshAll);
   const [category, setCategory] = useState<string>('Uncategorized');
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  const [audioPath, setAudioPath] = useState<string | null>(null);
+  const [audioDur, setAudioDur] = useState<number | null>(null);
   const autosave = useAutosave(async (v: { title: string; content: string; category: string }) => {
     if (!loadedId) return;
     await api.updateNote(loadedId, v.title, v.content, v.category);
@@ -24,11 +26,28 @@ export default function NoteEditor({ noteId, onRetranscribe: _onRetranscribe }: 
       if (cancelled || !note) return; // missing note: leave the editor inert
       setLoadedId(note.id);
       setCategory(note.category);
+      setAudioPath(note.audioPath);
+      setAudioDur(note.audioDurationSecs);
       autosave.reset({ title: note.title, content: note.content, category: note.category });
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId]);
+
+  const fmtDuration = (s: number | null): string => {
+    if (s == null) return '';
+    return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  };
+
+  const deleteAudio = async () => {
+    if (!loadedId) return;
+    try {
+      const updated = await api.voiceDeleteNoteAudio(loadedId);
+      setAudioPath(updated.audioPath);
+      setAudioDur(updated.audioDurationSecs);
+      await refreshAll();
+    } catch { /* surfaced by the store on next refresh */ }
+  };
 
   const metaRef = useRef({ title: '', category: 'Uncategorized' });
   metaRef.current = { title: autosave.value?.title ?? '', category };
@@ -60,6 +79,14 @@ export default function NoteEditor({ noteId, onRetranscribe: _onRetranscribe }: 
         }}
         placeholder="Category"
       />
+      {audioPath && (
+        <div className="voice-panel">
+          <audio controls src={api.audioSrc(audioPath)} />
+          <span className="voice-duration">{fmtDuration(audioDur)}</span>
+          <button className="voice-retranscribe" onClick={() => loadedId && onRetranscribe?.(loadedId)}>Re-transcribe</button>
+          <button className="voice-delete-audio" onClick={deleteAudio}>Delete audio</button>
+        </div>
+      )}
       <EditorContent editor={editor} />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}
