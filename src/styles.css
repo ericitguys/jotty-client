@@ -531,12 +531,13 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   #app { grid-template-columns: 1fr; height: 100dvh; }
   #app > p { font-size: 14px; padding: 0 16px; }
 
-  /* sidebar -> off-canvas drawer */
+  /* sidebar -> off-canvas drawer (opaque: it floats over the list content) */
   #sidebar {
     position: fixed;
     top: 0; bottom: 0; left: 0;
     width: min(78vw, 320px);
     z-index: 60;
+    background: var(--bg);
     transform: translateX(-103%);
     transition: transform 0.18s ease;
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
