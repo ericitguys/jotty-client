@@ -516,3 +516,5 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
 .voice-hint { color: var(--muted-fg, #a39caf); font-size: 0.9em; }
 .head-actions { display: flex; gap: 6px; align-items: center; }
 .mic-badge { margin: 0 6px; }
+.ai-settings { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.ai-settings h3 { margin: 4px 0; font-size: 1em; }

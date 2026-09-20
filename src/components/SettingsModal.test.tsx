@@ -49,6 +49,52 @@ describe('SettingsModal updates', () => {
  expect(invoke).toHaveBeenCalledWith('check_update');
   });
 
+  it('AI section loads stored settings and saves trimmed values', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: 'llama3', languageHint: 'en', apiPathSuffix: 'v1', hasKey: true });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: 'llama3', languageHint: 'en', apiPathSuffix: 'v1', hasKey: true });
+      return Promise.resolve(null);
+    });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByPlaceholderText('https://ai.example.com')).toHaveValue('https://ai.example.com'));
+    expect(screen.getByPlaceholderText('API key stored')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_ai_settings', {
+      baseUrl: 'https://ai.example.com', model: 'llama3', languageHint: 'en', apiKey: null,
+    }));
+    await waitFor(() => expect(screen.getByText('AI settings saved.')).toBeInTheDocument());
+  });
+
+  it('AI test connection reports model count and populates the model dropdown', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: false });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+      if (cmd === 'ai_get_models') return Promise.resolve(['llama3', 'qwen2.5:7b']);
+      return Promise.resolve(null);
+    });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Test connection')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Test connection'));
+    await waitFor(() => expect(screen.getByText('Connected — 2 model(s) available.')).toBeInTheDocument());
+    expect(document.querySelector('#ai-model-list option[value="llama3"]')).not.toBeNull();
+  });
+
+  it('AI test connection failure surfaces the error', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: false });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: false });
+      if (cmd === 'ai_get_models') return Promise.reject(new Error('AI server not configured'));
+      return Promise.resolve(null);
+    });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Test connection')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Test connection'));
+    await waitFor(() => expect(screen.getByText(/AI server not configured/)).toBeInTheDocument());
+  });
+
   it('reports up to date when the release matches', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });

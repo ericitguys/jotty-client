@@ -25,11 +25,51 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const refreshUpdate = useStore((s) => s.refreshUpdate);
   const [phase, setPhase] = useState<UpdatePhase>({ kind: 'idle' });
   const [rpmPath, setRpmPath] = useState<string | null>(null);
+  const [aiBase, setAiBase] = useState('');
+  const [aiKey, setAiKey] = useState('');
+  const [aiModel, setAiModel] = useState('');
+  const [aiLang, setAiLang] = useState('');
+  const [aiHas, setAiHas] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [aiMsg, setAiMsg] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
 
   useEffect(() => {
     if (mode !== 'settings') return;
     api.getSettings().then((data) => { if (data) setSettings(data); });
+    api.getAiSettings().then((s) => {
+      setAiBase(s.baseUrl); setAiModel(s.model); setAiLang(s.languageHint); setAiHas(s.hasKey);
+      if (s.baseUrl && s.hasKey) {
+        api.aiGetModels().then((m) => { if (Array.isArray(m)) setModels(m); }).catch(() => {});
+      }
+    }).catch(() => {});
   }, [mode]);
+
+  const fmtErr = (e: unknown) => String(e).replace(/^.*Error: /, '');
+
+  const persistAi = async () => {
+    const s = await api.setAiSettings(aiBase.trim() || null, aiModel.trim() || null, aiLang.trim() || null, aiKey.trim() || null);
+    setAiHas(s.hasKey); setAiKey('');
+    return s;
+  };
+
+  const saveAi = async () => {
+    setAiBusy(true); setError(null); setAiMsg(null);
+    try { await persistAi(); setAiMsg('AI settings saved.'); }
+    catch (e) { setError(fmtErr(e)); }
+    finally { setAiBusy(false); }
+  };
+
+  const testAi = async () => {
+    setAiBusy(true); setError(null); setAiMsg(null);
+    try {
+      await persistAi(); // the probe reads stored settings
+      const m = await api.aiGetModels();
+      setModels(Array.isArray(m) ? m : []);
+      setAiMsg(`Connected — ${m.length} model(s) available.`);
+    } catch (e) { setError(fmtErr(e)); }
+    finally { setAiBusy(false); }
+  };
 
   const connect = async () => {
     setBusy(true); setError(null);
@@ -91,6 +131,19 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
             <label>Sync every <input type="number" min={1} value={interval} onChange={(e) => setIntervalMin(Number(e.target.value))} /> minutes</label>
             <button onClick={async () => { await api.setSyncInterval(interval); }}>Save interval</button>
             <button onClick={async () => { await api.disconnectInstance(); onClose(); }}>Disconnect</button>
+            <div className="ai-settings">
+              <h3>AI server (OpenWebUI)</h3>
+              <input placeholder="https://ai.example.com" value={aiBase} onChange={(e) => setAiBase(e.target.value)} />
+              <input placeholder={aiHas ? 'API key stored' : 'sk-...'} value={aiKey} onChange={(e) => setAiKey(e.target.value)} type="password" />
+              <input list="ai-model-list" placeholder="Tidy model" value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
+              <datalist id="ai-model-list">{models.map((m) => <option key={m} value={m} />)}</datalist>
+              <input placeholder="Language hint (optional, e.g. en)" value={aiLang} onChange={(e) => setAiLang(e.target.value)} />
+              <div className="voice-actions">
+                <button onClick={saveAi} disabled={aiBusy}>{aiBusy ? 'Working…' : 'Save'}</button>
+                <button onClick={testAi} disabled={aiBusy}>Test connection</button>
+              </div>
+              {aiMsg && <p className="voice-hint">{aiMsg}</p>}
+            </div>
             <div className="updater">
               <span className="updater-version">Version {updateInfo?.current ?? 'unknown'}</span>
               {phase.kind === 'checking' && <span>Checking…</span>}
