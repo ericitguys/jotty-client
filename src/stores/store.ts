@@ -17,6 +17,9 @@ interface AppState {
   refreshUpdate: () => Promise<void>;
   prefs: T.UserPrefs | null;
   branding: T.Branding | null;
+  /** In-app theme override (0.10.8): null = follow the site mirror. */
+  themeOverride: T.ThemeOverride | null;
+  setThemeOverride: (v: T.ThemeOverride | null) => void;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -46,6 +49,17 @@ export const useStore = create<AppState>((set, get) => ({
   updateInfo: null,
   prefs: null,
   branding: null,
+  themeOverride: (() => {
+    try { return (localStorage.getItem('jotty.theme-override') as T.ThemeOverride | null) ?? null; }
+    catch { return null; }
+  })(),
+  setThemeOverride: (v) => {
+    set({ themeOverride: v });
+    try {
+      if (v) localStorage.setItem('jotty.theme-override', v);
+      else localStorage.removeItem('jotty.theme-override');
+    } catch { /* storage unavailable: session-only override */ }
+  },
   refreshUpdate: async () => {
     try {
       const info = await api.checkUpdate();

@@ -14,6 +14,8 @@ export interface ChecklistDto {
   dirty: boolean; completed: boolean; listType: string; items: ItemDto[];
 }
 export interface Branding { name: string | null; iconDataUrl: string | null; themeColor: string | null; }
+/** In-app theme choices: 'auto' follows the site mirror chain. */
+export type ThemeOverride = 'auto' | 'dark' | 'light' | 'rwmarkable-dark';
 export interface CategoryNode { name: string; path: string; count: number; level: number; }
 export interface CategoriesDto { notes: CategoryNode[]; checklists: CategoryNode[]; }
 export interface SearchResultsDto {

@@ -238,6 +238,33 @@ describe('web preference mirroring', () => {
     expect(root).toHaveAttribute('data-theme', 'dark');
   });
 
+  it('in-app theme override wins over the site mirror', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const root = document.getElementById('app');
+    act(() => useStore.setState({ themeOverride: 'rwmarkable-dark' }));
+    expect(root).toHaveAttribute('data-theme', 'rwmarkable-dark');
+    // override survives a branding change (site color ignored)
+    act(() => useStore.setState({ branding: { name: 'T', iconDataUrl: null, themeColor: '#ff88cc' } }));
+    expect(root).toHaveAttribute('data-theme', 'rwmarkable-dark');
+    // override light
+    act(() => useStore.setState({ themeOverride: 'light' }));
+    expect(root).toHaveAttribute('data-theme', 'light');
+    // auto/none returns to the mirror chain
+    act(() => useStore.setState({ themeOverride: null }));
+    expect(root).toHaveAttribute('data-theme', 'dark');
+  });
+
+  it('mobile top bar shows the hamburger and the app name in flow', async () => {
+    useStore.setState({ branding: { name: 'Acme Notes', iconDataUrl: null, themeColor: null } });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const bar = document.querySelector('.topbar');
+    expect(bar).not.toBeNull();
+    expect(bar!.querySelector('.menu-btn')).not.toBeNull();
+    expect(bar!.querySelector('.topbar-title')!.textContent).toBe('Acme Notes');
+  });
+
   it('defaultNoteFilter=recent orders notes by updatedAt desc', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });

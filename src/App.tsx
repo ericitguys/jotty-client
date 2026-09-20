@@ -20,7 +20,7 @@ type VoiceFlow =
   | { mode: 'retranscribe'; noteId: string };
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, themeOverride, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [voice, setVoice] = useState<VoiceFlow | null>(null);
   const [resumeRows, setResumeRows] = useState<VoiceRecordingDto[] | null>(null);
@@ -92,7 +92,10 @@ export default function App() {
   // the manifest theme_color (upstream writes getThemeBackgroundColor there).
   const SITE_BG: Record<string, string> = { '#111827': 'rwmarkable-dark' };
   const siteTheme = branding?.themeColor ? SITE_BG[branding.themeColor.toLowerCase()] : undefined;
-  const dataTheme = (THEMED as readonly string[]).includes(themeId) ? themeId
+  // 0.10.8: an explicit in-app choice (Settings → Theme) wins over everything;
+  // 'auto' / null restores the mirror chain (site pref → manifest → dark).
+  const dataTheme = themeOverride && themeOverride !== 'auto' ? themeOverride
+    : (THEMED as readonly string[]).includes(themeId) ? themeId
     : themeId === 'system' ? (systemPrefersDark ? 'dark' : 'light')
     : siteTheme ?? 'dark';
 
@@ -146,11 +149,14 @@ export default function App() {
 
   return (
     <div id="app" data-theme={dataTheme} className={drawerOpen ? 'drawer-open' : ''}>
-    <button
-      className="menu-btn"
-      aria-label="Toggle navigation"
-      onClick={() => setDrawerOpen((o) => !o)}
-    >☰</button>
+    <header className="topbar">
+      <button
+        className="menu-btn"
+        aria-label="Toggle navigation"
+        onClick={() => setDrawerOpen((o) => !o)}
+      >☰</button>
+      <span className="topbar-title">{title}</span>
+    </header>
     {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
     <Sidebar onOpenSettings={() => setShowSettings(true)} />
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>

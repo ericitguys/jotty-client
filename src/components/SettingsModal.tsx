@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import { useStore } from '../stores/store';
-import type { UpdateInfo } from '../api/types';
+import type { UpdateInfo, ThemeOverride } from '../api/types';
 
 type UpdatePhase =
   | { kind: 'idle' }
@@ -15,6 +15,7 @@ type UpdatePhase =
 export default function SettingsModal({ mode, onClose, onConnected }: {
   mode: 'onboarding' | 'settings'; onClose: () => void; onConnected?: () => void;
 }) {
+  const { themeOverride, setThemeOverride } = useStore();
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
   const [interval, setIntervalMin] = useState(5);
@@ -147,6 +148,24 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
             <label>Sync every <input type="number" min={1} value={interval} onChange={(e) => setIntervalMin(Number(e.target.value))} /> minutes</label>
             <button onClick={async () => { await api.setSyncInterval(interval); }}>Save interval</button>
             <button onClick={async () => { await api.disconnectInstance(); onClose(); }}>Disconnect</button>
+            <div className="appearance-settings">
+              <h3>Appearance</h3>
+              <label htmlFor="theme-select">Theme</label>
+              <select
+                id="theme-select"
+                value={themeOverride ?? 'auto'}
+                onChange={(e) => {
+                  const v = e.target.value as ThemeOverride;
+                  setThemeOverride(v === 'auto' ? null : v);
+                }}
+              >
+                <option value="auto">Follow site</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="rwmarkable-dark">Blue (rwMarkable dark)</option>
+              </select>
+              <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
+            </div>
             <div className="ai-settings">
               <h3>AI server (OpenWebUI)</h3>
               <input placeholder="https://ai.example.com" value={aiBase} onChange={(e) => setAiBase(e.target.value)} />

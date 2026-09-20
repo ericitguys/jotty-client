@@ -558,9 +558,10 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
    The drawer/backdrop/menu/back buttons are rendered by App at all sizes and
    shown/hidden here. */
 .menu-btn, .back-btn { display: none; }
+.topbar { display: none; }
 
 @media (max-width: 700px) {
-  #app { grid-template-columns: 1fr; height: 100dvh; }
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: 100dvh; }
   #app > p { font-size: 14px; padding: 0 16px; }
 
   /* sidebar -> off-canvas drawer (opaque: it floats over the list content) */
@@ -580,11 +581,26 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
     background: rgba(5, 9, 30, 0.66);
     z-index: 55;
   }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border-soft);
+    grid-row: 1;
+  }
+  .topbar-title {
+    color: var(--fg);
+    font-weight: 600;
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .menu-btn {
     display: inline-flex;
-    position: fixed;
-    top: 10px; left: 10px;
-    z-index: 70;
+    position: static;
     width: 38px; height: 38px;
     align-items: center; justify-content: center;
     border-radius: 10px;
@@ -592,6 +608,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
     border: 1px solid var(--border-soft);
     color: var(--fg);
     font-size: 17px;
+    flex: 0 0 auto;
   }
   .back-btn {
     display: inline-flex;
@@ -607,8 +624,8 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
     font-size: 17px;
   }
 
-  /* single column: list OR editor, never side by side */
-  #app > main { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+  /* single column: topbar row, then list OR editor */
+  #app > main { grid-template-columns: 1fr; padding: 12px; gap: 12px; grid-row: 2; min-height: 0; }
   /* an editor/checklist view is open -> hide the list behind it */
   #app > main:not(.list-only) > section { display: none; }
   /* when the list is hidden, give the editor the full column */

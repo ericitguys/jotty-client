@@ -156,3 +156,24 @@ describe('SettingsModal updates', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('restart_app'));
   });
 });
+
+describe('SettingsModal appearance (theme picker)', () => {
+  it('renders the theme select with follow-site, dark, light, and blue options', () => {
+    invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const sel = screen.getByLabelText('Theme') as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toEqual(['auto', 'dark', 'light', 'rwmarkable-dark']);
+    expect(sel.value).toBe('auto'); // default: follow the site
+  });
+
+  it('picking a theme applies it immediately (store + localStorage)', () => {
+    invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'rwmarkable-dark' } });
+    expect(useStore.getState().themeOverride).toBe('rwmarkable-dark');
+    expect(localStorage.getItem('jotty.theme-override')).toBe('rwmarkable-dark');
+    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'auto' } });
+    expect(useStore.getState().themeOverride).toBe(null);
+    expect(localStorage.getItem('jotty.theme-override')).toBe(null);
+  });
+});

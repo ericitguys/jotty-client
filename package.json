@@ -1,12 +1,12 @@
 {
   "name": "jotty-desktop",
   "private": true,
-  "version": "0.10.7",
+  "version": "0.10.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "vitest run --passWithNoTests",
+    "test": "NODE_OPTIONS=--no-webstorage vitest run --passWithNoTests",
     "tauri": "tauri"
   },
   "dependencies": {
