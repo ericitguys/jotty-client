@@ -158,21 +158,26 @@ describe('SettingsModal updates', () => {
 });
 
 describe('SettingsModal appearance (theme picker)', () => {
-  it('renders the theme select with follow-site, dark, light, and blue options', () => {
+  it('renders the theme dropdown with follow-site, dark, light, and blue options', async () => {
     invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
     render(<SettingsModal mode="settings" onClose={() => {}} />);
-    const sel = screen.getByLabelText('Theme') as HTMLSelectElement;
-    expect([...sel.options].map((o) => o.value)).toEqual(['auto', 'dark', 'light', 'rwmarkable-dark']);
-    expect(sel.value).toBe('auto'); // default: follow the site
+    expect(screen.getByRole('button', { name: 'Theme' })).toHaveTextContent('Follow site'); // default: follow the site
+    fireEvent.click(screen.getByRole('button', { name: 'Theme' }));
+    const menu = await screen.findByRole('listbox');
+    expect([...menu.querySelectorAll('[role="option"] > span:last-child')].map((o) => o.textContent))
+      .toEqual(['Follow site', 'Dark', 'Light', 'Blue (rwMarkable dark)']);
   });
 
   it('picking a theme applies it immediately (store + localStorage)', () => {
     invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
     render(<SettingsModal mode="settings" onClose={() => {}} />);
-    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'rwmarkable-dark' } });
+    const open = () => fireEvent.click(screen.getByRole('button', { name: 'Theme' }));
+    open();
+    fireEvent.click(screen.getByText('Blue (rwMarkable dark)'));
     expect(useStore.getState().themeOverride).toBe('rwmarkable-dark');
     expect(localStorage.getItem('jotty.theme-override')).toBe('rwmarkable-dark');
-    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'auto' } });
+    open();
+    fireEvent.click(screen.getByText('Follow site'));
     expect(useStore.getState().themeOverride).toBe(null);
     expect(localStorage.getItem('jotty.theme-override')).toBe(null);
   });

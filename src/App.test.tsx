@@ -422,6 +422,17 @@ describe('web preference mirroring', () => {
  expect(screen.queryByRole('button', { name: 'Toggle navigation' })).toBeInTheDocument(); // toggle remains
   });
 
+  it('opening Settings from the drawer closes the drawer (modal must not sit under the sidebar)', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const app = document.getElementById('app')!;
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle navigation' }));
+    expect(app).toHaveClass('drawer-open');
+    fireEvent.click(screen.getByText('Settings'));
+    expect(app).not.toHaveClass('drawer-open');
+    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  });
+
   it('back button clears the open editor (mobile)', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());

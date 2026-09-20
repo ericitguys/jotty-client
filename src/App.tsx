@@ -158,7 +158,7 @@ export default function App() {
       <span className="topbar-title">{title}</span>
     </header>
     {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
-    <Sidebar onOpenSettings={() => setShowSettings(true)} />
+    <Sidebar onOpenSettings={() => { setDrawerOpen(false); setShowSettings(true); }} />
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
       {listMode === 'notes'
         ? <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />

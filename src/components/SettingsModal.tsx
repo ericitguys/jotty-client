@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import { useStore } from '../stores/store';
 import type { UpdateInfo, ThemeOverride } from '../api/types';
+import Dropdown from './Dropdown';
 
 type UpdatePhase =
   | { kind: 'idle' }
@@ -151,19 +152,16 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
             <div className="appearance-settings">
               <h3>Appearance</h3>
               <label htmlFor="theme-select">Theme</label>
-              <select
-                id="theme-select"
+              <Dropdown
                 value={themeOverride ?? 'auto'}
-                onChange={(e) => {
-                  const v = e.target.value as ThemeOverride;
-                  setThemeOverride(v === 'auto' ? null : v);
-                }}
-              >
-                <option value="auto">Follow site</option>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-                <option value="rwmarkable-dark">Blue (rwMarkable dark)</option>
-              </select>
+                onChange={(v) => setThemeOverride(v === 'auto' ? null : (v as ThemeOverride))}
+                options={[
+                  { id: 'auto', name: 'Follow site' },
+                  { id: 'dark', name: 'Dark', swatch: { bg: '#0e1840', primary: '#9d5ffe' } },
+                  { id: 'light', name: 'Light', swatch: { bg: '#f9f9f9', primary: '#9d5ffe' } },
+                  { id: 'rwmarkable-dark', name: 'Blue (rwMarkable dark)', swatch: { bg: '#111827', primary: '#3b82f6' } },
+                ]}
+              />
               <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
             </div>
             <div className="ai-settings">
