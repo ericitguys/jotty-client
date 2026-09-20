@@ -210,6 +210,17 @@ describe('web preference mirroring', () => {
     expect(root).toHaveAttribute('data-theme', 'dark'); // no matchMedia in jsdom -> guard yields dark
   });
 
+  it('site themes with app palettes render their own data-theme (rwmarkable-dark = blue)', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const root = document.getElementById('app');
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'rwmarkable-dark' }) }));
+    expect(root).toHaveAttribute('data-theme', 'rwmarkable-dark');
+    // unknown custom theme ids still fall back to dark
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'some-future-theme' }) }));
+    expect(root).toHaveAttribute('data-theme', 'dark');
+  });
+
   it('defaultNoteFilter=recent orders notes by updatedAt desc', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });

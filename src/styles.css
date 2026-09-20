@@ -13,6 +13,12 @@
   --accent: #9d5ffe;
   --accent-hover: #8f4df2;
   --accent-soft: rgba(157, 95, 254, 0.16);
+  --accent-text: #c9aef7;      /* accent-tinted text (chips, categories, headings) */
+  --accent-strong-text: #cdb2fc;
+  --panel-input: rgba(13, 24, 65, 0.6);   /* input surface (bg-tinted glass) */
+  --badge-surface: rgba(13, 24, 65, 0.92);/* sync badge pill */
+  --code-bg: #0a1233;          /* tiptap pre blocks */
+  --child-row: rgba(29, 26, 85, 0.55);    /* nested checklist rows */
   --border: #262f3f;
   --border-soft: #22254e;
   --danger: #ef4444;
@@ -39,6 +45,32 @@
   --danger: #dc2626;
   --green: #16a34a;
   --amber: #b45309;
+}
+
+/* rwmarkable-dark (site theme mirror, ported from upstream colors.css):
+   dark slate + BLUE primary — matches sites running the rwMarkable scheme. */
+#app[data-theme='rwmarkable-dark'] {
+  --bg: #111827;               /* background 17 24 39 */
+  --panel: #161f31;            /* card = bg + subtle lift (site cards sit on bg + border) */
+  --row: #1f2937;              /* background-secondary 31 41 55 */
+  --row-hover: #273141;
+  --secondary: #1f2937;        /* chips / strong fills */
+  --fg: #f3f4f6;               /* foreground 243 244 246 */
+  --muted: #9ca3af;            /* muted-foreground 156 163 175 */
+  --accent: #3b82f6;           /* primary 59 130 246 */
+  --accent-hover: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --border: #262f3f;           /* border/input 38 47 63 */
+  --border-soft: #262f3f;
+  --danger: #ef4444;
+  --green: #22c55f;
+  --amber: #f59e0b;
+  --accent-text: #93c5fd;      /* blue-300: accent-tinted text on dark slate */
+  --accent-strong-text: #bfdbfe;
+  --panel-input: rgba(31, 41, 55, 0.6);
+  --badge-surface: rgba(17, 24, 39, 0.92);
+  --code-bg: #0b1220;
+  --child-row: rgba(31, 41, 55, 0.55);
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -95,7 +127,7 @@ button.primary:hover, .modal > button:hover { background: var(--accent-hover); b
 input, .modal label input {
   font: inherit;
   color: var(--fg);
-  background: rgba(13, 24, 65, 0.6);
+  background: var(--panel-input);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 7px 10px;
@@ -106,7 +138,7 @@ input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-so
 input::placeholder { color: var(--muted); }
 
 /* ---------- shell ---------- */
-#app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
+#app { display: grid; grid-template-columns: 240px 1fr; height: 100vh; background: var(--bg); }
 #app > p { grid-column: 1 / -1; place-self: center; color: var(--muted); font-size: 15px; }
 #app > main {
   display: grid;
@@ -134,7 +166,7 @@ input::placeholder { color: var(--muted); }
   padding: 3px 10px;
   background: var(--accent-soft);
   border-color: transparent;
-  color: #d9c6fc;
+  color: var(--accent-strong-text);
   font-weight: 600;
 }
 .new-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -206,7 +238,7 @@ input::placeholder { color: var(--muted); }
   font-size: 11px;
   padding: 2px 9px;
   margin-bottom: 6px;
-  color: #c9aef7;
+  color: var(--accent-text);
   background: var(--accent-soft);
   border-color: transparent;
 }
@@ -255,12 +287,12 @@ li.selected .count { color: rgba(255, 255, 255, 0.85); }
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #c9aef7;
+  color: var(--accent-text);
   background: var(--accent-soft);
   border-radius: 99px;
   padding: 2px 9px;
 }
-li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
+li.selected .chip { color: #fff; background: var(--accent-soft); }
 
 /* ---------- checklist view ---------- */
 #checklist-view { display: flex; flex-direction: column; gap: 8px; }
@@ -279,7 +311,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   align-self: flex-start;
   font-size: 12px;
   padding: 4px 10px;
-  color: #c9aef7;
+  color: var(--accent-text);
 }
 .cl-meta-row { display: flex; align-items: center; gap: 8px; }
 .cl-meta-row .cl-category { align-self: auto; }
@@ -306,7 +338,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   gap: 10px;
   padding: 10px 12px;
 }
-#checklist-view li.child { margin-left: 22px; background: rgba(29, 26, 85, 0.55); }
+#checklist-view li.child { margin-left: 22px; background: var(--child-row); }
 #checklist-view li.child > .row-line { padding: 7px 12px; font-size: 13.5px; }
 #checklist-view input[type='checkbox'] {
   width: 16px;
@@ -368,7 +400,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   align-self: flex-start;
   font-size: 12px;
   padding: 4px 10px;
-  color: #c9aef7;
+  color: var(--accent-text);
 }
 .editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .editor-foot #saving { align-self: auto; }
@@ -379,7 +411,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   overflow-y: auto;
 }
 #note-editor .tiptap p { margin: 0.45em 0; }
-#note-editor .tiptap h1, #note-editor .tiptap h2, #note-editor .tiptap h3 { color: #cdb2fc; margin: 0.7em 0 0.3em; }
+#note-editor .tiptap h1, #note-editor .tiptap h2, #note-editor .tiptap h3 { color: var(--accent-strong-text); margin: 0.7em 0 0.3em; }
 #note-editor .tiptap a { color: var(--accent); }
 #note-editor .tiptap blockquote {
   border-left: 3px solid var(--accent);
@@ -388,12 +420,12 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   color: var(--muted);
 }
 #note-editor .tiptap code {
-  background: rgba(157, 95, 254, 0.12);
+  background: var(--accent-soft);
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 13px;
 }
-#note-editor .tiptap pre { background: #0a1233; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+#note-editor .tiptap pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 #note-editor .tiptap ul { padding-left: 1.3em; }
 #saving { color: var(--amber); font-size: 12px; align-self: flex-end; }
 
@@ -405,7 +437,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(13, 24, 65, 0.92);
+  background: var(--badge-surface);
   border: 1px solid var(--border-soft);
   border-radius: 99px;
   padding: 6px 8px 6px 12px;
@@ -479,7 +511,7 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
 }
 .modal h2 { font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 700; }
 .modal p { margin: 0; color: var(--muted); font-size: 13px; }
-.modal .instance-url { font-family: ui-monospace, monospace; font-size: 12.5px; color: #c9aef7; }
+.modal .instance-url { font-family: ui-monospace, monospace; font-size: 12.5px; color: var(--accent-text); }
 .modal input { width: 100%; }
 .modal label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .modal label input { width: 70px; }

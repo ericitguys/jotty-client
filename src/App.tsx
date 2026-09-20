@@ -85,7 +85,10 @@ export default function App() {
     () => true, // jsdom/server snapshot: dark
   );
   const themeId = prefs?.preferredTheme ?? 'dark';
-  const dataTheme = themeId === 'light' ? 'light'
+  // Site themes with a ported palette render as themselves; everything else
+  // falls back to dark (upstream adds themes faster than we port them).
+  const THEMED = ['light', 'rwmarkable-dark'] as const;
+  const dataTheme = (THEMED as readonly string[]).includes(themeId) ? themeId
     : themeId === 'system' ? (systemPrefersDark ? 'dark' : 'light')
     : 'dark';
 
