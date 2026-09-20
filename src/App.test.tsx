@@ -221,6 +221,23 @@ describe('web preference mirroring', () => {
     expect(root).toHaveAttribute('data-theme', 'dark');
   });
 
+  it('site theme_color adopts the site scheme when the user has no personal theme', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const root = document.getElementById('app');
+    // no preferredTheme + site manifest says #111827 -> rwmarkable-dark
+    act(() => useStore.setState({ branding: { name: 'T', iconDataUrl: null, themeColor: '#111827' } }));
+    expect(root).toHaveAttribute('data-theme', 'rwmarkable-dark');
+    // unknown site color still falls back to dark
+    act(() => useStore.setState({ branding: { name: 'T', iconDataUrl: null, themeColor: '#ff88cc' } }));
+    expect(root).toHaveAttribute('data-theme', 'dark');
+    // personal theme always wins over the site color
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: 'light' }) }));
+    expect(root).toHaveAttribute('data-theme', 'light');
+    act(() => useStore.setState({ prefs: prefs({ preferredTheme: null }), branding: null }));
+    expect(root).toHaveAttribute('data-theme', 'dark');
+  });
+
   it('defaultNoteFilter=recent orders notes by updatedAt desc', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });

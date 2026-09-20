@@ -9,6 +9,12 @@ pub struct WebManifest {
     pub name: Option<String>,
     #[serde(default)]
     pub short_name: Option<String>,
+    /// The site's theme background color (e.g. "#111827") — upstream writes
+    /// getThemeBackgroundColor(theme) here on every page render. The app maps
+    /// it to a ported palette so the app follows the SITE's scheme even when
+    /// the user never set a personal theme (0.10.7).
+    #[serde(default)]
+    pub theme_color: Option<String>,
     #[serde(default)]
     pub icons: Vec<ManifestIcon>,
 }

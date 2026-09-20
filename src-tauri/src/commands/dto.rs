@@ -8,6 +8,9 @@ use serde::Serialize;
 pub struct BrandingDto {
     pub name: Option<String>,
     pub icon_data_url: Option<String>,
+    /// The site's theme background color (#rrggbb) — lets the frontend adopt
+    /// the site's scheme even when the user has no personal theme preference.
+    pub theme_color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

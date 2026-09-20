@@ -90,7 +90,7 @@ describe('Sidebar section switching', () => {
 describe('Sidebar branding mirror', () => {
   it('brand shows the instance name and logo when branding is set', () => {
     useStore.setState({
-      branding: { name: 'Acme Notes', iconDataUrl: 'data:image/png;base64,AAA' },
+      branding: { name: 'Acme Notes', iconDataUrl: 'data:image/png;base64,AAA', themeColor: null },
     });
     render(<Sidebar />);
     expect(screen.getByText('Acme Notes')).toBeInTheDocument();

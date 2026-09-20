@@ -14,9 +14,20 @@ pub struct JottyClient {
 pub struct BrandingData {
     pub name: Option<String>,
     pub icon_data_url: Option<String>,
+    /// The site's theme background color from the manifest (e.g. "#111827"),
+    /// validated as a hex color; None when absent or malformed.
+    pub theme_color: Option<String>,
     /// raw icon bytes — used by the command layer for the best-effort
     /// window/taskbar icon (set_icon); never serialized to the frontend.
     pub icon_bytes: Option<Vec<u8>>,
+}
+
+/// Manifest theme_color → Option<String>, only valid #rgb / #rrggbb hex kept.
+fn clean_theme_color(v: &Option<String>) -> Option<String> {
+    let s = v.as_deref()?.trim();
+    let body = s.strip_prefix('#')?;
+    let ok = (body.len() == 3 || body.len() == 6) && body.chars().all(|c| c.is_ascii_hexdigit());
+    if ok { Some(s.to_ascii_lowercase()) } else { None }
 }
 
 fn icon_mime(src: &str) -> &'static str {
@@ -138,7 +149,12 @@ impl JottyClient {
                 Ok(bytes) => (Some(to_data_url(&icon.src, &bytes)), Some(bytes)),
             },
         };
-        Ok(BrandingData { name: manifest.name, icon_data_url, icon_bytes })
+        Ok(BrandingData {
+            name: manifest.name,
+            icon_data_url,
+            icon_bytes,
+            theme_color: clean_theme_color(&manifest.theme_color),
+        })
     }
 
     async fn get_bytes(&self, path: &str) -> AppResult<Vec<u8>> {
@@ -482,6 +498,43 @@ mod tests {
         assert_eq!(b.name.as_deref(), Some("Acme Notes"));
         assert_eq!(b.icon_data_url.as_deref(), Some(&*format!("data:image/png;base64,{PNG_1PX_B64}")));
         assert_eq!(b.icon_bytes.as_deref(), Some(png.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn get_branding_theme_color_validated() {
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "T", "theme_color": "  #111827 "
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let b = c.get_branding().await.unwrap();
+        assert_eq!(b.theme_color.as_deref(), Some("#111827"));
+    }
+
+    #[tokio::test]
+    async fn get_branding_bad_theme_color_is_none() {
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "theme_color": "blue"
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let b = c.get_branding().await.unwrap();
+        assert_eq!(b.theme_color, None);
+    }
+
+    #[tokio::test]
+    async fn get_branding_theme_color_absent_is_none() {
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/manifest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"name": "T"})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let b = c.get_branding().await.unwrap();
+        assert_eq!(b.theme_color, None);
     }
 
     #[tokio::test]

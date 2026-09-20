@@ -88,9 +88,13 @@ export default function App() {
   // Site themes with a ported palette render as themselves; everything else
   // falls back to dark (upstream adds themes faster than we port them).
   const THEMED = ['light', 'rwmarkable-dark'] as const;
+  // 0.10.7: when the user has no personal theme, adopt the site's scheme from
+  // the manifest theme_color (upstream writes getThemeBackgroundColor there).
+  const SITE_BG: Record<string, string> = { '#111827': 'rwmarkable-dark' };
+  const siteTheme = branding?.themeColor ? SITE_BG[branding.themeColor.toLowerCase()] : undefined;
   const dataTheme = (THEMED as readonly string[]).includes(themeId) ? themeId
     : themeId === 'system' ? (systemPrefersDark ? 'dark' : 'light')
-    : 'dark';
+    : siteTheme ?? 'dark';
 
   useEffect(() => {
     refreshAll();

@@ -682,7 +682,7 @@ pub async fn get_branding(state: tauri::State<'_, AppState>, app: tauri::AppHand
     if let Some(bytes) = &data.icon_bytes {
         best_effort_set_icon(&app, bytes);
     }
-    Ok(crate::commands::dto::BrandingDto { name: data.name, icon_data_url: data.icon_data_url })
+    Ok(crate::commands::dto::BrandingDto { name: data.name, icon_data_url: data.icon_data_url, theme_color: data.theme_color })
 }
 
 fn best_effort_set_icon(app: &tauri::AppHandle, bytes: &[u8]) {
