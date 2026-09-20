@@ -29,10 +29,54 @@ const SERVICE: &str = "jotty-desktop";
 const ACCOUNT: &str = "api-key";
 pub const AI_ACCOUNT: &str = "openwebui-key";
 
+/// Android has no secret-service/keychain; the `keyring` crate has no Android
+/// backend. Fallback (disclosed, android-preview only): plaintext file in the
+/// app-private data dir (OS-sandboxed) — NOT the desktop path. The dir is
+/// resolved by lib.rs setup and passed via JOTTY_APP_DATA.
+/// TODO(android-v2): Android Keystore / encrypted prefs.
+#[cfg(target_os = "android")]
+mod mobile_store {
+    use super::SERVICE;
+    use crate::error::{AppError, AppResult};
+    use std::path::PathBuf;
+
+    fn file(account: &str) -> AppResult<PathBuf> {
+        let base = std::env::var("JOTTY_APP_DATA")
+            .map(PathBuf::from)
+            .map_err(|_| AppError::Keyring("JOTTY_APP_DATA not set (android key store)".into()))?;
+        Ok(base.join(format!("{SERVICE}-{account}.key")))
+    }
+
+    pub fn get(account: &str) -> AppResult<Option<String>> {
+        let p = file(account)?;
+        if !p.exists() {
+            return Ok(None);
+        }
+        Ok(Some(std::fs::read_to_string(&p).map_err(|e| {
+            AppError::Keyring(format!("read key store: {e}"))
+        })?))
+    }
+
+    pub fn set(account: &str, key: &str) -> AppResult<()> {
+        let p = file(account)?;
+        std::fs::write(&p, key).map_err(|e| AppError::Keyring(format!("write key store: {e}")))
+    }
+
+    pub fn delete(account: &str) -> AppResult<()> {
+        let p = file(account)?;
+        match std::fs::remove_file(&p) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(AppError::Keyring(format!("delete key store: {e}"))),
+        }
+    }
+}
+
 fn entry(account: &str) -> AppResult<keyring::Entry> {
     keyring::Entry::new(SERVICE, account).map_err(|e| AppError::Keyring(e.to_string()))
 }
 
+#[cfg(not(target_os = "android"))]
 fn get_for(account: &str) -> AppResult<Option<String>> {
     match entry(account)?.get_password() {
         Ok(v) => Ok(Some(v)),
@@ -41,10 +85,14 @@ fn get_for(account: &str) -> AppResult<Option<String>> {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn set_for(account: &str, key: &str) -> AppResult<()> {
-    entry(account)?.set_password(key).map_err(|e| AppError::Keyring(e.to_string()))
+    entry(account)?
+        .set_password(key)
+        .map_err(|e| AppError::Keyring(e.to_string()))
 }
 
+#[cfg(not(target_os = "android"))]
 fn delete_for(account: &str) -> AppResult<()> {
     match entry(account)?.delete_credential() {
         Ok(()) => Ok(()),
@@ -53,10 +101,29 @@ fn delete_for(account: &str) -> AppResult<()> {
     }
 }
 
+#[cfg(target_os = "android")]
+fn get_for(account: &str) -> AppResult<Option<String>> {
+    mobile_store::get(account)
+}
+#[cfg(target_os = "android")]
+fn set_for(account: &str, key: &str) -> AppResult<()> {
+    mobile_store::set(account, key)
+}
+#[cfg(target_os = "android")]
+fn delete_for(account: &str) -> AppResult<()> {
+    mobile_store::delete(account)
+}
+
 impl KeyStore for OsKeyStore {
-    fn get(&self) -> AppResult<Option<String>> { get_for(ACCOUNT) }
-    fn set(&self, key: &str) -> AppResult<()> { set_for(ACCOUNT, key) }
-    fn delete(&self) -> AppResult<()> { delete_for(ACCOUNT) }
+    fn get(&self) -> AppResult<Option<String>> {
+        get_for(ACCOUNT)
+    }
+    fn set(&self, key: &str) -> AppResult<()> {
+        set_for(ACCOUNT, key)
+    }
+    fn delete(&self) -> AppResult<()> {
+        delete_for(ACCOUNT)
+    }
 }
 
 /// Same service, AI account (spec §4: jotty-desktop / openwebui-key).
@@ -64,9 +131,15 @@ impl KeyStore for OsKeyStore {
 pub struct AiOsKeyStore;
 
 impl KeyStore for AiOsKeyStore {
-    fn get(&self) -> AppResult<Option<String>> { get_for(AI_ACCOUNT) }
-    fn set(&self, key: &str) -> AppResult<()> { set_for(AI_ACCOUNT, key) }
-    fn delete(&self) -> AppResult<()> { delete_for(AI_ACCOUNT) }
+    fn get(&self) -> AppResult<Option<String>> {
+        get_for(AI_ACCOUNT)
+    }
+    fn set(&self, key: &str) -> AppResult<()> {
+        set_for(AI_ACCOUNT, key)
+    }
+    fn delete(&self) -> AppResult<()> {
+        delete_for(AI_ACCOUNT)
+    }
 }
 
 #[cfg(test)]

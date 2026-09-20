@@ -686,12 +686,19 @@ pub async fn get_branding(state: tauri::State<'_, AppState>, app: tauri::AppHand
 }
 
 fn best_effort_set_icon(app: &tauri::AppHandle, bytes: &[u8]) {
-    use tauri::Manager as _;
-    // Best-effort by design: undecodable bytes (e.g. svg) or a missing window
-    // must never fail the branding command — the sidebar icon still mirrors.
-    if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
-        if let Some(win) = app.get_webview_window("main") {
-            let _ = win.set_icon(img);
+    // Android: WebviewWindow::set_icon doesn't exist in the mobile runtime —
+    // skip entirely (the OS draws the app icon from the launcher resources).
+    #[cfg(target_os = "android")]
+    let _ = (app, bytes);
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri::Manager as _;
+        // Best-effort by design: undecodable bytes (e.g. svg) or a missing window
+        // must never fail the branding command — the sidebar icon still mirrors.
+        if let Ok(img) = tauri::image::Image::from_bytes(bytes) {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_icon(img);
+            }
         }
     }
 }
