@@ -508,3 +508,9 @@ li.selected .chip { color: #fff; background: rgba(157, 95, 254, 0.45); }
   padding: 3px 9px;
   flex-shrink: 0;
 }
+.voice-modal textarea { width: 100%; margin: 8px 0; font-family: inherit; }
+.voice-toggle { display: flex; gap: 6px; margin: 8px 0; }
+.voice-toggle .selected { background: var(--primary, #9d5ffe); color: #fff; }
+.voice-actions { display: flex; gap: 8px; margin-top: 8px; }
+.voice-actions .primary { background: var(--primary, #9d5ffe); color: #fff; }
+.voice-hint { color: var(--muted-fg, #a39caf); font-size: 0.9em; }
