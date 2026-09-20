@@ -7,7 +7,7 @@ import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import type { NoteDto } from '../api/types';
 
-export default function NoteEditor({ noteId }: { noteId: string }) {
+export default function NoteEditor({ noteId, onRetranscribe: _onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
   const refreshAll = useStore((s) => s.refreshAll);
   const [category, setCategory] = useState<string>('Uncategorized');
   const [loadedId, setLoadedId] = useState<string | null>(null);

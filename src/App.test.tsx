@@ -19,6 +19,9 @@ beforeEach(() => {
     if (cmd === 'list_checklists') return Promise.resolve([{ id: 'l1', title: 'Errands', category: 'Home', dirty: false }]);
     if (cmd === 'list_categories') return Promise.resolve({ notes: [{ name: 'Home', path: 'Home', count: 1, level: 0 }], checklists: [] });
     if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: '2026-01-01T00:00:00.000Z', syncing: false });
+    if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+    if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+    if (cmd === 'ai_get_models') return Promise.resolve([]);
     return Promise.resolve(null);
   });
 });
@@ -287,5 +290,67 @@ describe('web preference mirroring', () => {
     await waitFor(() => expect(document.title).toBe('Acme Notes'));
     act(() => useStore.setState({ branding: null }));
     expect(document.title).toBe('jotty·desktop');
+  });
+
+  it('new voice note opens the review overlay when the AI server is configured', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('🎙 New voice note'));
+    await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
+  });
+
+  it('new voice note opens Settings when the AI server is unconfigured', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([{ id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false }]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: false });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('🎙 New voice note'));
+    await waitFor(() => expect(screen.getByText('Settings')).toBeInTheDocument());
+  });
+
+  it('resume prompt offers resume/discard when unsaved voice drafts exist', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([
+        { id: 'r1', path: '/data/voice/r1.wav', durationSecs: 3, rawTranscript: 'draft', tidiedTranscript: null, state: 'transcribed', lastError: null, createdAt: '2026-09-18T00:00:00Z' },
+      ]);
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Unfinished voice note')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Resume review'));
+    await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('draft'));
+  });
+
+  it('resume prompt discard deletes the recordings', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([
+        { id: 'r1', path: '/data/voice/r1.wav', durationSecs: 3, rawTranscript: null, tidiedTranscript: null, state: 'transcription_failed', lastError: null, createdAt: '2026-09-18T00:00:00Z' },
+      ]);
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: 'v1', hasKey: false });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Unfinished voice note')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Discard'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_delete_recording', { recordingId: 'r1' }));
   });
 });

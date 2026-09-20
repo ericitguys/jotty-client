@@ -9,11 +9,22 @@ import SyncBadge from './components/SyncBadge';
 import ConflictDialog from './components/ConflictDialog';
 import SearchPalette from './components/SearchPalette';
 import SettingsModal from './components/SettingsModal';
+import VoiceNoteReview from './components/VoiceNoteReview';
+import * as api from './api/client';
+import type { VoiceRecordingDto } from './api/types';
 import { useStore } from './stores/store';
+
+type VoiceFlow =
+  | { mode: 'new' }
+  | { mode: 'resume'; recording: VoiceRecordingDto }
+  | { mode: 'retranscribe'; noteId: string };
 
 export default function App() {
   const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
+  const [voice, setVoice] = useState<VoiceFlow | null>(null);
+  const [resumeRows, setResumeRows] = useState<VoiceRecordingDto[] | null>(null);
+  const [contentNonce, setContentNonce] = useState(0); // remounts NoteEditor after a retranscribe save
 
   // Branding mirror: window title follows the instance's app name. The native
   // setTitle call is best-effort (skipped outside a real webview, e.g. tests).
@@ -76,9 +87,30 @@ export default function App() {
   useEffect(() => {
     refreshAll();
     refreshUpdate();
+    // resume prompt (spec §6): unsaved non-recording drafts survive restart
+    api.voiceListUnsaved().then((rows) => {
+      if (Array.isArray(rows) && rows.length > 0) setResumeRows(rows);
+    }).catch(() => {});
     const un = listen('sync-updated', () => refreshAll());
-    return () => { un.then((f) => f()); };
+    const uv = listen('voice-updated', () => refreshAll());
+    return () => { un.then((f) => f()); uv.then((f) => f()); };
   }, [refreshAll, refreshUpdate]);
+
+  const startVoiceNote = async () => {
+    // unconfigured AI server -> prompt to open Settings (spec §4)
+    try {
+      const s = await api.getAiSettings();
+      if (!s.baseUrl || !s.hasKey) { setShowSettings(true); return; }
+    } catch { setShowSettings(true); return; }
+    setVoice({ mode: 'new' });
+  };
+
+  const noteSaved = (noteId: string) => {
+    setVoice(null);
+    setContentNonce((n) => n + 1); // retranscribe saves change content under an open editor
+    selectNote(noteId);
+    refreshAll();
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,13 +136,41 @@ export default function App() {
     <div id="app" data-theme={dataTheme}>
     <Sidebar onOpenSettings={() => setShowSettings(true)} />
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
-      {listMode === 'notes' ? <NoteList notes={visibleNotes} /> : <ChecklistList checklists={visibleChecklists} />}
-        {selectedNoteId ? <NoteEditor noteId={selectedNoteId}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
+      {listMode === 'notes'
+        ? <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
+        : <ChecklistList checklists={visibleChecklists} />}
+        {selectedNoteId ? <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}
       {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) => selectChecklist(id)} />}
       {showSettings && <SettingsModal mode="settings" onClose={() => setShowSettings(false)} />}
+      {resumeRows && (
+        <div className="modal-backdrop" onClick={() => setResumeRows(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Unfinished voice note</h2>
+            <p>You have a voice recording that was never saved.</p>
+            <div className="voice-actions">
+              <button className="primary" onClick={() => { setVoice({ mode: 'resume', recording: resumeRows[0] }); setResumeRows(null); }}>Resume review</button>
+              <button onClick={async () => {
+                for (const r of resumeRows) {
+                  try { await api.voiceDeleteRecording(r.id); } catch { /* best-effort */ }
+                }
+                setResumeRows(null);
+              }}>Discard</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {voice?.mode === 'new' && (
+        <VoiceNoteReview mode="new" onClose={() => setVoice(null)} onSaved={noteSaved} />
+      )}
+      {voice?.mode === 'resume' && (
+        <VoiceNoteReview mode="resume" recording={voice.recording} onClose={() => setVoice(null)} onSaved={noteSaved} />
+      )}
+      {voice?.mode === 'retranscribe' && (
+        <VoiceNoteReview mode="retranscribe" noteId={voice.noteId} onClose={() => setVoice(null)} onSaved={noteSaved} />
+      )}
     </div>
   );
 }
