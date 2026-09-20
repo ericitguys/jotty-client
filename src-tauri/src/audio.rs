@@ -275,6 +275,59 @@ mod tests {
         assert!((dur - 1_000.0 / 16_000.0).abs() < 1e-3);
         assert!(hound::WavReader::open(&path).is_ok()); // valid header despite no Stop
     }
+
+    // ---- mic config picker (Android InvalidRate fix) -----------------------
+    // Android/AAudio devices often expose only their native rate (48 kHz);
+    // requesting anything else at build_input_stream fails with InvalidRate.
+    // The picker must walk the device's SUPPORTED range and fall back.
+
+    fn cfg(min: u32, max: u32, fmt: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(
+            1,
+            min,
+            max,
+            cpal::SupportedBufferSize::Range { min: 1, max: 9_600 },
+            fmt,
+        )
+    }
+
+    #[test]
+    fn picker_prefers_16k_when_native_supported() {
+        let ranges = [cfg(8_000, 48_000, cpal::SampleFormat::F32)];
+        let picked = pick_input_config(&ranges, cpal::SampleFormat::F32).unwrap();
+        assert_eq!(picked.sample_rate(), 16_000);
+        assert_eq!(picked.channels(), 1);
+    }
+
+    #[test]
+    fn picker_falls_back_to_48k_range_containing_it() {
+        // AAudio shape: mono F32 range capped at 48k — 16k unsupported, 48k wins
+        let ranges = [cfg(48_000, 48_000, cpal::SampleFormat::F32)];
+        let picked = pick_input_config(&ranges, cpal::SampleFormat::F32).unwrap();
+        assert_eq!(picked.sample_rate(), 48_000);
+    }
+
+    #[test]
+    fn picker_prefers_f32_over_i16_at_equal_rank() {
+        let ranges = [
+            cfg(48_000, 48_000, cpal::SampleFormat::I16),
+            cfg(48_000, 48_000, cpal::SampleFormat::F32),
+        ];
+        let picked = pick_input_config(&ranges, cpal::SampleFormat::F32).unwrap();
+        assert_eq!(picked.sample_format(), cpal::SampleFormat::F32);
+    }
+
+    #[test]
+    fn picker_last_resort_takes_the_only_available_rate() {
+        // 8k-only device: neither preferred rate exists, but the device CAN be
+        // opened at its own rate — the writer resamples to 16 kHz, so this is
+        // valid capture (the test pins the last-resort branch).
+        let ranges = [cfg(8_000, 8_000, cpal::SampleFormat::F32)];
+        let picked = pick_input_config(&ranges, cpal::SampleFormat::F32).unwrap();
+        assert_eq!(picked.sample_rate(), 8_000);
+        let empty: [cpal::SupportedStreamConfigRange; 0] = [];
+        assert!(pick_input_config(&empty, cpal::SampleFormat::F32).is_none());
+    }
 }
 
 // --- recorder (cpal) --------------------------------------------------------
@@ -290,6 +343,50 @@ pub struct PreparedInput {
     pub build: Box<dyn FnOnce(mpsc::Sender<Ctrl>) -> Result<cpal::Stream, String> + Send>,
 }
 
+/// Pick the best openable input config from the device's supported ranges.
+/// cpal's `with_max_sample_rate` assumes the device opens ANY rate in a range
+/// (ALSA does); AAudio on Android exposes rate ranges that fail at stream-open
+/// with `InvalidRate` for anything but the native rate. Strategy: prefer a
+/// range containing 16 kHz (our WAV rate — zero resampling) at the preferred
+/// format; then 48 kHz; then the device default with the preferred format; a
+/// non-preferred format only as a last resort. The writer normalizes whatever
+/// we capture to 16 kHz mono (spec §4), so any picked rate is correct.
+fn pick_input_config(
+    ranges: &[cpal::SupportedStreamConfigRange],
+    preferred: cpal::SampleFormat,
+) -> Option<cpal::SupportedStreamConfig> {
+    let want = [16_000u32, 48_000u32];
+    let mut best_fmt: Option<&cpal::SupportedStreamConfigRange> = None;
+    // exact-rate ranges with the preferred format first
+    for rate in want {
+        for r in ranges {
+            if r.min_sample_rate() <= rate
+                && rate <= r.max_sample_rate()
+                && r.sample_format() == preferred
+            {
+                let c: cpal::SupportedStreamConfig = r.clone().with_sample_rate(rate);
+                return Some(c);
+            }
+        }
+    }
+    // preferred format, device-default-ish: take the highest max rate
+    for r in ranges {
+        if r.sample_format() == preferred
+            && best_fmt.map_or(true, |b| r.max_sample_rate() > b.max_sample_rate())
+        {
+            best_fmt = Some(r);
+        }
+    }
+    if let Some(r) = best_fmt {
+        return Some(r.clone().with_max_sample_rate());
+    }
+    // any format at all (highest max rate)
+    ranges
+        .iter()
+        .max_by_key(|r| r.max_sample_rate())
+        .map(|r| r.clone().with_max_sample_rate())
+}
+
 /// Probe the default input device and its best config. Device-native rate and
 /// channel count are captured here; normalization to 16 kHz mono happens in
 /// the writer thread (spec §4).
@@ -297,12 +394,16 @@ pub fn prepare_default_input() -> Result<PreparedInput, String> {
     let device = cpal::default_host()
         .default_input_device()
         .ok_or("no microphone available")?;
-    let supported = device
+    let ranges: Vec<cpal::SupportedStreamConfigRange> = device
         .supported_input_configs()
         .map_err(|e| format!("query microphone configs: {e}"))?
-        .next()
-        .ok_or("microphone exposes no input configuration")?
-        .with_max_sample_rate();
+        .collect();
+    if ranges.is_empty() {
+        return Err("microphone exposes no input configuration".into());
+    }
+    let preferred = cpal::SampleFormat::F32;
+    let supported = pick_input_config(&ranges, preferred)
+        .ok_or("microphone exposes no usable sample rate")?;
     let config: cpal::StreamConfig = supported.clone().into();
     let sample_format = supported.sample_format();
     let dev = device.clone();
