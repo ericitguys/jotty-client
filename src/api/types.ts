@@ -33,3 +33,12 @@ export interface UserPrefs {
   pinnedNotes: string[];
   pinnedLists: string[];
 }
+export interface VoiceRecordingDto {
+  id: string; path: string; durationSecs: number;
+  rawTranscript: string | null; tidiedTranscript: string | null;
+  state: 'recording' | 'recorded' | 'transcribing' | 'transcribed' | 'transcription_failed' | 'transcription_failed_auth';
+  lastError: string | null; createdAt: string;
+}
+export interface AiSettingsDto {
+  baseUrl: string; model: string; languageHint: string; apiPathSuffix: string; hasKey: boolean;
+}

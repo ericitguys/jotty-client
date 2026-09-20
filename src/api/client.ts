@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type * as T from './types';
 
 export const getConnection = () => invoke<T.ConnectInfo | null>('get_connection');
@@ -33,3 +33,23 @@ export const installUpdate = (path: string) => invoke<void>('install_update', { 
 export const restartApp = () => invoke<void>('restart_app');
 export const getPrefs = () => invoke<T.UserPrefs>('get_prefs');
 export const getBranding = () => invoke<T.Branding>('get_branding');
+export const voiceStartRecording = () => invoke<T.VoiceRecordingDto>('voice_start_recording');
+export const voiceStopRecording = () => invoke<T.VoiceRecordingDto>('voice_stop_recording');
+export const voiceTranscribe = (recordingId: string) => invoke<T.VoiceRecordingDto>('voice_transcribe', { recordingId });
+export const voiceTidy = (recordingId: string | null, raw: string) => invoke<{ tidied: string }>('voice_tidy', { recordingId, raw });
+export const voiceDeleteRecording = (recordingId: string) => invoke<void>('voice_delete_recording', { recordingId });
+export const voiceSaveNote = (recordingId: string, title: string, category: string, useTidied: boolean, contentOverride: string | null) =>
+  invoke<T.NoteDto>('voice_save_note', { recordingId, title, category, useTidied, contentOverride });
+export const voiceListUnsaved = () => invoke<T.VoiceRecordingDto[]>('voice_list_unsaved');
+export const voiceTranscribeNote = (noteId: string) => invoke<{ text: string }>('voice_transcribe_note', { noteId });
+export const voiceDeleteNoteAudio = (noteId: string) => invoke<T.NoteDto>('voice_delete_note_audio', { noteId });
+export const aiGetModels = () => invoke<string[]>('ai_get_models');
+export const getAiSettings = () => invoke<T.AiSettingsDto>('get_ai_settings');
+export const setAiSettings = (baseUrl: string | null, model: string | null, languageHint: string | null, apiKey: string | null) =>
+  invoke<T.AiSettingsDto>('set_ai_settings', { baseUrl, model, languageHint, apiKey });
+// Tauri asset-protocol URL for a local audio file; the try/catch keeps jsdom
+// tests honest (no __TAURI_INTERNALS__ there) — audioSrc falls back to the
+// raw path, which component tests assert on.
+export const audioSrc = (path: string): string => {
+  try { return convertFileSrc(path); } catch { return path; }
+};
