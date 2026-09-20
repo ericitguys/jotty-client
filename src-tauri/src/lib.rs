@@ -20,6 +20,10 @@ pub fn run() {
             std::fs::create_dir_all(&db_dir)?;
             let conn = db::open(&db_dir.join("jotty.db"))?;
             db::migrations::run(&conn)?;
+            let voice_dir = db_dir.join("voice");
+            if let Err(e) = db::voice::sweep_startup(&conn, &voice_dir) {
+                log::warn!("voice startup sweep failed (non-fatal): {e}");
+            }
             app.manage(crate::audio::VoiceRecorder::default());
             // restore connection if instance_url exists
             let state = state::AppState::new(conn, Box::new(keys::OsKeyStore), Box::new(keys::AiOsKeyStore))?;

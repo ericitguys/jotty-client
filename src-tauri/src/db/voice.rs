@@ -129,6 +129,62 @@ pub fn referenced_audio_paths(conn: &Connection) -> AppResult<HashSet<String>> {
     Ok(set)
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SweepStats {
+    pub stale_transcribing_reset: usize,
+    pub recording_rows_deleted: usize,
+    pub orphan_files_deleted: usize,
+}
+
+/// Startup sweep (spec §6, plan ruling 4). Order matters:
+/// (a) stale `transcribing` rows (restart left no live owner) reset to
+///     `transcription_failed` so the retry path owns them — nothing deleted;
+/// (b) `recording` rows: no live owner after a restart — delete row + file;
+/// (c) orphan wavs in the voice dir referenced by NOTHING (staging row or
+///     saved note) are deleted; non-wav files are never touched.
+/// Unsaved non-recording staging rows SURVIVE (resume prompt, spec §6).
+pub fn sweep_startup(conn: &Connection, voice_dir: &std::path::Path) -> AppResult<SweepStats> {
+    let reset = conn.execute(
+        "UPDATE voice_recordings SET state='transcription_failed', last_error='interrupted by restart' WHERE state='transcribing'",
+        [],
+    )? as usize;
+    let mut stmt = conn.prepare("SELECT id, path FROM voice_recordings WHERE state='recording'")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut deleted = 0usize;
+    for (id, path) in rows {
+        let _ = std::fs::remove_file(&path);
+        delete_staging(conn, &id)?;
+        deleted += 1;
+    }
+    let referenced = referenced_audio_paths(conn)?;
+    let mut orphans = 0usize;
+    if let Ok(entries) = std::fs::read_dir(voice_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let is_wav = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("wav"))
+                .unwrap_or(false);
+            if !is_wav {
+                continue;
+            }
+            let as_str = p.to_string_lossy().into_owned();
+            if !referenced.contains(&as_str) && std::fs::remove_file(&p).is_ok() {
+                orphans += 1;
+            }
+        }
+    }
+    Ok(SweepStats {
+        stale_transcribing_reset: reset,
+        recording_rows_deleted: deleted,
+        orphan_files_deleted: orphans,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +260,66 @@ mod tests {
         let refs = referenced_audio_paths(&conn).unwrap();
         assert!(refs.contains("/tmp/voice/r.wav"));
         assert!(refs.contains("/tmp/voice/n.wav"));
+    }
+
+    #[test]
+    fn sweep_deletes_recording_rows_and_their_files() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("live.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        create_staging(&conn, "live", wav.to_string_lossy().as_ref()).unwrap();
+        let stats = sweep_startup(&conn, dir.path()).unwrap();
+        assert_eq!(stats.recording_rows_deleted, 1);
+        assert!(!wav.exists());
+        assert!(get(&conn, "live").unwrap().is_none());
+    }
+
+    #[test]
+    fn sweep_resets_stale_transcribing_to_failed() {
+        let conn = db();
+        create_staging(&conn, "stuck", "/tmp/stuck.wav").unwrap();
+        mark_transcribing(&conn, "stuck").unwrap();
+        let stats = sweep_startup(&conn, std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(stats.stale_transcribing_reset, 1);
+        let rec = get(&conn, "stuck").unwrap().unwrap();
+        assert_eq!(rec.state, ST_FAILED);
+        assert_eq!(rec.last_error.as_deref(), Some("interrupted by restart"));
+    }
+
+    #[test]
+    fn sweep_deletes_orphan_wavs_but_keeps_referenced_ones() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let staging_wav = dir.path().join("staging.wav");
+        let note_wav = dir.path().join("note.wav");
+        let orphan_wav = dir.path().join("orphan.wav");
+        let stray_txt = dir.path().join("keep.txt");
+        for f in [&staging_wav, &note_wav, &orphan_wav, &stray_txt] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        create_staging(&conn, "r", staging_wav.to_string_lossy().as_ref()).unwrap();
+        set_transcript(&conn, "r", "t").unwrap(); // not recording state
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n1','t','','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0,?1)",
+            rusqlite::params![note_wav.to_string_lossy().as_ref()],
+        ).unwrap();
+        let stats = sweep_startup(&conn, dir.path()).unwrap();
+        assert_eq!(stats.orphan_files_deleted, 1);
+        assert!(staging_wav.exists());
+        assert!(note_wav.exists());
+        assert!(!orphan_wav.exists());
+        assert!(stray_txt.exists(), "non-wav files untouched");
+    }
+
+    #[test]
+    fn sweep_on_empty_dir_and_db_is_ok() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let stats = sweep_startup(&conn, dir.path()).unwrap();
+        assert_eq!(
+            stats.stale_transcribing_reset + stats.recording_rows_deleted + stats.orphan_files_deleted,
+            0
+        );
     }
 }
