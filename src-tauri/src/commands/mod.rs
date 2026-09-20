@@ -757,7 +757,26 @@ pub async fn set_sync_interval(state: tauri::State<'_, AppState>, minutes: i64) 
 #[tauri::command]
 pub async fn check_update() -> Result<crate::updater::UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION");
+    // Android previews ship as prereleases, which /releases/latest excludes —
+    // the android path walks the releases list and offers the newest APK.
+    #[cfg(target_os = "android")]
+    return crate::updater::check_apk("https://api.github.com", current).await;
+    #[cfg(not(target_os = "android"))]
     crate::updater::check("https://api.github.com", current).await
+}
+
+/// Android guided update: hand the APK download URL to the system browser /
+/// Download Manager; the user installs from the downloaded APK via the system
+/// installer prompt. (No silent self-install exists on Android by design.)
+#[tauri::command]
+pub async fn open_update_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt as _;
+    if !url.starts_with("https://") {
+        return Err(format!("refusing to open non-https url: {url}"));
+    }
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("cannot open download page: {e}"))
 }
 
 #[tauri::command]

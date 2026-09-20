@@ -14,7 +14,8 @@ pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub available: bool,
-    pub rpm_url: Option<String>,
+    /// Platform-appropriate asset URL: the .rpm on desktop, the .apk on Android.
+    pub download_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +28,9 @@ struct GhAsset {
 struct GhRelease {
     tag_name: String,
     assets: Vec<GhAsset>,
+    /// Only present on the /releases LIST endpoint; drafts must never be offered.
+    #[serde(default)]
+    draft: bool,
 }
 
 /// Compare "0.6.1" (app version) against a release tag "v0.6.2" / "0.6.2".
@@ -54,6 +58,34 @@ pub(crate) fn parse_release(v: &Value) -> Result<(String, Option<String>), Strin
     Ok((rel.tag_name, rpm))
 }
 
+/// Pick the APK asset for this device: prefer arm64, fall back to the only .apk.
+fn pick_apk_asset(assets: &[GhAsset]) -> Option<String> {
+    let apks: Vec<&GhAsset> = assets.iter().filter(|a| a.name.ends_with(".apk")).collect();
+    let picked = match apks.iter().find(|a| a.name.contains("arm64")) {
+        Some(a) => a,
+        None => apks.first()?,
+    };
+    Some(picked.browser_download_url.clone())
+}
+
+/// Walk a /releases list (GitHub returns newest first) and return the FIRST
+/// release carrying an APK asset: (tag, apk_url). Drafts are skipped; releases
+/// without an APK are desktop releases and skipped too. None = no android
+/// release in the window (up to date, never an error).
+fn parse_release_list(v: &Value) -> Result<Option<(String, String)>, String> {
+    let rels: Vec<GhRelease> = serde_json::from_value(v.clone())
+        .map_err(|e| format!("unexpected releases payload: {e}"))?;
+    for rel in rels {
+        if rel.draft {
+            continue;
+        }
+        if let Some(url) = pick_apk_asset(&rel.assets) {
+            return Ok(Some((rel.tag_name, url)));
+        }
+    }
+    Ok(None)
+}
+
 fn updater_client() -> reqwest::Client {
     // GitHub API rejects requests without a User-Agent.
     reqwest::Client::builder()
@@ -63,7 +95,8 @@ fn updater_client() -> reqwest::Client {
         .expect("updater client")
 }
 
-/// Check the repo's latest release against `current`.
+/// Check the repo's latest release against `current` (desktop: rpm assets,
+/// /releases/latest — prereleases excluded by GitHub).
 pub async fn check(
     api_base: &str,
     current: &str,
@@ -75,13 +108,44 @@ pub async fn check(
         return Err(format!("release check failed: HTTP {status}"));
     }
     let v: Value = resp.json().await.map_err(|e| e.to_string())?;
-    let (tag, rpm_url) = parse_release(&v)?;
+    let (tag, url) = parse_release(&v)?;
     let available = is_newer(current, &tag)?;
     Ok(UpdateInfo {
         current: current.to_string(),
         latest: tag,
         available,
-        rpm_url,
+        download_url: url,
+    })
+}
+
+/// Android check: walk the releases LIST (prereleases included — android
+/// previews ship as prereleases) and offer the newest release with an APK.
+pub async fn check_apk(
+    api_base: &str,
+    current: &str,
+) -> Result<UpdateInfo, String> {
+    let url = format!("{api_base}/repos/{REPO}/releases?per_page=10");
+    let resp = updater_client().get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("release check failed: HTTP {status}"));
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let found = parse_release_list(&v)?;
+    let Some((tag, apk_url)) = found else {
+        return Ok(UpdateInfo {
+            current: current.to_string(),
+            latest: "none".into(),
+            available: false,
+            download_url: None,
+        });
+    };
+    let available = is_newer(current, &tag)?;
+    Ok(UpdateInfo {
+        current: current.to_string(),
+        latest: tag,
+        available,
+        download_url: Some(apk_url),
     })
 }
 
@@ -219,6 +283,99 @@ mod tests {
         assert!(parse_release(&serde_json::json!({"foo": 1})).is_err());
     }
 
+    // ---- android: guided update (prereleases + apk asset pick) ----
+
+    fn releases_list_json(entries: &[Value]) -> Value {
+        Value::Array(entries.to_vec())
+    }
+
+    #[test]
+    fn pick_apk_prefers_arm64_and_skips_non_apk_assets() {
+        let v = release_json("v1", &[
+            ("jotty-desktop-0.10.2-amd64.deb", "https://x/deb"),
+            ("jotty-desktop-0.10.2-android-arm64.apk", "https://x/apk-arm64"),
+        ]);
+        let rel: GhRelease = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            pick_apk_asset(&rel.assets).as_deref(),
+            Some("https://x/apk-arm64")
+        );
+        let v2 = release_json("v1", &[("jotty-desktop_1_amd64.deb", "https://x/deb")]);
+        let rel2: GhRelease = serde_json::from_value(v2).unwrap();
+        assert!(pick_apk_asset(&rel2.assets).is_none());
+    }
+
+    #[test]
+    fn parse_release_list_picks_newest_apk_release_and_skips_drafts_and_desktop_only() {
+        let list = releases_list_json(&[
+            // draft: never offered
+            serde_json::json!({"tag_name": "v0.11.0", "draft": true, "assets": [
+                {"name": "jotty-0.11.0-android-arm64.apk", "browser_download_url": "https://x/apk-draft"}]}),
+            // desktop-only release: not for android
+            serde_json::json!({"tag_name": "v0.11.0", "draft": false, "assets": [
+                {"name": "jotty-0.11.0-1.x86_64.rpm", "browser_download_url": "https://x/rpm"}]}),
+            // newest android release
+            serde_json::json!({"tag_name": "v0.10.2-android-preview", "draft": false, "assets": [
+                {"name": "jotty-desktop-0.10.2-android-arm64.apk", "browser_download_url": "https://x/apk-0102"}]}),
+            // older android release: must NOT be picked
+            serde_json::json!({"tag_name": "v0.10.1-android-preview", "draft": false, "assets": [
+                {"name": "jotty-desktop-0.10.1-android-arm64.apk", "browser_download_url": "https://x/apk-0101"}]}),
+        ]);
+        let found = parse_release_list(&list).unwrap();
+        assert_eq!(
+            found,
+            Some(("v0.10.2-android-preview".into(), "https://x/apk-0102".into()))
+        );
+        // no apk anywhere -> None (up to date, not an error)
+        let empty = releases_list_json(&[serde_json::json!({"tag_name": "v0.10.0", "draft": false, "assets": []})]);
+        assert_eq!(parse_release_list(&empty).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn check_apk_finds_a_newer_prerelease_with_an_apk() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/repos/ericitguys/jotty-client/releases"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(releases_list_json(&[
+                serde_json::json!({"tag_name": "v0.10.2-android-preview", "draft": false, "assets": [
+                    {"name": "jotty-desktop-0.10.2-android-arm64.apk", "browser_download_url": "https://x/apk-0102"}]}),
+                serde_json::json!({"tag_name": "v0.10.0", "draft": false, "assets": [
+                    {"name": "jotty-0.10.0-1.x86_64.rpm", "browser_download_url": "https://x/rpm"}]}),
+            ])))
+            .mount(&server)
+            .await;
+        let info = check_apk(&server.uri(), "0.10.1").await.unwrap();
+        assert!(info.available);
+        assert_eq!(info.latest, "v0.10.2-android-preview");
+        assert_eq!(info.download_url.as_deref(), Some("https://x/apk-0102"));
+    }
+
+    #[tokio::test]
+    async fn check_apk_is_up_to_date_when_running_the_newest_apk_release() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/repos/ericitguys/jotty-client/releases"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(releases_list_json(&[
+                serde_json::json!({"tag_name": "v0.10.1-android-preview", "draft": false, "assets": [
+                    {"name": "jotty-desktop-0.10.1-android-arm64.apk", "browser_download_url": "https://x/apk"}]}),
+            ])))
+            .mount(&server)
+            .await;
+        let info = check_apk(&server.uri(), "0.10.1").await.unwrap();
+        assert!(!info.available);
+    }
+
+    #[tokio::test]
+    async fn check_apk_surfaces_http_errors() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        let err = check_apk(&server.uri(), "0.10.1").await.unwrap_err();
+        assert!(err.contains("403"), "got: {err}");
+    }
+
     #[tokio::test]
     async fn check_detects_an_update() {
         let server = wiremock::MockServer::start().await;
@@ -234,7 +391,7 @@ mod tests {
         assert!(info.available);
         assert_eq!(info.latest, "v0.7.0");
         assert_eq!(info.current, "0.6.1");
-        assert_eq!(info.rpm_url.as_deref(), Some("https://x/rpm"));
+        assert_eq!(info.download_url.as_deref(), Some("https://x/rpm"));
     }
 
     #[tokio::test]

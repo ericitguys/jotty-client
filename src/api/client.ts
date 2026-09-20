@@ -30,6 +30,9 @@ export const setSyncInterval = (minutes: number) => invoke<void>('set_sync_inter
 export const checkUpdate = () => invoke<T.UpdateInfo>('check_update');
 export const downloadUpdate = (url: string) => invoke<string>('download_update', { url });
 export const installUpdate = (path: string) => invoke<void>('install_update', { path });
+// Android guided update: hand the APK URL to the system browser/Download
+// Manager; the user installs via the system prompt (no silent self-install).
+export const openUpdateUrl = (url: string) => invoke<void>('open_update_url', { url });
 export const restartApp = () => invoke<void>('restart_app');
 export const getPrefs = () => invoke<T.UserPrefs>('get_prefs');
 export const getBranding = () => invoke<T.Branding>('get_branding');

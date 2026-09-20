@@ -23,7 +23,7 @@ export interface SearchResultsDto {
 export interface SyncStatusDto { pending: number; lastSyncAt: string | null; syncing: boolean; lastError: string | null; }
 export interface ConflictDto { seq: number; entity: string; entityId: string; opType: string; lastError: string | null; label: string | null; }
 export interface ConnectInfo { instanceUrl: string; version: string | null; }
-export interface UpdateInfo { current: string; latest: string; available: boolean; rpmUrl: string | null; }
+export interface UpdateInfo { current: string; latest: string; available: boolean; downloadUrl: string | null; }
 export interface UserPrefs {
   preferredTheme: string | null;          // system | light | dark | <custom id>
   defaultNoteFilter: string | null;       // all | recent | pinned

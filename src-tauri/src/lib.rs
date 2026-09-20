@@ -18,6 +18,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let db_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&db_dir)?;
@@ -72,6 +73,7 @@ pub fn run() {
             commands::check_update,
             commands::download_update,
             commands::install_update,
+            commands::open_update_url,
             commands::restart_app,
             commands::get_prefs,
             commands::get_branding,

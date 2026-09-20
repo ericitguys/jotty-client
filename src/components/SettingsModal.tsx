@@ -25,6 +25,10 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const refreshUpdate = useStore((s) => s.refreshUpdate);
   const [phase, setPhase] = useState<UpdatePhase>({ kind: 'idle' });
   const [rpmPath, setRpmPath] = useState<string | null>(null);
+  const [updateHint, setUpdateHint] = useState<string | null>(null);
+  // Android: no pkexec/dnf — the guided flow hands the APK URL to the system
+  // browser/Download Manager and the user installs via the system prompt.
+  const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
   const [aiBase, setAiBase] = useState('');
   const [aiKey, setAiKey] = useState('');
   const [aiModel, setAiModel] = useState('');
@@ -95,11 +99,11 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
 
   const runUpdate = async () => {
     const info = updateInfo;
-    if (!info?.rpmUrl) return;
+    if (!info?.downloadUrl) return;
     setError(null);
     try {
       setPhase({ kind: 'downloading' });
-      const path = await api.downloadUpdate(info.rpmUrl);
+      const path = await api.downloadUpdate(info.downloadUrl);
       setRpmPath(path);
       setPhase({ kind: 'installing' });
       await api.installUpdate(path);
@@ -110,6 +114,18 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
     } catch (e) {
       setPhase({ kind: 'available' });
       setError(String(e).replace(/^.*Error: /, ''));
+    }
+  };
+
+  const openAndroidUpdate = async () => {
+    const info = updateInfo;
+    if (!info?.downloadUrl) return;
+    setError(null);
+    try {
+      await api.openUpdateUrl(info.downloadUrl);
+      setUpdateHint('Download started — when it finishes, tap the APK to install.');
+    } catch (e) {
+      setError(fmtErr(e));
     }
   };
 
@@ -151,14 +167,19 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
               {phase.kind === 'available' && (
                 <>
                   <span className="updater-avail">Update available: {updateInfo?.latest}</span>
-                  <button onClick={runUpdate} disabled={!updateInfo?.rpmUrl}>Download &amp; install</button>
+                  {isAndroid
+                    ? <button onClick={openAndroidUpdate} disabled={!updateInfo?.downloadUrl}>Open download</button>
+                    : <button onClick={runUpdate} disabled={!updateInfo?.downloadUrl}>Download &amp; install</button>}
                 </>
               )}
+              {updateHint && <span className="updater-ok">{updateHint}</span>}
               {phase.kind === 'downloading' && <span>Downloading…</span>}
               {phase.kind === 'installing' && <span>Installing (confirm in the password dialog)…</span>}
               {phase.kind === 'installed' && <span className="updater-ok">Installed — restart to finish</span>}
               {phase.kind === 'idle' && updateInfo?.available && (
-                <button onClick={runUpdate} disabled={!updateInfo.rpmUrl}>Download &amp; install</button>
+                isAndroid
+                  ? <button onClick={openAndroidUpdate} disabled={!updateInfo.downloadUrl}>Open download</button>
+                  : <button onClick={runUpdate} disabled={!updateInfo.downloadUrl}>Download &amp; install</button>
               )}
               <button onClick={check}>Check for updates</button>
               <button onClick={() => api.restartApp()}>Restart</button>

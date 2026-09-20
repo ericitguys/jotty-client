@@ -23,7 +23,7 @@ describe('SyncBadge update chip', () => {
   });
 
   it('shows an update chip for the new version and opens settings on click', async () => {
-    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.7.0', available: true, rpmUrl: 'https://x.rpm' } });
+    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.7.0', available: true, downloadUrl: 'https://x.rpm' } });
     const openSettings = vi.fn();
     render(<SyncBadge onOpenConflicts={() => {}} onOpenSettings={openSettings} />);
     const chip = await screen.findByText('⬆ 0.7.0');
@@ -32,7 +32,7 @@ describe('SyncBadge update chip', () => {
   });
 
   it('hides the chip when the release is not newer', () => {
-    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.6.1', available: false, rpmUrl: null } });
+    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.6.1', available: false, downloadUrl: null } });
     render(<SyncBadge onOpenConflicts={() => {}} onOpenSettings={() => {}} />);
     expect(screen.queryByText(/⬆/)).not.toBeInTheDocument();
   });

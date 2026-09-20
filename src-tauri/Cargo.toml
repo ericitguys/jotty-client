@@ -1,6 +1,6 @@
 [package]
 name = "jotty-client"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 
 [lib]
@@ -26,6 +26,7 @@ semver = "1"
 base64 = "0.22"
 hound = "3.5"
 cpal = "0.18"
+tauri-plugin-opener = "^2"
 
 [dev-dependencies]
 wiremock = "0.6"

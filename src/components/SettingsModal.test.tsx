@@ -40,7 +40,7 @@ describe('SettingsModal updates', () => {
   it('shows the running version and checks for updates on demand', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
-      if (cmd === 'check_update') return Promise.resolve({ current: '0.6.1', latest: '0.7.0', available: true, rpmUrl: 'https://x/rpm' });
+      if (cmd === 'check_update') return Promise.resolve({ current: '0.6.1', latest: '0.7.0', available: true, downloadUrl: 'https://x/rpm' });
       return Promise.resolve(null);
     });
     render(<SettingsModal mode="settings" onClose={() => {}} />);
@@ -98,7 +98,7 @@ describe('SettingsModal updates', () => {
   it('reports up to date when the release matches', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
-      if (cmd === 'check_update') return Promise.resolve({ current: '0.6.1', latest: '0.6.1', available: false, rpmUrl: null });
+      if (cmd === 'check_update') return Promise.resolve({ current: '0.6.1', latest: '0.6.1', available: false, downloadUrl: null });
       return Promise.resolve(null);
     });
     render(<SettingsModal mode="settings" onClose={() => {}} />);
@@ -107,7 +107,7 @@ describe('SettingsModal updates', () => {
   });
 
   it('downloads, installs via dnf, and offers a restart', async () => {
-    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.7.0', available: true, rpmUrl: 'https://x/rpm' } });
+    useStore.setState({ updateInfo: { current: '0.6.1', latest: '0.7.0', available: true, downloadUrl: 'https://x/rpm' } });
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
       if (cmd === 'download_update') return Promise.resolve('/cache/updates/jotty-0.7.0.rpm');
@@ -132,8 +132,24 @@ describe('SettingsModal updates', () => {
     await waitFor(() => expect(screen.getByText(/release check failed/i)).toBeInTheDocument());
   });
 
+  it('android: update available opens the apk download url in the browser', async () => {
+    // jsdom's default UA is desktop — override to simulate the Android webview
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'Mozilla/5.0 (Linux; Android 16) Chrome/120 Mobile Safari/537.36' });
+    useStore.setState({ updateInfo: { current: '0.10.1', latest: 'v0.10.2-android-preview', available: true, downloadUrl: 'https://x/jotty.apk' } });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      return Promise.resolve(null);
+    });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Open download'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('open_update_url', { url: 'https://x/jotty.apk' }));
+    await waitFor(() => expect(screen.getByText(/tap the apk to install/i)).toBeInTheDocument());
+    expect(invoke).not.toHaveBeenCalledWith('download_update', expect.anything());
+    Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: 'jsdom' }); // restore
+  });
+
   it('restart button invokes restart_app', async () => {
-    useStore.setState({ updateInfo: { current: '0.7.0', latest: '0.7.0', available: false, rpmUrl: null } });
+    useStore.setState({ updateInfo: { current: '0.7.0', latest: '0.7.0', available: false, downloadUrl: null } });
     invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
     render(<SettingsModal mode="settings" onClose={() => {}} />);
     fireEvent.click(screen.getByText('Restart'));
