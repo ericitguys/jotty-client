@@ -127,6 +127,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                             &item_list_id,
                             payload["text"].as_str().unwrap_or(""),
                             parent_path.as_deref(),
+                            None,
                         ).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err(e),
@@ -399,7 +400,7 @@ async fn rebuild_replay(
     }
     let dfs = desired_dfs_order(&ordered, &rows);
     for (text, _, parent_path, _) in &dfs {
-        client.create_item(list_id, text, parent_path.as_deref()).await?;
+        client.create_item(list_id, text, parent_path.as_deref(), None).await?;
     }
     for (_, completed, _, path) in &dfs {
         if *completed {

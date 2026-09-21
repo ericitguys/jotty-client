@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, UserPrefs, WebManifest};
+use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, ServerStatus, UserPrefs, WebManifest};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone)]
@@ -200,6 +200,34 @@ impl JottyClient {
         created.data.ok_or_else(|| AppError::Other("create_checklist: missing data".into()))
     }
 
+    /// GET /api/tasks/{taskId} — kanban boards. Real wire shape wraps the board
+    /// in a top-level "task" key (upstream app/api/tasks/[taskId]/route.ts);
+    /// a bare parse would rely on serde(default) and silently produce empties.
+    pub async fn get_task(&self, id: &str) -> AppResult<ServerChecklist> {
+        let v = self.api_get::<serde_json::Value>(&format!("/api/tasks/{id}")).await?;
+        let task = v.get("task").ok_or_else(|| AppError::Other("get_task: missing task envelope".into()))?;
+        serde_json::from_value(task.clone())
+            .map_err(|e| AppError::Other(format!("parse /api/tasks/{{id}}: {e}")))
+    }
+
+    /// POST /api/tasks — create a kanban board with its column set.
+    pub async fn create_task(&self, title: &str, category: &str, statuses: &[ServerStatus]) -> AppResult<ServerChecklist> {
+        let created: Created<ServerChecklist> = self.api_send(
+            reqwest::Method::POST, "/api/tasks",
+            serde_json::json!({ "title": title, "category": category, "statuses": statuses }),
+        ).await?;
+        created.data.ok_or_else(|| AppError::Other("create_task: missing data".into()))
+    }
+
+    /// PUT /api/tasks/{taskId}/items/{index}/status — move a kanban card.
+    pub async fn update_item_status(&self, list_id: &str, path: &str, status: &str) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT, &format!("/api/tasks/{list_id}/items/{path}/status"),
+            serde_json::json!({ "status": status }),
+        ).await?;
+        Ok(())
+    }
+
     pub async fn update_checklist(&self, id: &str, title: &str, category: &str) -> AppResult<()> {
         self.api_send::<serde_json::Value>(
             reqwest::Method::PUT, &format!("/api/checklists/{id}"),
@@ -213,10 +241,13 @@ impl JottyClient {
         Ok(())
     }
 
-    pub async fn create_item(&self, list_id: &str, text: &str, parent_path: Option<&str>) -> AppResult<()> {
+    pub async fn create_item(&self, list_id: &str, text: &str, parent_path: Option<&str>, status: Option<&str>) -> AppResult<()> {
         let mut body = serde_json::json!({"text": text});
         if let Some(p) = parent_path {
             body["parentIndex"] = serde_json::Value::String(p.to_string());
+        }
+        if let Some(st) = status {
+            body["status"] = serde_json::Value::String(st.to_string());
         }
         self.api_send::<serde_json::Value>(reqwest::Method::POST, &format!("/api/checklists/{list_id}/items"), body).await?;
         Ok(())
@@ -448,8 +479,8 @@ mod tests {
         c.check_item("list-1", "0", true).await.unwrap();
         c.patch_item("list-1", "0.1", "renamed").await.unwrap();
         c.delete_item("list-1", "1.0.2").await.unwrap();
-        c.create_item("list-1", "new", Some("0")).await.unwrap();
-        c.create_item("list-1", "top", None).await.unwrap();
+        c.create_item("list-1", "new", Some("0"), None).await.unwrap();
+        c.create_item("list-1", "top", None, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -562,5 +593,84 @@ mod tests {
         assert_eq!(b.name.as_deref(), Some("Acme Notes"));
         assert_eq!(b.icon_data_url, None);
         assert_eq!(b.icon_bytes, None);
+    }
+
+    #[tokio::test]
+    async fn get_task_unwraps_envelope_and_aliases_name() {
+        // REAL wire shape (upstream GET /api/tasks/{taskId} → { "task": {...} }).
+        // The default-statuses fallback uses `name`, persisted ones use `label` —
+        // parser must accept BOTH (spec §3 shape trap).
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/tasks/b-uuid"))
+            .and(header("x-api-key", "ck"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task": {
+                    "id": "b-uuid", "title": "Board", "category": "Home",
+                    "statuses": [
+                        { "id": "todo", "name": "To Do", "order": 0 },
+                        { "id": "done", "label": "Done", "color": "#22c55f", "order": 1, "autoComplete": true }
+                    ],
+                    "items": [
+                        { "id": "srv-1", "index": 0, "text": "card a", "completed": false, "status": "done" }
+                    ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-02T00:00:00.000Z"
+                }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let t = c.get_task("b-uuid").await.unwrap();
+        assert_eq!(t.id, "b-uuid");
+        let sts = t.statuses.unwrap();
+        assert_eq!(sts[0].label, "To Do");          // came from `name`
+        assert!(!sts[0].auto_complete);
+        assert_eq!(sts[1].label, "Done");           // native label
+        assert!(sts[1].auto_complete);
+        assert_eq!(sts[1].color.as_deref(), Some("#22c55f"));
+        assert_eq!(t.items[0].status.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn get_task_404_maps_to_api_error() {
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/tasks/nope"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({"error":"Task not found"})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let err = c.get_task("nope").await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 404, .. }));
+    }
+
+    #[tokio::test]
+    async fn create_task_posts_statuses_and_unwraps_data() {
+        let s = server().await;
+        Mock::given(method("POST")).and(path("/api/tasks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": { "id": "new-uuid", "title": "Board", "category": "Work",
+                          "statuses": [ { "id": "todo", "label": "To Do", "order": 0 } ],
+                          "items": [], "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let t = c.create_task("Board", "Work", &crate::jotty::models::creation_board_statuses()).await.unwrap();
+        assert_eq!(t.id, "new-uuid");
+        // request body assertions: statuses serialized camelCase with autoComplete
+        let reqs = s.received_requests().await.unwrap();
+        let body = reqs[0].body.clone();
+        let text = String::from_utf8_lossy(&body).to_string();
+        assert!(text.contains("\"autoComplete\":true"), "body: {text}");
+        assert!(text.contains("\"label\":\"To Do\""));
+    }
+
+    #[tokio::test]
+    async fn update_item_status_puts_tasks_status_endpoint() {
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b-uuid/items/0/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_item_status("b-uuid", "0", "in_progress").await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert!(String::from_utf8_lossy(&reqs[0].body).contains("\"status\":\"in_progress\""));
     }
 }

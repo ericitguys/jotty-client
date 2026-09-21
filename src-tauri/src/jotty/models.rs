@@ -52,9 +52,38 @@ pub struct ServerChecklist {
     #[serde(default)]
     pub items: Vec<ServerItem>,
     #[serde(default)]
-    pub statuses: Option<Vec<serde_json::Value>>,
+    pub statuses: Option<Vec<ServerStatus>>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerStatus {
+    pub id: String,
+    #[serde(alias = "name")]
+    pub label: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub order: i64,
+    #[serde(default)]
+    pub auto_complete: bool,
+}
+
+/// Site UI default when a board's `statuses` is null (spec §3, _consts/kanban.ts).
+pub fn render_default_statuses() -> Vec<ServerStatus> {
+    vec![
+        ServerStatus { id: "todo".into(), label: "To Do".into(), color: None, order: 0, auto_complete: false },
+        ServerStatus { id: "in_progress".into(), label: "In Progress".into(), color: None, order: 1, auto_complete: false },
+        ServerStatus { id: "completed".into(), label: "Completed".into(), color: None, order: 2, auto_complete: true },
+        ServerStatus { id: "paused".into(), label: "Paused".into(), color: None, order: 3, auto_complete: false },
+    ]
+}
+
+/// Columns for NEW boards created in-client (spec §6).
+pub fn creation_board_statuses() -> Vec<ServerStatus> {
+    render_default_statuses().into_iter().filter(|s| s.id != "paused").collect()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
