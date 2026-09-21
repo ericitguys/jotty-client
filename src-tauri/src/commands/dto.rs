@@ -61,6 +61,9 @@ pub struct ItemDto {
     pub completed: bool,
     pub position: i64,
     pub dirty: bool,
+    pub status: Option<String>,
+    pub priority: Option<String>,
+    pub target_date: Option<String>,
     pub children: Vec<ItemDto>,
 }
 
@@ -74,6 +77,9 @@ impl From<items::ItemRow> for ItemDto {
             completed: r.completed,
             position: r.position,
             dirty: r.dirty,
+            status: r.status,
+            priority: r.priority,
+            target_date: r.target_date,
             children: Vec::new(),
         }
     }
@@ -112,6 +118,38 @@ impl From<checklists::ChecklistRow> for ChecklistDto {
             items: Vec::new(),
         }
     }
+}
+
+/// Kanban column (Task 3): one board_statuses cache row or one server status,
+/// serialized camelCase (`autoComplete`) for the frontend board renderer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardStatusDto {
+    pub id: String,
+    pub label: String,
+    pub color: Option<String>,
+    pub order: i64,
+    pub auto_complete: bool,
+}
+
+impl From<crate::db::board::BoardStatusRow> for BoardStatusDto {
+    fn from(r: crate::db::board::BoardStatusRow) -> Self {
+        BoardStatusDto { id: r.status_id, label: r.label, color: r.color, order: r.sort_order, auto_complete: r.auto_complete }
+    }
+}
+
+impl From<crate::jotty::models::ServerStatus> for BoardStatusDto {
+    fn from(s: crate::jotty::models::ServerStatus) -> Self {
+        BoardStatusDto { id: s.id, label: s.label, color: s.color, order: s.order, auto_complete: s.auto_complete }
+    }
+}
+
+/// A board's columns: cache rows when cached, site defaults when not (spec §6).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardDto {
+    pub checklist_id: String,
+    pub statuses: Vec<BoardStatusDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
