@@ -2,6 +2,15 @@
 
 Release notes for jotty·desktop — newest first. Install commands and sha256 checksums for each release live on its GitHub release page.
 
+## v0.12.0 — Voice notes become kanban boards (2026-09-21)
+
+Dictate a voice note, get a kanban board — the AI turns the transcript into tasks.
+
+### New
+
+- **🎤 Voice note → kanban board** — in the voice note review overlay, the AI extracts tasks from the transcript and shows an editable preview; confirming creates the board with one card per task in the first column. Uses the same AI server settings as tidy.
+- **📱 Android preview carries kanban boards too** — installed previews jump 0.10.8 → 0.12.0 via the in-app updater.
+
 ## v0.11.0 — Kanban boards (2026-09-21)
 
 Kanban boards for checklists, offline-first like everything else in jotty.
