@@ -6,8 +6,11 @@ export interface NoteDto {
 export interface ItemDto {
   localId: string; checklistId: string; parentLocalId: string | null;
   text: string; completed: boolean; position: number; dirty: boolean;
+  status: string | null; priority: string | null; targetDate: string | null;
   children: ItemDto[];
 }
+export interface BoardStatusDto { id: string; label: string; color: string | null; order: number; autoComplete: boolean; }
+export interface BoardDto { checklistId: string; statuses: BoardStatusDto[]; }
 export interface ChecklistDto {
   id: string; title: string; category: string;
   createdAt: string | null; updatedAt: string | null; deletedAt: string | null;

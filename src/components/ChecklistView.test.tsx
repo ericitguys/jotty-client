@@ -33,7 +33,7 @@ describe('ChecklistView', () => {
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
     fireEvent.change(screen.getByPlaceholderText('New item'), { target: { value: 'c' } });
     fireEvent.click(screen.getByText('Add'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null, status: null }));
   });
 
   it('category change commits via update_checklist on blur', async () => {
@@ -62,7 +62,7 @@ describe('ChecklistView', () => {
     fireEvent.change(cat, { target: { value: 'Ho' } });
     fireEvent.change(screen.getByPlaceholderText('New item'), { target: { value: 'c' } });
     fireEvent.click(screen.getByText('Add'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null, status: null }));
     // the reload after add_item must not snap the category field back to the DB value
     await waitFor(() => expect(screen.getByDisplayValue('Ho')).toBeInTheDocument());
   });

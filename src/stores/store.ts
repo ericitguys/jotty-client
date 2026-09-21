@@ -27,6 +27,7 @@ interface AppState {
   setListMode: (m: ListMode) => void;
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
+  createBoard: (title: string, category: string) => Promise<T.ChecklistDto>;
 }
 
 export interface CategoryFilter {
@@ -120,5 +121,11 @@ export const useStore = create<AppState>((set, get) => ({
     await get().refreshAll();
     set({ selectedChecklistId: list.id, selectedNoteId: null, listMode: 'checklists' });
     return list;
+  },
+  createBoard: async (title, category) => {
+    const board = await api.createBoard(title, category);
+    await get().refreshAll();
+    set({ selectedChecklistId: board.id, selectedNoteId: null, listMode: 'checklists' });
+    return board;
   },
 }));

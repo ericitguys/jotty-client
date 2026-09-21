@@ -52,7 +52,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 
   const add = async () => {
     if (!newText.trim()) return;
-    await api.addItem(checklistId, newText.trim(), null);
+    await api.addItem(checklistId, newText.trim(), null, null);
     setNewText('');
     await reload();
   };

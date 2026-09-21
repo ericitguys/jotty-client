@@ -12,9 +12,13 @@ export const getChecklist = (id: string) => invoke<T.ChecklistDto>('get_checklis
 export const createChecklist = (title: string, category: string) => invoke<T.ChecklistDto>('create_checklist', { title, category });
 export const updateChecklist = (id: string, title: string, category: string) => invoke<T.ChecklistDto>('update_checklist', { id, title, category });
 export const deleteChecklist = (id: string) => invoke<void>('delete_checklist', { id });
-export const addItem = (checklistId: string, text: string, parentLocalId: string | null) => invoke<T.ItemDto>('add_item', { checklistId, text, parentLocalId });
+export const addItem = (checklistId: string, text: string, parentLocalId: string | null, status: string | null) => invoke<T.ItemDto>('add_item', { checklistId, text, parentLocalId, status });
 export const setItemText = (checklistId: string, itemLocalId: string, text: string) => invoke<void>('set_item_text', { checklistId, itemLocalId, text });
 export const setItemChecked = (checklistId: string, itemLocalId: string, checked: boolean) => invoke<void>('set_item_checked', { checklistId, itemLocalId, checked });
+export const setItemStatus = (checklistId: string, itemLocalId: string, status: string) => invoke<void>('set_item_status', { checklistId, itemLocalId, status });
+export const getBoardColumns = (checklistId: string) => invoke<T.BoardDto>('get_board_columns', { checklistId });
+export const fetchTaskBoard = (checklistId: string) => invoke<T.BoardDto>('fetch_task_board', { checklistId });
+export const createBoard = (title: string, category: string) => invoke<T.ChecklistDto>('create_task_board', { title, category });
 export const deleteItem = (checklistId: string, itemLocalId: string) => invoke<void>('delete_item', { checklistId, itemLocalId });
 export const reorderItems = (checklistId: string, orderedTopLevelIds: string[]) => invoke<void>('reorder_items', { checklistId, orderedTopLevelIds });
 export const listCategories = () => invoke<T.CategoriesDto>('list_categories');
