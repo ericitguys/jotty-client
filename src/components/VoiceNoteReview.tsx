@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import type { VoiceRecordingDto } from '../api/types';
+import { useStore } from '../stores/store';
 
 export const CAP_SECS = 480; // 8-minute cap, mirrors audio::MAX_SECS (spec §7)
 
@@ -36,6 +37,11 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const [busy, setBusy] = useState(false);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [atCap, setAtCap] = useState(false);
+  const { connection, saveVoiceNoteWithBoard } = useStore();
+  const [extracting, setExtracting] = useState(false);
+  const [preview, setPreview] = useState<string[] | null>(null);
+  const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
+  const [boardNotice, setBoardNotice] = useState<string | null>(null);
   const mounted = useRef(true);
   const stoppedRef = useRef(false); // Stop pressed before the start-chain finished (permission prompt window)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -193,8 +199,53 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
     onClose();
   };
 
+  // Voice note → kanban board: extract tasks from the transcript, let the user
+  // edit the rows in a preview, then run the store's save→board→cards flow.
+  const startBoardFlow = async () => {
+    setExtracting(true); setNotice(null); setError(null); setBoardNotice(null);
+    try {
+      const tasks = await api.voiceExtractTasks(currentText());
+      if (!mounted.current) return;
+      if (tasks.length === 0) setNotice('No tasks found in this transcript.');
+      else setPreview(tasks);
+    } catch (e) {
+      if (mounted.current) setError(fmt(e));
+    } finally {
+      if (mounted.current) setExtracting(false);
+    }
+  };
+
+  const createBoardFromTasks = async () => {
+    setBusy(true); setError(null);
+    try {
+      await saveVoiceNoteWithBoard({
+        recordingId: mode === 'retranscribe' ? null : rec?.id ?? null,
+        noteId: mode === 'retranscribe' ? noteId ?? null : null,
+        title, category,
+        useTidied: view === 'tidied' && tidiedText != null,
+        text: currentText(),
+        tasks: preview ?? [],
+        noteSavedId: savedNoteId,
+      });
+      if (!mounted.current) return;
+      onClose(); // board is selected by the store; NOT onSaved (board wins)
+    } catch (e) {
+      if (!mounted.current) return;
+      const err = e as Error & { boardStage?: boolean; noteId?: string };
+      if (err.boardStage) {
+        setSavedNoteId(err.noteId ?? null);
+        setBoardNotice(`Note saved — board creation failed: ${fmt(e)} Adjust the tasks and try again.`);
+      } else {
+        setError(fmt(e));
+      }
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
   const failed = rec?.state === 'transcription_failed' || rec?.state === 'transcription_failed_auth';
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+  const boardEnabled = !!connection && !!currentText().trim() && !busy && !extracting && phase === 'review';
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -224,11 +275,6 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
             {audioPath && <audio controls src={api.audioSrc(audioPath)} data-testid="voice-audio" />}
             <input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
             <input placeholder="Category" value={category} onChange={(e) => setCategory(e.target.value)} />
-            <div className="voice-toggle">
-              <button className={view === 'raw' ? 'selected' : ''} onClick={() => setView('raw')}>Raw</button>
-              <button className={view === 'tidied' ? 'selected' : ''} onClick={() => setView('tidied')} disabled={tidiedText == null}>Tidied</button>
-              <button onClick={tidy} disabled={busy || !rawText.trim()}>Tidy transcript</button>
-            </div>
             {failed && (
               <p className="error">
                 {rec?.state === 'transcription_failed_auth'
@@ -238,18 +284,50 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
             )}
             {notice && <p className="voice-hint">{notice}</p>}
             {error && <p className="error">{error}</p>}
-            <textarea
-              placeholder="Transcript"
-              value={currentText()}
-              onChange={(e) => (view === 'tidied' ? setTidiedText(e.target.value) : setRawText(e.target.value))}
-              rows={10}
-            />
-            <div className="voice-actions">
-              <button className="primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
-              {mode !== 'retranscribe' && <button onClick={deleteRecording}>Delete</button>}
-              {failed && <button onClick={retryTranscribe}>Retry transcription</button>}
-              <button onClick={onClose}>Close</button>
-            </div>
+            {preview ? (
+              <div className="board-preview">
+                <h3>Board tasks</h3>
+                <p className="voice-hint">Board “{(title.trim() || 'Tasks from voice note')}” in “{category}” — every card starts in the first column.</p>
+                {preview.map((t, i) => (
+                  <div className="board-task-row" key={i}>
+                    <input value={t} onChange={(e) => setPreview(preview.map((v, j) => (j === i ? e.target.value : v)))} />
+                    <button aria-label={`Remove task ${i + 1}`} onClick={() => setPreview(preview.filter((_, j) => j !== i))}>×</button>
+                  </div>
+                ))}
+                <button onClick={() => setPreview([...preview, ''])}>+ add task</button>
+                <div className="voice-actions">
+                  <button className="primary" disabled={busy || !preview.some((t) => t.trim())}
+                          onClick={() => void createBoardFromTasks()}>Create</button>
+                  <button onClick={() => { setPreview(null); }}>Cancel</button>
+                </div>
+                {boardNotice && <p className="voice-hint">{boardNotice}</p>}
+              </div>
+            ) : (
+              <>
+                <div className="voice-toggle">
+                  <button className={view === 'raw' ? 'selected' : ''} onClick={() => setView('raw')}>Raw</button>
+                  <button className={view === 'tidied' ? 'selected' : ''} onClick={() => setView('tidied')} disabled={tidiedText == null}>Tidied</button>
+                  <button onClick={tidy} disabled={busy || !rawText.trim()}>Tidy transcript</button>
+                </div>
+                <textarea
+                  placeholder="Transcript"
+                  value={currentText()}
+                  onChange={(e) => (view === 'tidied' ? setTidiedText(e.target.value) : setRawText(e.target.value))}
+                  rows={10}
+                />
+                <div className="voice-actions">
+                  <button className="primary" onClick={save} disabled={busy || !!savedNoteId}>{busy ? 'Saving…' : 'Save'}</button>
+                  <button className="primary" disabled={!boardEnabled || extracting}
+                          title={connection ? 'Extract tasks with AI and create a board' : 'Connect to create boards'}
+                          onClick={() => void startBoardFlow()}>
+                    {extracting ? 'Extracting…' : 'Save + kanban board'}
+                  </button>
+                  {mode !== 'retranscribe' && <button onClick={deleteRecording}>Delete</button>}
+                  {failed && <button onClick={retryTranscribe}>Retry transcription</button>}
+                  <button onClick={onClose}>Close</button>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>

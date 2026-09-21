@@ -5,6 +5,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import VoiceNoteReview, { titleFromTranscript } from './VoiceNoteReview';
+import { useStore } from '../stores/store';
 
 const recordedRow = {
   id: 'r1', path: '/data/voice/r1.wav', durationSecs: 4.2,
@@ -13,6 +14,19 @@ const recordedRow = {
 
 beforeEach(() => {
   invoke.mockReset();
+  // zustand is a module singleton: reset the state the component consumes so a
+  // leaked connection/selection can't bleed between tests (store.test shape).
+  useStore.setState({
+    connection: null,
+    notes: [],
+    checklists: [],
+    categories: null,
+    syncStatus: null,
+    selectedNoteId: null,
+    selectedChecklistId: null,
+    selectedCategory: null,
+    listMode: 'notes',
+  });
   // jsdom has no mediaDevices: stub getUserMedia for the mic-permission gate.
   // Default: granted — individual tests override for the denial path.
   const gm = vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream);
@@ -28,6 +42,11 @@ beforeEach(() => {
     if (cmd === 'voice_transcribe_note') return Promise.resolve({ text: 'New transcript.' });
     if (cmd === 'update_note') return Promise.resolve({});
     if (cmd === 'voice_delete_recording') return Promise.resolve(null);
+    // board flow: the component consumes the REAL store action, whose api calls
+    // ride this same invoke mock (the store module's own mock is not active here).
+    if (cmd === 'voice_extract_tasks') return Promise.resolve(['Buy milk', 'Call dentist']);
+    if (cmd === 'create_task_board') return Promise.resolve({ id: 'b1', title: 'Hello world.', category: 'Uncategorized', dirty: false, completed: false, listType: 'kanban', items: [] });
+    if (cmd === 'add_item') return Promise.resolve({});
     return Promise.resolve(null);
   });
 });
@@ -169,5 +188,183 @@ describe('VoiceNoteReview', () => {
     expect(titleFromTranscript('x'.repeat(100) + '. rest')).toBe('x'.repeat(57) + '…');
     expect(titleFromTranscript('   ')).toBe('Voice note');
     expect(titleFromTranscript('no punctuation here')).toBe('no punctuation here');
+  });
+});
+
+describe('VoiceNoteReview board flow', () => {
+  // reach review phase: render mode="new", click Stop (transcribe auto-fires,
+  // enterReview lands in phase=review) — reuses the harness defaults above.
+
+  it('board button: enabled when connected with a transcript, disabled offline and when empty', async () => {
+    useStore.setState({ connection: { url: 'x' } as never });
+    const connected = render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    const btn = await screen.findByRole('button', { name: /kanban board/i });
+    expect(btn).toBeEnabled();
+    expect(btn).toHaveAttribute('title', 'Extract tasks with AI and create a board');
+    // empty transcript: nothing to extract from -> disabled again
+    fireEvent.change(screen.getByPlaceholderText('Transcript'), { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: /kanban board/i })).toBeDisabled();
+    connected.unmount();
+    useStore.setState({ connection: null });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    // offline instance: disabled with a connect hint
+    fireEvent.click(screen.getByText('Stop'));
+    const offline = await screen.findByRole('button', { name: /kanban board/i });
+    expect(offline).toBeDisabled();
+    expect(offline).toHaveAttribute('title', 'Connect to create boards');
+  });
+
+  it('tap extracts from the EDITOR text and shows the editable preview', async () => {
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await screen.findByRole('button', { name: /kanban board/i });
+    // edit the transcript first: extraction must read the EDITOR text
+    fireEvent.change(screen.getByPlaceholderText('Transcript'), { target: { value: 'Edited transcript' } });
+    fireEvent.click(screen.getByRole('button', { name: /kanban board/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_extract_tasks', { text: 'Edited transcript' }));
+    // preview replaces the transcript editor + review actions
+    expect(await screen.findByText('Board tasks')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Transcript')).not.toBeInTheDocument();
+    expect(screen.queryByText('Save')).not.toBeInTheDocument();
+    // board title/category inputs mirror the overlay fields (title prefilled from transcript)
+    expect(screen.getByDisplayValue(/Hello world/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Uncategorized')).toBeInTheDocument();
+    // rows exist, edit + remove + add work
+    fireEvent.change(await screen.findByDisplayValue('Buy milk'), { target: { value: 'Buy oat milk' } });
+    expect(screen.getByDisplayValue('Buy oat milk')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Buy milk')).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: /remove/i })[0]);
+    expect(screen.queryByDisplayValue('Buy oat milk')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('Call dentist')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /\+ add task/i }));
+    expect(screen.getByDisplayValue('')).toBeInTheDocument();
+    // Create enabled while any row has text; Cancel sits beside it
+    expect(screen.getByRole('button', { name: /^Create/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('empty extraction shows the no-tasks notice and stays in review', async () => {
+    useStore.setState({ connection: { url: 'x' } as never });
+    invoke.mockImplementation((cmd: string) => cmd === 'voice_transcribe'
+      ? Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world.', lastError: null })
+      : cmd === 'voice_extract_tasks' ? Promise.resolve([])
+      : cmd === 'voice_start_recording' ? Promise.resolve(recordedRow)
+      : cmd === 'voice_stop_recording' ? Promise.resolve(recordedRow) : Promise.resolve(null));
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    expect(await screen.findByText('No tasks found in this transcript.')).toBeInTheDocument();
+    // stays in review: editor + actions remain, no preview rows appeared
+    expect(screen.getByPlaceholderText('Transcript')).toBeInTheDocument();
+    expect(screen.queryByText('Board tasks')).not.toBeInTheDocument();
+    // a notice, not an error: the error line never renders
+    expect(document.querySelector('.voice-modal .error')).toBeNull();
+  });
+
+  it('extraction failure keeps the review view with a retryable error', async () => {
+    useStore.setState({ connection: { url: 'x' } as never });
+    invoke.mockImplementation((cmd: string) => cmd === 'voice_transcribe'
+      ? Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world.', lastError: null })
+      : cmd === 'voice_extract_tasks' ? Promise.reject(new Error('api error 500'))
+      : cmd === 'voice_start_recording' ? Promise.resolve(recordedRow)
+      : cmd === 'voice_stop_recording' ? Promise.resolve(recordedRow) : Promise.resolve(null));
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    expect(await screen.findByText('api error 500')).toBeInTheDocument();
+    // review view kept, no preview; the button re-enables for a retry
+    expect(screen.getByPlaceholderText('Transcript')).toBeInTheDocument();
+    expect(screen.queryByText('Board tasks')).not.toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: /kanban board/i });
+    expect(btn).toBeEnabled();
+    expect(btn).toHaveTextContent('Save + kanban board');
+  });
+
+  it('confirm runs save → board → adds, then closes; board selection wins (no onSaved call)', async () => {
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={onClose} onSaved={onSaved} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Create/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onSaved).not.toHaveBeenCalled();
+    const order = invoke.mock.calls.map((c) => c[0]);
+    expect(order.indexOf('voice_save_note')).toBeLessThan(order.indexOf('create_task_board'));
+    expect(order.indexOf('create_task_board')).toBeLessThan(order.indexOf('add_item'));
+    expect(useStore.getState().selectedChecklistId).toBe('b1');
+    expect(invoke).toHaveBeenCalledWith('create_task_board', { title: 'Hello world.', category: 'Uncategorized' });
+    expect(invoke).toHaveBeenCalledWith('voice_save_note', { recordingId: 'r1', title: 'Hello world.', category: 'Uncategorized', useTidied: false, contentOverride: 'Hello world. Second sentence.' });
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b1', text: 'Buy milk', parentLocalId: null, status: null });
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b1', text: 'Call dentist', parentLocalId: null, status: null });
+  });
+
+  it('board-stage failure: notice names it, note marked saved, Create retries WITHOUT re-saving', async () => {
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    let boardCalls = 0;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_save_note') return Promise.resolve({ id: 'n1', title: 'T', content: 'x', category: 'Uncategorized', audioPath: '/v/r1.wav', audioDurationSecs: 4, createdAt: null, updatedAt: null, deletedAt: null, dirty: true });
+      if (cmd === 'create_task_board') {
+        boardCalls += 1;
+        return boardCalls === 1 ? Promise.reject('api error 400: nope') : Promise.resolve({ id: 'b1', title: 'T', category: 'Uncategorized', dirty: false, completed: false, listType: 'kanban', items: [] });
+      }
+      if (cmd === 'add_item') return Promise.resolve({});
+      if (cmd === 'voice_extract_tasks') return Promise.resolve(['Buy milk', 'Call dentist']);
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world.', lastError: null });
+      if (cmd === 'voice_start_recording' || cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
+      // refreshAll runs inside the store action: keep the connection alive so
+      // the cancel-and-re-extract interlude below can re-open the preview.
+      if (cmd === 'get_connection') return Promise.resolve({ instanceUrl: 'http://x', version: null });
+      return Promise.resolve(null);
+    });
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={onClose} onSaved={onSaved} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Create/i }));
+    expect(await screen.findByText(/Note saved — board creation failed/)).toBeInTheDocument();
+    // preview stays open; the note save happened exactly once
+    expect(screen.getByText('Board tasks')).toBeInTheDocument();
+    const savesAfterFirst = invoke.mock.calls.filter((c) => c[0] === 'voice_save_note').length;
+    expect(savesAfterFirst).toBe(1);
+    // cancel back to review: the Save button is disabled while the note is
+    // saved-but-boardless (ruling 2: disabled={busy || !!savedNoteId})
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Save')).toBeDisabled();
+    // re-enter the preview and retry Create: board retried, save NOT re-run
+    fireEvent.click(screen.getByRole('button', { name: /kanban board/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Create/i }));
+    await waitFor(() => expect(boardCalls).toBe(2));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'voice_save_note').length).toBe(1); // STILL 1
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('cancel at preview persists nothing and returns to review with edits intact', async () => {
+    const onClose = vi.fn();
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={onClose} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await screen.findByRole('button', { name: /kanban board/i });
+    fireEvent.change(screen.getByPlaceholderText('Transcript'), { target: { value: 'Edited transcript' } });
+    fireEvent.click(screen.getByRole('button', { name: /kanban board/i }));
+    await screen.findByText('Board tasks');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    // back in review with the shared edits intact
+    await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('Edited transcript'));
+    expect(screen.getByText('Save')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /kanban board/i })).toBeInTheDocument();
+    expect(screen.queryByText('Board tasks')).not.toBeInTheDocument();
+    // nothing persisted: extraction only — no save/board/add invokes, no close
+    const cmds = invoke.mock.calls.map((c) => c[0]);
+    expect(cmds).toContain('voice_extract_tasks');
+    expect(cmds.filter((c) => c === 'voice_save_note')).toHaveLength(0);
+    expect(cmds.filter((c) => c === 'create_task_board')).toHaveLength(0);
+    expect(cmds.filter((c) => c === 'add_item')).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
