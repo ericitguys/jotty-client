@@ -606,7 +606,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .voice-duration { color: var(--muted-fg, #a39caf); font-size: 0.9em; }
 
 /* ---------- kanban board ---------- */
-.kanban-board { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; position: relative; min-height: 200px; }
+.kanban-board { display: flex; gap: 10px; align-items: flex-start; padding-bottom: 8px; position: relative; min-height: 200px; }
 .kanban-col { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px; }
 .kanban-col-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .kanban-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
