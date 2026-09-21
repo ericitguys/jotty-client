@@ -365,7 +365,11 @@ pub(crate) async fn create_task_board_inner(state: &AppState, title: &str, categ
     let client = state.client.read().await.clone()
         .ok_or_else(|| AppError::Other("not connected".into()))?;
     // Live creation (ruling 3): the plain checklist create endpoint cannot carry statuses.
-    let created = client.create_task(title, category, &crate::jotty::models::creation_board_statuses()).await?;
+    let mut created = client.create_task(title, category, &crate::jotty::models::creation_board_statuses()).await?;
+    // We created it via the kanban creation endpoint, so the type is known —
+    // upstream POST /api/tasks responses carry no "type" field to parse it
+    // from, and the idempotent upsert would pin "regular" forever.
+    created.list_type = Some("kanban".into());
     {
         let mut conn = state.db.lock().await;
         // Bring it local before returning (T14 precedent: the command holds the
@@ -2237,7 +2241,12 @@ mod tests {
             .mount(&s).await;
         let state = test_state_with_client(&s.uri()).await;
         let dto = create_task_board_inner(&state, "New board", "Work").await.unwrap();
-        assert_eq!(dto.id, "created-uuid"); // the pull brought it local
+        assert_eq!(dto.id, "created-uuid"); // the upsert brought it local
+        // The POST mock body deliberately carries no "type" field — upstream
+        // POST /api/tasks responses never do. "kanban" must come from the
+        // creation-endpoint override in create_task_board_inner, not from the
+        // server response.
+        assert_eq!(dto.list_type, "kanban");
         let conn = state.db.lock().await;
         assert!(checklists::get_checklist(&conn, "created-uuid").unwrap().is_some());
         // creation sent the 3-column explicit set
