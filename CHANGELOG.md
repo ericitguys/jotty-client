@@ -1,3 +1,15 @@
+## v0.12.1 — Tidy outcome made unmissable (2026-09-21)
+
+Field fix: a voice note could be saved with the raw transcript even after tapping "Tidy transcript" — the tidy failure was only a small muted hint that was easy to miss, and Save (by design) saves exactly what the editor shows.
+
+### Fixed
+- **Tidy failures now show as a red error line**, not a muted hint.
+- **A tidy that returns the text unchanged** (model echoed it) now says so instead of silently "succeeding".
+- **The Save button labels what it writes** once a tidied text exists: "Save (tidied)" / "Save (raw)" — no more guessing which version lands in the note.
+
+### For the record
+The save path itself was verified correct: the note always stores exactly what's in the editor (the edited/tidied text always wins). This release makes it impossible to miss when the editor is NOT showing the tidied text.
+
 # Changelog
 
 Release notes for jotty·desktop — newest first. Install commands and sha256 checksums for each release live on its GitHub release page.
