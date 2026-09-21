@@ -83,6 +83,9 @@ each item line embeds ` | status:<id>` metadata (omitted when status is
   in_progress/In Progress 1, completed/Completed 2 (autoComplete: true),
   paused/Paused 3. The site ALSO coerces a `completed` column with
   `autoComplete === undefined` to autoComplete:true — mirror that coercion.
+  NOTE the two distinct default uses: this 4-column set is the RENDERING
+  fallback when a list carries `statuses: null` (site parity, §7); new
+  boards are CREATED with the 3-column set (§6).
 - **Card grouping (getColumnItems):** cards = TOP-LEVEL items only
   (children are subtasks inside the card, never separate cards); item goes
   to the column with `item.status === statusId`; items with an unknown or
@@ -170,10 +173,12 @@ preserves status through them — verified).
 
 **Create board ("+ New board" in the checklist list header):**
 `create_task_board(title, category)` → `POST /api/tasks` with the default
-column set (todo, in_progress, completed+autoComplete — the site's 4-col
-UI default minus `paused`; no statuses sent = server default, we send 3
-explicitly) → refreshAll → open the board. Online-only (disabled offline,
-consistent with all creation flows).
+column set sent explicitly — todo, in_progress, completed with
+`autoComplete: true` (3 columns; the site's rendering fallback additionally
+shows `paused` for `statuses: null` lists, §3/§7, but new boards don't need
+a paused column unless the user adds one on the site) → refreshAll → open
+the board. Online-only (disabled offline, consistent with all creation
+flows).
 
 **Board open:** `fetch_task_board(uuid)` → 200: rewrite `board_statuses`
 cache; 404/400 (old instance or non-kanban): keep cache (or default set),
