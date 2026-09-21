@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { DragEvent } from 'react';
 import * as api from '../api/client';
-import type { ItemDto } from '../api/types';
+import type { ChecklistDto, ItemDto } from '../api/types';
 import { useStore } from '../stores/store';
+import KanbanBoard from './KanbanBoard';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
   const refreshAll = useStore((s) => s.refreshAll);
@@ -10,6 +11,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
   const [items, setItems] = useState<ItemDto[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
+  const [listMeta, setListMeta] = useState<ChecklistDto | null>(null);
   const [newText, setNewText] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
 
@@ -23,6 +25,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
       setItems(list.items ?? []);
       setTitle(list.title);
       setCategory(list.category);
+      setListMeta(list);
     })();
     return () => { cancelled = true; };
   }, [checklistId]);
@@ -32,6 +35,11 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     const list = await api.getChecklist(checklistId);
     setItems(list.items ?? []);
   }, [checklistId]);
+
+  // Board mode: kanban/task listTypes render the KanbanBoard; plain lists keep
+  // the checkbox list. Derived from the loaded meta (not the row stub) so the
+  // header stays editable in BOTH modes.
+  const isBoard = !!listMeta && (listMeta.listType === 'kanban' || listMeta.listType === 'task');
 
   const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
 
@@ -106,6 +114,9 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
           <button className="cl-save" onMouseDown={(e) => e.preventDefault()} onClick={saveMeta}>Save</button>
         </div>
       </div>
+      {isBoard ? (
+        <KanbanBoard checklistId={checklistId} items={items} reload={reload} />
+      ) : (
       <ul>
         {top.map((item) => (
           <li key={item.localId} id={`item-${item.localId}`}
@@ -135,6 +146,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
           </li>
         ))}
       </ul>
+      )}
       <input placeholder="New item" value={newText} onChange={(e) => setNewText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
       <button onClick={add}>Add</button>
     </div>

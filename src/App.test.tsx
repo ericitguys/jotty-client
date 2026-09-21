@@ -189,6 +189,43 @@ describe('App shell', () => {
     fireEvent.click(screen.getByText('Settings'));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument());
   });
+
+  it('kanban-type checklists render the board view; plain ones keep the checklist', async () => {
+    let requested: string | null = null;
+    const boardMeta = { id: 'kb', title: 'Sprint', category: 'Work', updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'kanban', items: [] };
+    const plainMeta = { id: 'pl', title: 'Plain', category: 'Work', updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'simple',
+        items: [{ localId: 'i1', checklistId: 'pl', parentLocalId: null, text: 't', completed: false, position: 0, dirty: false, status: null, priority: null, targetDate: null, children: [] }] };
+    invoke.mockImplementation((cmd: string, args?: { id?: string }) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://x', version: '1.25.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([
+        { id: 'kb', title: 'Sprint', category: 'Work', dirty: false, completed: false, listType: 'kanban' },
+        { id: 'pl', title: 'Plain', category: 'Work', dirty: false, completed: false, listType: 'simple' },
+      ]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_checklist') {
+        requested = args?.id ?? null;
+        return requested === 'kb' ? Promise.resolve(boardMeta) : Promise.resolve(plainMeta);
+      }
+      if (cmd === 'get_board_columns' || cmd === 'fetch_task_board') return Promise.resolve({ checklistId: 'kb', statuses: [
+        { id: 'todo', label: 'To Do', color: null, order: 0, autoComplete: false },
+        { id: 'completed', label: 'Completed', color: null, order: 1, autoComplete: true },
+      ] });
+      if (cmd === 'get_prefs') return Promise.resolve(null);
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false, lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
+    fireEvent.click(await screen.findByText('Sprint'));
+    // board renders with its columns; the plain checkbox list does NOT
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    expect(requested).toBe('kb');
+    // open the plain list: checklist view with checkboxes
+    fireEvent.click(await screen.findByText('Plain'));
+    await waitFor(() => expect(screen.getByText('t')).toBeInTheDocument());
+    expect(screen.getAllByRole('checkbox').length).toBeGreaterThan(0);
+  });
 });
 
 describe('web preference mirroring', () => {
