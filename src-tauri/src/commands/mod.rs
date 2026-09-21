@@ -1247,6 +1247,38 @@ pub async fn voice_tidy(
         .map_err(|e| e.to_string())
 }
 
+/// Unlike voice_tidy (which holds the db lock across the network await because
+/// it writes the recording row), extraction writes no table: the lock is
+/// dropped before the await and the effective suffix from the returned pair is
+/// persisted under a fresh scoped lock afterwards (ai_models_core shape).
+pub(crate) async fn voice_extract_tasks_inner(
+    ai: &crate::voice_ai::VoiceAiClient,
+    model: &str,
+    text: &str,
+) -> AppResult<(Vec<String>, crate::voice_ai::Suffix)> {
+    if model.trim().is_empty() {
+        return Err(crate::error::AppError::Other(
+            "AI model not configured — pick one in Settings".into(),
+        ));
+    }
+    ai.extract_tasks(model, text).await
+}
+
+#[tauri::command]
+pub async fn voice_extract_tasks(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<Vec<String>, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let model = { let conn = state.db.lock().await; ai_model(&conn).map_err(|e| e.to_string())? };
+    let (tasks, sfx) = voice_extract_tasks_inner(&ai, &model, &text).await.map_err(|e| e.to_string())?;
+    {
+        let conn = state.db.lock().await;
+        persist_ai_suffix(&conn, sfx).map_err(|e| e.to_string())?;
+    }
+    Ok(tasks)
+}
+
 fn voice_list_unsaved_inner(conn: &Connection) -> AppResult<Vec<VoiceRecordingDto>> {
     Ok(crate::db::voice::list_unsaved(conn)?.into_iter().map(Into::into).collect())
 }
@@ -1885,6 +1917,16 @@ mod tests {
         let mut conn = db();
         let ai = ai_mock_ok_text();
         assert!(voice_tidy_inner(&mut conn, &ai, "", None, "raw").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn extract_requires_a_model() {
+        let ai = ai_mock_ok_text();
+        let err = voice_extract_tasks_inner(&ai, "", "memo").await.unwrap_err();
+        assert!(
+            err.to_string().contains("AI model not configured"),
+            "expected the Settings-configured error, got {err}"
+        );
     }
 
     #[test]

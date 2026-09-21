@@ -89,6 +89,7 @@ pub fn run() {
             commands::ai_get_models,
             commands::voice_transcribe,
             commands::voice_tidy,
+            commands::voice_extract_tasks,
             commands::voice_list_unsaved,
             commands::voice_save_note,
             commands::voice_transcribe_note,

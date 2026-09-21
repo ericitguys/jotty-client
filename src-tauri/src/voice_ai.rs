@@ -33,6 +33,8 @@ const LONG_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub const TIDY_SYSTEM_PROMPT: &str = "You tidy voice-memo transcripts. Fix punctuation, capitalization and paragraph breaks. Remove filler words and false starts. Fix obvious transcription slips only when the context makes them unambiguous. Structure the text with short headings or bullet points when the content warrants it. Never invent facts or add commentary. Reply with ONLY the cleaned text — no preamble, no quotes.";
 
+pub const EXTRACT_SYSTEM_PROMPT: &str = "You extract actionable tasks from a voice-memo transcript. Reply with ONLY a JSON array of strings — no prose, no Markdown, no code fences. Each element is one short imperative task title in the transcript's language. Merge duplicates and drop pure small talk. Never invent facts that are not in the transcript. If the transcript contains no tasks, reply with [].";
+
 #[derive(Debug, Clone)]
 pub struct VoiceAiClient {
     http: reqwest::Client,
@@ -178,6 +180,26 @@ impl VoiceAiClient {
             Err(e) => Err(e),
         }
     }
+
+    /// Returns (task titles, effective suffix) — the caller persists the suffix.
+    pub async fn extract_tasks(&self, model: &str, text: &str) -> AppResult<(Vec<String>, Suffix)> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ]
+        });
+        match self.chat_once(self.suffix, &body).await {
+            Ok(v) => Ok((parse_tasks(&parse_choice(&v)?)?, self.suffix)),
+            Err(AppError::Api { status: 404, .. }) => {
+                let other = self.other();
+                let v = self.chat_once(other, &body).await?;
+                Ok((parse_tasks(&parse_choice(&v)?)?, other))
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 fn parse_text(v: &Value) -> AppResult<String> {
@@ -212,6 +234,33 @@ fn parse_choice(v: &Value) -> AppResult<String> {
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| AppError::Other("chat response missing choices[0].message.content".into()))
+}
+
+/// Tolerant extraction parse: trim, strip code fences, take the first `[` to
+/// the last `]`; string items pass, numbers stringify, anything else → Err
+/// (never a fabricated list).
+fn parse_tasks(content: &str) -> AppResult<Vec<String>> {
+    let trimmed = content.trim();
+    let stripped = if trimmed.starts_with("```") {
+        let inner = trimmed.trim_start_matches("```").trim_start_matches("json").trim();
+        inner.trim_end_matches("```").trim()
+    } else {
+        trimmed
+    };
+    let start = stripped.find('[').ok_or_else(|| AppError::Other("extraction reply contains no JSON array".into()))?;
+    let end = stripped.rfind(']').ok_or_else(|| AppError::Other("extraction reply has no closing bracket".into()))?;
+    if end < start {
+        return Err(AppError::Other("extraction reply has malformed array".into()));
+    }
+    let arr = serde_json::from_str::<Vec<serde_json::Value>>(&stripped[start..=end])
+        .map_err(|e| AppError::Other(format!("extraction reply is not a JSON array: {e}")))?;
+    arr.into_iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => Ok(s),
+            serde_json::Value::Number(n) => Ok(n.to_string()),
+            _ => Err(AppError::Other("extraction reply contains a non-string task".into())),
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Clone)]
@@ -479,6 +528,114 @@ mod tests {
         let (tidied, sfx) = client(&s.uri()).tidy("m", "x").await.unwrap();
         assert_eq!(tidied, "ok");
         assert_eq!(sfx, Suffix::Plain);
+    }
+
+    #[tokio::test]
+    async fn extract_tasks_sends_prompt_and_parses_plain_array() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "model": "llama3",
+                "messages": [
+                    {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                    {"role": "user", "content": "memo text"}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "[\"Buy milk\",\"Call dentist\"]"}}]
+            })))
+            .mount(&s).await;
+        let (tasks, sfx) = client(&s.uri()).extract_tasks("llama3", "memo text").await.unwrap();
+        assert_eq!(tasks, vec!["Buy milk", "Call dentist"]);
+        assert_eq!(sfx, Suffix::V1);
+    }
+
+    #[tokio::test]
+    async fn extract_tasks_tolerates_code_fenced_array() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "```json\n[\"Task A\", \"Task B\"]\n```"}}]
+            })))
+            .mount(&s).await;
+        let (tasks, _) = client(&s.uri()).extract_tasks("llama3", "memo").await.unwrap();
+        assert_eq!(tasks, vec!["Task A", "Task B"]);
+    }
+
+    #[tokio::test]
+    async fn extract_tasks_stringifies_numbers_and_errors_on_objects() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[1, 2]"}}]
+            })))
+            .mount(&s).await;
+        let (tasks, _) = client(&s.uri()).extract_tasks("llama3", "memo").await.unwrap();
+        assert_eq!(tasks, vec!["1", "2"]);
+        // object item → error, never a fabricated list
+        let s2 = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[{\"title\": \"x\"}]"}}]
+            })))
+            .mount(&s2).await;
+        assert!(client(&s2.uri()).extract_tasks("llama3", "memo").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn extract_tasks_empty_array_is_ok_and_no_array_is_err() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[]"}}]
+            })))
+            .mount(&s).await;
+        let (tasks, _) = client(&s.uri()).extract_tasks("llama3", "memo").await.unwrap();
+        assert!(tasks.is_empty());
+        // prose reply (no parseable array) → Err
+        let s2 = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "I found some tasks in your memo."}}]
+            })))
+            .mount(&s2).await;
+        assert!(client(&s2.uri()).extract_tasks("llama3", "memo").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn extract_tasks_404_falls_back_to_plain() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(404)).mount(&s).await;
+        Mock::given(method("POST")).and(path("/api/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"content": "[\"T\"]"}}]
+            })))
+            .mount(&s).await;
+        let (tasks, sfx) = client(&s.uri()).extract_tasks("llama3", "memo").await.unwrap();
+        assert_eq!(tasks, vec!["T"]);
+        assert_eq!(sfx, Suffix::Plain);
+    }
+
+    #[test]
+    fn parse_tasks_strips_fences_and_takes_first_array() {
+        assert_eq!(parse_tasks("[\"a\",\"b\"]").unwrap(), vec!["a", "b"]);
+        assert_eq!(parse_tasks("```json\n[\"a\"]\n```").unwrap(), vec!["a"]);
+        assert_eq!(parse_tasks("Sure! [\"a\"] hope this helps").unwrap(), vec!["a"]);
+        assert_eq!(parse_tasks("[]").unwrap(), Vec::<String>::new());
+        assert!(parse_tasks("no array here").is_err());
+        assert!(parse_tasks("[{\"a\":1}]").is_err());
+    }
+
+    #[tokio::test]
+    #[ignore] // env-gated live run: JOTTY_TEST_OWEBUI_URL / JOTTY_TEST_OWEBUI_KEY — never fabricated
+    async fn live_extract_tasks_roundtrip() {
+        let url = std::env::var("JOTTY_TEST_OWEBUI_URL").expect("set JOTTY_TEST_OWEBUI_URL");
+        let key = std::env::var("JOTTY_TEST_OWEBUI_KEY").expect("set JOTTY_TEST_OWEBUI_KEY");
+        let ai = crate::voice_ai::VoiceAiClient::new(&url, &key, crate::voice_ai::Suffix::V1).unwrap();
+        let (tasks, _) = ai.extract_tasks("gemma3", "I need to buy milk tomorrow and email the dentist about my cleaning.").await.unwrap();
+        println!("{tasks:?}");
+        assert!(!tasks.is_empty());
     }
 
     #[test]
