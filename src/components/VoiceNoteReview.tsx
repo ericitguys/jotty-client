@@ -156,14 +156,24 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const tidy = async () => {
     setBusy(true);
     setNotice(null);
+    setError(null);
     try {
-      const res = await api.voiceTidy(mode === 'retranscribe' ? null : rec?.id ?? null, currentText());
+      const src = currentText();
+      const res = await api.voiceTidy(mode === 'retranscribe' ? null : rec?.id ?? null, src);
       if (!mounted.current) return;
       setTidiedText(res.tidied);
       setView('tidied');
+      // A model that echoes the transcript back is indistinguishable from a
+      // no-op tidy — surface it instead of silently "succeeding" (field report
+      // 2026-09-21: user saved the raw text believing tidy had cleaned it).
+      if (res.tidied.trim() === src.trim()) {
+        setNotice('The AI returned the transcript unchanged — no cleanup was applied.');
+      }
     } catch (e) {
       if (!mounted.current) return;
-      setNotice(`Tidy failed — keeping the transcript as is. ${fmt(e)}`);
+      // Failure goes to the ERROR slot (red, unmissable) — the old muted hint
+      // line was missed in the field and the raw transcript got saved.
+      setError(`Tidy failed — keeping the transcript as is. ${fmt(e)}`);
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -316,7 +326,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
                   rows={10}
                 />
                 <div className="voice-actions">
-                  <button className="primary" onClick={save} disabled={busy || !!savedNoteId}>{busy ? 'Saving…' : 'Save'}</button>
+                  <button className="primary" onClick={save} disabled={busy || !!savedNoteId}>{busy ? 'Saving…' : tidiedText != null ? (view === 'tidied' ? 'Save (tidied)' : 'Save (raw)') : 'Save'}</button>
                   <button className="primary" disabled={!boardEnabled || extracting}
                           title={connection ? 'Extract tasks with AI and create a board' : 'Connect to create boards'}
                           onClick={() => void startBoardFlow()}>

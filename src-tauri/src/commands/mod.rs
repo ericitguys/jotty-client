@@ -2011,6 +2011,14 @@ mod tests {
         let _ = stage_transcribed_with_file(&dir, &conn2, "r3", Some("raw text"), Some("Tidied!"), 3.0);
         let c = voice_save_note_inner(&mut conn2, "r3", "t", "Home", false, Some("user edited text".into())).unwrap();
         assert_eq!(c.content, "user edited text");
+        // The frontend ALWAYS sends useTidied=true + override (the editor text) in
+        // tidied view — pin that the override still wins over BOTH (field report
+        // 2026-09-21: raw text was saved after a tidy; root cause was upstream,
+        // this pins the precedence so the save layer can never reintroduce it).
+        // (fresh staging row: each save consumes its row via the staging delete)
+        let _ = stage_transcribed_with_file(&dir, &conn2, "r4", Some("raw text"), Some("Stale tidied."), 3.0);
+        let d = voice_save_note_inner(&mut conn2, "r4", "t", "Home", true, Some("user edited text".into())).unwrap();
+        assert_eq!(d.content, "user edited text");
     }
 
     #[test]

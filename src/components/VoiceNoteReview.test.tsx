@@ -137,6 +137,54 @@ describe('VoiceNoteReview', () => {
     expect(screen.getByPlaceholderText('Transcript')).toHaveValue('raw text');
   });
 
+  it('tidy failure renders as an unmissable error line, not a muted hint', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_tidy') return Promise.reject(new Error('server down'));
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'raw text' });
+      if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByText('Tidy transcript')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Tidy transcript'));
+    const line = await screen.findByText(/Tidy failed/);
+    // The failure must carry the .error class (red, unmissable), NOT .voice-hint
+    expect(line).toHaveClass('error');
+    expect(line).not.toHaveClass('voice-hint');
+  });
+
+  it('tidy that returns the text unchanged shows a no-op notice', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_tidy') return Promise.resolve({ tidied: 'Hello world. Second sentence.' });
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world. Second sentence.', lastError: null });
+      if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByText('Tidy transcript')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Tidy transcript'));
+    expect(await screen.findByText(/returned the transcript unchanged/i)).toBeInTheDocument();
+    // the editor still shows the (unchanged) text
+    expect(screen.getByPlaceholderText('Transcript')).toHaveValue('Hello world. Second sentence.');
+  });
+
+  it('Save button labels which transcript version will be saved once a tidied text exists', async () => {
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByPlaceholderText('Title')).toBeInTheDocument());
+    // no tidied text yet: plain Save
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Tidy transcript'));
+    // after tidy: view flips to tidied — the button names it
+    await waitFor(() => expect(screen.getByRole('button', { name: /Save \(tidied\)/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    expect(screen.getByRole('button', { name: /Save \(raw\)/ })).toBeInTheDocument();
+  });
+
   it('save calls voice_save_note with the edited text and reports the saved note', async () => {
     const onSaved = vi.fn();
     const onClose = vi.fn();
