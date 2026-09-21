@@ -47,6 +47,7 @@ export const voiceTidy = (recordingId: string | null, raw: string) => invoke<{ t
 export const voiceDeleteRecording = (recordingId: string) => invoke<void>('voice_delete_recording', { recordingId });
 export const voiceSaveNote = (recordingId: string, title: string, category: string, useTidied: boolean, contentOverride: string | null) =>
   invoke<T.NoteDto>('voice_save_note', { recordingId, title, category, useTidied, contentOverride });
+export const voiceExtractTasks = (text: string) => invoke<string[]>('voice_extract_tasks', { text });
 export const voiceListUnsaved = () => invoke<T.VoiceRecordingDto[]>('voice_list_unsaved');
 export const voiceTranscribeNote = (noteId: string) => invoke<{ text: string }>('voice_transcribe_note', { noteId });
 export const voiceDeleteNoteAudio = (noteId: string) => invoke<T.NoteDto>('voice_delete_note_audio', { noteId });

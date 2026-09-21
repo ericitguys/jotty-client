@@ -28,6 +28,7 @@ interface AppState {
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
   createBoard: (title: string, category: string) => Promise<T.ChecklistDto>;
+  saveVoiceNoteWithBoard: (input: VoiceBoardInput) => Promise<{ noteId: string; boardId: string }>;
 }
 
 export interface CategoryFilter {
@@ -36,6 +37,17 @@ export interface CategoryFilter {
 }
 
 export type ListMode = 'notes' | 'checklists';
+
+export interface VoiceBoardInput {
+  recordingId: string | null; // new/resume modes
+  noteId: string | null;      // retranscribe mode
+  title: string;
+  category: string;
+  useTidied: boolean;
+  text: string;
+  tasks: string[];
+  noteSavedId?: string | null; // set on retry after a board-stage failure
+}
 
 export const useStore = create<AppState>((set, get) => ({
   connection: null,
@@ -127,5 +139,27 @@ export const useStore = create<AppState>((set, get) => ({
     await get().refreshAll();
     set({ selectedChecklistId: board.id, selectedNoteId: null, listMode: 'checklists' });
     return board;
+  },
+  saveVoiceNoteWithBoard: async (input) => {
+    const boardTitle = input.title.trim() || 'Tasks from voice note';
+    let noteId = input.noteSavedId ?? null;
+    if (!noteId) {
+      const note = input.noteId
+        ? await api.updateNote(input.noteId, input.title, input.text, input.category)
+        : await api.voiceSaveNote(input.recordingId as string, input.title, input.category, input.useTidied, input.text);
+      noteId = note.id;
+      // Sidebar/list freshness even if the board part fails below.
+      await get().refreshAll();
+    }
+    try {
+      const board = await get().createBoard(boardTitle, input.category); // refreshAll + selects the board
+      for (const raw of input.tasks) {
+        const text = raw.trim();
+        if (text) await api.addItem(board.id, text, null, null);
+      }
+      return { noteId: noteId as string, boardId: board.id };
+    } catch (e) {
+      throw Object.assign(new Error(String(e)), { boardStage: true, noteId });
+    }
   },
 }));
