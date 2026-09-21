@@ -518,7 +518,7 @@ const startBoardFlow = async () => {
     const tasks = await api.voiceExtractTasks(currentText());
     if (!mounted.current) return;
     if (tasks.length === 0) setNotice('No tasks found in this transcript.');
-    else setPreview(tasks.filter((t) => t.trim()).length ? tasks : [tasks.join('')]); // never an all-empty preview from a non-empty reply
+    else setPreview(tasks);
   } catch (e) {
     if (mounted.current) setError(fmt(e));
   } finally {
