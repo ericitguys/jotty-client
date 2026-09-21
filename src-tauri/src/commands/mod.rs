@@ -203,6 +203,9 @@ pub(crate) fn add_item_inner(
         checklist_id: checklist_id.into(),
         parent_local_id: parent_local_id.clone(),
         text: text.into(),
+        status: None,
+        priority: None,
+        target_date: None,
     })?;
     // Ruling D: create → {checklist_id, item_local_id, text, parent_local_id: opt}
     // (NO temp_local_id key — push.rs never reads it).

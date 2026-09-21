@@ -529,7 +529,7 @@ mod tests {
         // (pre-review ruling 2026-09-17): an offline item on the temp list id + its op queued
         // behind — the create remap must move the item FK and rewrite pending item-op payloads.
         let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
-            checklist_id: local.id.clone(), parent_local_id: None, text: "i".into(),
+            checklist_id: local.id.clone(), parent_local_id: None, text: "i".into(), status: None, priority: None, target_date: None,
         }).unwrap();
         outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
             &serde_json::json!({"item_local_id": it.local_id, "checklist_id": local.id, "checked": true})).unwrap();
@@ -653,7 +653,7 @@ mod tests {
         conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
         // local item "a" with stale server_path "0.5"
         let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
-            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
         }).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='0.5', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
         // queued check op for an item the server moved to path "0"
@@ -729,8 +729,8 @@ mod tests {
         let mut conn = db();
         conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
         // two local items a,b already synced with server_paths
-        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
-        let b = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "b".into() }).unwrap();
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None }).unwrap();
+        let b = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "b".into(), status: None, priority: None, target_date: None }).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='1', dirty=0, completed=1 WHERE local_id=?1", [&b.local_id]).unwrap();
         // reorder: b first
@@ -766,7 +766,7 @@ mod tests {
         let mut conn = db();
         conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
         let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
-            checklist_id: "l1".into(), parent_local_id: None, text: "old".into(),
+            checklist_id: "l1".into(), parent_local_id: None, text: "old".into(), status: None, priority: None, target_date: None,
         }).unwrap();
         // synced earlier at path "0", then renamed OFFLINE: row text = new, server text = old
         conn.execute("UPDATE checklist_items SET server_path='0', dirty=1, text='new' WHERE local_id=?1", [&it.local_id]).unwrap();
@@ -800,7 +800,7 @@ mod tests {
         let mut conn = db();
         conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
         let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
-            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(),
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
         }).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
         outbox::enqueue(&conn, "check", "checklist_item", &it.local_id,
@@ -870,8 +870,8 @@ mod tests {
         }
         let mut conn = db();
         conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
-        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into() }).unwrap();
-        let c = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "c".into() }).unwrap();
+        let a = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None }).unwrap();
+        let c = crate::db::items::insert_local(&conn, &crate::db::items::NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "c".into(), status: None, priority: None, target_date: None }).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&a.local_id]).unwrap();
         conn.execute("UPDATE checklist_items SET server_path='1', dirty=0 WHERE local_id=?1", [&c.local_id]).unwrap();
         // FIFO: check a (resolves "0"), delete a (resolves "0"; server reindexes),

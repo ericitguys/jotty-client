@@ -1,3 +1,4 @@
+pub mod board;
 pub mod categories;
 pub mod checklists;
 pub mod items;
@@ -48,6 +49,7 @@ mod tests {
             "notes_fts",
             "lists_fts",
             "voice_recordings",
+            "board_statuses",
         ] {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
@@ -63,7 +65,30 @@ mod tests {
         assert!(cols.iter().any(|c| c == "audio_path"), "notes.audio_path missing");
         assert!(cols.iter().any(|c| c == "audio_duration_secs"), "notes.audio_duration_secs missing");
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 2);
+        // >= 2: later migrations (v3+) bump the version further; the exact pin
+        // lives in the latest migration's test (migration_v3...).
+        assert!(v >= 2);
+    }
+
+    #[test]
+    fn migration_v3_adds_item_kanban_columns_and_board_statuses() {
+        let (_d, conn) = tmp_db();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(checklist_items)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .map(Result::unwrap).collect();
+        for c in ["status", "priority", "target_date"] {
+            assert!(cols.iter().any(|x| x == c), "missing checklist_items.{c}");
+        }
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 3);
+        let bcols: Vec<String> = conn
+            .prepare("PRAGMA table_info(board_statuses)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .map(Result::unwrap).collect();
+        for c in ["checklist_id", "status_id", "label", "color", "sort_order", "auto_complete"] {
+            assert!(bcols.iter().any(|x| x == c), "missing board_statuses.{c}");
+        }
     }
 
     #[test]

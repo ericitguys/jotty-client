@@ -70,6 +70,24 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     "#,
+    // v3 — kanban boards (2026-09-20): per-item status + display-only fields,
+    // plus the board_statuses COLUMN CACHE (site-truth, refreshed by
+    // fetch_task_board; never dirty-tracked, never touched by sync pull).
+    r#"
+    ALTER TABLE checklist_items ADD COLUMN status TEXT;
+    ALTER TABLE checklist_items ADD COLUMN priority TEXT;
+    ALTER TABLE checklist_items ADD COLUMN target_date TEXT;
+    CREATE TABLE board_statuses (
+        checklist_id TEXT NOT NULL REFERENCES checklists(id) ON DELETE CASCADE,
+        status_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        color TEXT,
+        sort_order INTEGER NOT NULL,
+        auto_complete INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (checklist_id, status_id)
+    );
+    CREATE INDEX idx_board_statuses ON board_statuses(checklist_id, sort_order);
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
