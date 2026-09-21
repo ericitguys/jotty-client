@@ -607,11 +607,11 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 
 /* ---------- kanban board ---------- */
 .kanban-board { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; position: relative; min-height: 200px; }
-.kanban-col { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px; max-height: 70vh; }
+.kanban-col { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px; }
 .kanban-col-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .kanban-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .kanban-count { margin-left: auto; background: var(--panel-input); border-radius: 8px; padding: 0 6px; font-size: 11px; }
-.kanban-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.kanban-cards { display: flex; flex-direction: column; gap: 6px; }
 .kanban-card { position: relative; background: var(--panel-input); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; }
 .kanban-card.completed-item .kanban-card-text { text-decoration: line-through; opacity: 0.65; }
 .kanban-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
