@@ -604,6 +604,25 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .voice-panel { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
 .voice-duration { color: var(--muted-fg, #a39caf); font-size: 0.9em; }
 
+/* ---------- kanban board ---------- */
+.kanban-board { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; position: relative; min-height: 200px; }
+.kanban-col { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px; max-height: 70vh; }
+.kanban-col-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.kanban-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.kanban-count { margin-left: auto; background: var(--panel-input); border-radius: 8px; padding: 0 6px; font-size: 11px; }
+.kanban-cards { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.kanban-card { position: relative; background: var(--panel-input); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; }
+.kanban-card.completed-item .kanban-card-text { text-decoration: line-through; opacity: 0.65; }
+.kanban-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.kanban-badge { font-size: 10.5px; background: var(--badge-surface); color: var(--muted); border-radius: 6px; padding: 1px 5px; }
+.kanban-add { border-style: dashed; background: transparent; color: var(--muted); width: 100%; }
+.kanban-add-input { width: 100%; }
+.kanban-menu { position: absolute; z-index: 60; top: 100%; left: 8px; right: 8px; margin-top: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,0.35); display: flex; flex-direction: column; padding: 4px 0; }
+.kanban-menu button { background: transparent; border: none; text-align: left; padding: 7px 12px; border-radius: 0; font-size: 13.5px; }
+.kanban-menu button:hover { background: var(--row-hover); }
+.kanban-menu .kanban-danger { color: var(--danger); }
+.kanban-backdrop { position: fixed; inset: 0; z-index: 55; background: transparent; }
+
 /* ---------- mobile (phones, e.g. Pixel 9: 412×916 CSS px) ---------- */
 /* Desktop is untouched: everything below applies only at narrow widths.
    The drawer/backdrop/menu/back buttons are rendered by App at all sizes and
@@ -691,4 +710,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 
   /* keep sync badge clear of Android gesture navigation */
   #sync-badge { bottom: 20px; right: 12px; max-width: calc(100vw - 70px); }
+
+  /* kanban columns stay readable on phones (board scrolls horizontally) */
+  .kanban-col { width: 82vw; max-width: 340px; }
 }
