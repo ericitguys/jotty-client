@@ -48,3 +48,38 @@ fn roundtrip_note_push_and_pull() {
         assert_ne!(ids[0], local.id, "id must be remapped to server uuid");
     });
 }
+
+#[test]
+#[ignore]
+fn live_kanban_board_roundtrip() {
+    let Some((url, key)) = env() else { return; };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let client = JottyClient::new(&url, &key).unwrap();
+        // 1) create a throwaway board (disposable name, deleted at the end)
+        let board = jotty_client_lib::jotty::models::creation_board_statuses();
+        let created = client.create_task(
+            &format!("KANBAN-CLIENT-TEST {}", uuid::Uuid::new_v4()),
+            "Uncategorized", &board,
+        ).await.unwrap();
+        // 2) add a card in the first column
+        client.create_item(&created.id, "roundtrip card", None, Some("todo")).await.unwrap();
+        // 3) read the board back: card is at index 0 with status todo
+        let task = client.get_task(&created.id).await.unwrap();
+        assert_eq!(task.items[0].status.as_deref(), Some("todo"));
+        // 4) move it to in_progress via the status endpoint; verify via GET
+        client.update_item_status(&created.id, "0", "in_progress").await.unwrap();
+        let task = client.get_task(&created.id).await.unwrap();
+        assert_eq!(task.items[0].status.as_deref(), Some("in_progress"));
+        assert!(!task.items[0].completed.unwrap_or(false));
+        // 5) move to the autoComplete column; verify completed flipped server-side
+        client.update_item_status(&created.id, "0", "completed").await.unwrap();
+        let task = client.get_task(&created.id).await.unwrap();
+        assert_eq!(task.items[0].status.as_deref(), Some("completed"));
+        assert!(task.items[0].completed.unwrap_or(false));
+        // cleanup: delete the throwaway board (best-effort, log on failure)
+        if let Err(e) = client.delete_checklist(&created.id).await {
+            eprintln!("cleanup: failed to delete test board {}: {e:?}", created.id);
+        }
+    });
+}

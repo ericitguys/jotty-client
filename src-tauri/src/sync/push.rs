@@ -127,7 +127,10 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                             &item_list_id,
                             payload["text"].as_str().unwrap_or(""),
                             parent_path.as_deref(),
-                            None,
+                            // kanban cards carry their create-time column (T2 ruling):
+                            // plain-list payloads have no status key -> as_str() -> None
+                            // -> body unchanged (Ruling D byte-identical).
+                            payload["status"].as_str(),
                         ).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err(e),
@@ -149,6 +152,18 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                 ("checklist_item", "check") => match fetch_list_snapshot(client, &item_list_id).await {
                     Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => match client.check_item(&item_list_id, &path, payload["checked"].as_bool().unwrap_or(false)).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "status") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        // text-verified (check-op class): a mis-targeted status move
+                        // edits the wrong card — same hazard family as mis-targeted checks.
+                        Ok(path) => match client.update_item_status(&item_list_id, &path, payload["status"].as_str().unwrap_or("todo")).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err(e),
                         },
@@ -894,5 +909,187 @@ mod tests {
             "path 0 checked once for a (pre-delete) and once for c (post-delete)");
         assert_eq!(stale_hits.load(std::sync::atomic::Ordering::SeqCst), 0,
             "the drifted stored path \"1\" must never be checked (identity hit is update-arm-only)");
+    }
+
+    #[tokio::test]
+    async fn status_move_replays_to_resolved_path() {
+        // Board with a drifted layout: item stored at path "0" locally but now at
+        // "1" server-side (new item inserted above). Text-verified resolution must
+        // find it by TEXT and hit /items/1/status, never /items/0/status.
+        // (N1 class: aggregate stats can mask mis-targets — per-endpoint counters.)
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hit0 = Arc::new(AtomicUsize::new(0));
+        let hit1 = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        // catalog snapshot: [other, card]  -> "card" lives at path "1"
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "B", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "other", "completed": false, "status": "todo" },
+                               { "index": 1, "text": "card", "completed": false, "status": "todo" } ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let h0 = hit0.clone();
+        Mock::given(method("PUT")).and(path("/api/tasks/l1/items/0/status"))
+            .respond_with(move |_: &wiremock::Request| {
+                h0.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let h1 = hit1.clone();
+        Mock::given(method("PUT")).and(path("/api/tasks/l1/items/1/status"))
+            .respond_with(move |_: &wiremock::Request| {
+                h1.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        // setup amendment (task-4-report): remap the fresh local list to the mocked
+        // server id + clear dirty — the brief's sketch omitted the remap, so
+        // fetch_list_snapshot's catalog find(c.id == payload.checklist_id) would 404
+        // -> conflict regardless of the new arm (item_ops_replay_against_fresh_indices shape).
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        // simulate the drifted state: the row was synced when "card" sat at path "0"
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1', 'l1', NULL, 'card', 0, 0, '0', 0, 'todo', NULL, NULL)",
+            [],
+        ).unwrap();
+        outbox::enqueue(&conn, "status", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "status": "in_progress"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(hit1.load(Ordering::SeqCst), 1, "text-verified resolve must hit the drifted path 1");
+        assert_eq!(hit0.load(Ordering::SeqCst), 0, "stale stored path must never be touched");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn status_move_text_mismatch_is_sentinel_conflict() {
+        // item renamed server-side: text fallback fails -> unresolved -> conflict
+        // (same classification as check ops), NOT a wrong-item write.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hit = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "B", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "renamed-away", "completed": false, "status": "todo" } ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let h = hit.clone();
+        Mock::given(method("PUT")).and(path("/api/tasks/l1/items/0/status"))
+            .respond_with(move |_: &wiremock::Request| {
+                h.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        // setup amendment (task-4-report): same remap as status_move_replays_to_resolved_path
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1', 'l1', NULL, 'card', 0, 0, '0', 0, 'todo', NULL, NULL)",
+            [],
+        ).unwrap();
+        outbox::enqueue(&conn, "status", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "status": "in_progress"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        assert_eq!(hit.load(Ordering::SeqCst), 0, "unresolved target must never write");
+    }
+
+    #[tokio::test]
+    async fn status_move_400_marks_conflict_and_keeps_fifo() {
+        // server returns 400 -> mark_conflict; an op queued BEHIND it still replays
+        // (the FIFO must not stall on a permanent refusal) — mirrors the
+        // permission-denied classification test class.
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "B", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "card", "completed": false, "status": "todo" } ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/tasks/l1/items/0/status"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": "Permission denied"})))
+            .mount(&s).await;
+        // the op behind it: a note create (unrelated entity, must still push)
+        Mock::given(method("POST")).and(path("/api/notes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"srv-n","title":"T","content":"c","category":"Home","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        // setup amendment (task-4-report): same remap as status_move_replays_to_resolved_path
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1', 'l1', NULL, 'card', 0, 0, '0', 0, 'todo', NULL, NULL)",
+            [],
+        ).unwrap();
+        outbox::enqueue(&conn, "status", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "status": "in_progress"})).unwrap();
+        outbox::enqueue(&conn, "create", "note", "n-1", &serde_json::json!({"temp_id": "n-1", "title":"T","content":"c","category":"Home"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);   // the 400 status move
+        assert_eq!(stats.pushed, 1);      // the note create behind it still replayed
+    }
+
+    #[tokio::test]
+    async fn item_create_replay_carries_status_in_body() {
+        // controller addition (T2 ruling): Task 3's add_item_inner enqueues "status" in
+        // kanban-card create payloads — the replay must carry it or offline-created
+        // cards land in the first column server-side. Plain-list creates (payload with
+        // NO status key) must keep a status-free POST body (Ruling D byte-identical).
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "B", "category": "Home", "type": "kanban",
+                    "items": [],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        Mock::given(method("POST")).and(path("/api/checklists/l1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        // setup amendment (task-4-report): same remap as status_move_replays_to_resolved_path
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        // kanban-card create payload (add_item_inner Ruling D shape incl. status)
+        outbox::enqueue(&conn, "create", "checklist_item", "it-1",
+            &serde_json::json!({"checklist_id": "l1", "item_local_id": "it-1", "text": "card", "parent_local_id": null, "status": "in_progress"})).unwrap();
+        // plain-list create payload: NO status key — body must stay status-free
+        outbox::enqueue(&conn, "create", "checklist_item", "it-2",
+            &serde_json::json!({"checklist_id": "l1", "item_local_id": "it-2", "text": "plain", "parent_local_id": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2);
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        let reqs = s.received_requests().await.unwrap();
+        let posts: Vec<&wiremock::Request> = reqs.iter()
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/checklists/l1/items")
+            .collect();
+        assert_eq!(posts.len(), 2, "both creates must replay as POSTs to the items endpoint");
+        let with_status = String::from_utf8_lossy(&posts[0].body).to_string();
+        let plain = String::from_utf8_lossy(&posts[1].body).to_string();
+        assert!(with_status.contains("\"status\":\"in_progress\""), "kanban create body must carry the create-time status: {with_status}");
+        assert!(with_status.contains("\"text\":\"card\""), "body: {with_status}");
+        assert!(!plain.contains("\"status\""), "plain-list create body must stay status-free (Ruling D): {plain}");
     }
 }
