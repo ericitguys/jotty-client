@@ -169,7 +169,13 @@ export default function App() {
         <button
           className="back-btn"
           aria-label="Back to list"
-          onClick={() => { selectNote(null); selectChecklist(null); }}
+          onClick={() => {
+            // Return to the section of the entity being closed: calling BOTH
+            // select actions made the checklist call win and back always landed
+            // on the checklists list (field report 2026-09-21).
+            if (selectedNoteId) selectNote(null);
+            else selectChecklist(null);
+          }}
         >←</button>
       )}
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />

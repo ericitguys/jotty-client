@@ -479,5 +479,22 @@ describe('web preference mirroring', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Back to list' }));
     await waitFor(() => expect(document.getElementById('note-editor')).not.toBeInTheDocument());
     expect(document.querySelector('main')).toHaveClass('list-only');
+    // back returns to the section of the entity that was open: a note -> the notes list
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument();
+  });
+
+  it('back button from a checklist returns to the checklists list', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
+    await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Errands')); // open the checklist
+    await waitFor(() => expect(document.getElementById('checklist-view')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }));
+    await waitFor(() => expect(document.getElementById('checklist-view')).not.toBeInTheDocument());
+    // back from a checklist lands on the checklists list, not the notes list
+    await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
+    expect(screen.queryByText('Groceries')).not.toBeInTheDocument();
   });
 });
