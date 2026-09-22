@@ -1,3 +1,10 @@
+## v0.12.2 — Back button returns to the right list (2026-09-21)
+
+Field fix: pressing back from an open note landed on the checklists list instead of the notes list.
+
+### Fixed
+- **Back now returns to the list of what you were viewing**: closing a note shows the notes list; closing a checklist shows the checklists list. (The back button previously flipped every back press to the checklists section.)
+
 ## v0.12.1 — Tidy outcome made unmissable (2026-09-21)
 
 Field fix: a voice note could be saved with the raw transcript even after tapping "Tidy transcript" — the tidy failure was only a small muted hint that was easy to miss, and Save (by design) saves exactly what the editor shows.
