@@ -47,6 +47,7 @@ export interface VoiceBoardInput {
   text: string;
   tasks: string[];
   noteSavedId?: string | null; // set on retry after a board-stage failure
+  targetBoardId?: string | null; // set = add cards to an EXISTING board instead of creating a new one
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -152,12 +153,26 @@ export const useStore = create<AppState>((set, get) => ({
       await get().refreshAll();
     }
     try {
-      const board = await get().createBoard(boardTitle, input.category); // refreshAll + selects the board
-      for (const raw of input.tasks) {
-        const text = raw.trim();
-        if (text) await api.addItem(board.id, text, null, null);
+      let boardId: string;
+      if (input.targetBoardId) {
+        // Existing board: cards land locally (offline-safe, outbox-replayed) — no live create needed.
+        boardId = input.targetBoardId;
+        for (const raw of input.tasks) {
+          const text = raw.trim();
+          if (text) await api.addItem(boardId, text, null, null);
+        }
+        // Open the target board AFTER the adds so the freshly mounted view fetches them.
+        get().selectChecklist(boardId);
+        await get().refreshAll();
+      } else {
+        const board = await get().createBoard(boardTitle, input.category); // refreshAll + selects the board
+        boardId = board.id;
+        for (const raw of input.tasks) {
+          const text = raw.trim();
+          if (text) await api.addItem(boardId, text, null, null);
+        }
       }
-      return { noteId: noteId as string, boardId: board.id };
+      return { noteId: noteId as string, boardId };
     } catch (e) {
       throw Object.assign(new Error(String(e)), { boardStage: true, noteId });
     }

@@ -76,6 +76,36 @@ describe('store.saveVoiceNoteWithBoard', () => {
     expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n2', title: 'Errands', content: 'buy milk, call dentist', category: 'Home' });
   });
 
+  it('targetBoardId: no create_task_board — cards go to the existing board, which gets selected', async () => {
+    const calls: string[] = [];
+    invoke.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      if (cmd === 'voice_save_note') return Promise.resolve(noteRow);
+      if (cmd === 'add_item') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    const res = await useStore.getState().saveVoiceNoteWithBoard({ ...input, targetBoardId: 'b9' });
+    expect(res).toEqual({ noteId: 'n1', boardId: 'b9' });
+    expect(calls.filter(isFlowCmd)).toEqual(['voice_save_note', 'add_item', 'add_item']);
+    expect(calls).not.toContain('create_task_board');
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Buy milk', parentLocalId: null, status: null });
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Call dentist', parentLocalId: null, status: null });
+    // the target board is opened AFTER the adds land (fresh view fetches them) and the sidebar refreshes
+    expect(useStore.getState().selectedChecklistId).toBe('b9');
+    expect(useStore.getState().listMode).toBe('checklists');
+  });
+
+  it('targetBoardId + noteSavedId retry: adds to the existing board without re-saving the note', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'add_item') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    await useStore.getState().saveVoiceNoteWithBoard({ ...input, targetBoardId: 'b9', noteSavedId: 'n1' });
+    expect(invoke).not.toHaveBeenCalledWith('voice_save_note', expect.anything());
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Buy milk', parentLocalId: null, status: null });
+    expect(useStore.getState().selectedChecklistId).toBe('b9');
+  });
+
   it('board-stage failure rethrows with boardStage + noteId (note stays saved)', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'voice_save_note') return Promise.resolve(noteRow);

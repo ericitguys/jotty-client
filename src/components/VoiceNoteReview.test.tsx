@@ -392,6 +392,48 @@ describe('VoiceNoteReview board flow', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it('board target picker: lists existing boards, chosen board receives the cards without a create', async () => {
+    useStore.setState({
+      connection: { url: 'x' } as never,
+      checklists: [
+        { id: 'b-ex', title: 'Chores', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'kanban', items: [] },
+        { id: 'plain-x', title: 'Plain list', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'checklist', items: [] },
+      ],
+    });
+    const onClose = vi.fn();
+    render(<VoiceNoteReview mode="new" onClose={onClose} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    await screen.findByText('Board tasks');
+    // picker hidden BEFORE any kanban board exists... (this fixture HAS one, so:) — picker shown, plain lists excluded
+    const picker = screen.getByRole('button', { name: 'Board target' });
+    expect(picker).toHaveTextContent(/New board/i);
+    fireEvent.click(picker);
+    const listbox = screen.getByRole('listbox');
+    expect(listbox).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Plain list' })).toBeNull();
+    // choose the existing board; hint switches to the add-to wording
+    fireEvent.click(screen.getByRole('option', { name: 'Chores' }));
+    expect(screen.getByText(/Adding to “Chores”/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Create/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    const cmds = invoke.mock.calls.map((c) => c[0]);
+    expect(cmds).not.toContain('create_task_board');
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b-ex', text: 'Buy milk', parentLocalId: null, status: null });
+    expect(useStore.getState().selectedChecklistId).toBe('b-ex');
+  });
+
+  it('board target picker: hidden when no kanban boards exist yet', async () => {
+    useStore.setState({ connection: { url: 'x' } as never, checklists: [
+      { id: 'plain-x', title: 'Plain list', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'checklist', items: [] },
+    ] });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: /kanban board/i }));
+    await screen.findByText('Board tasks');
+    expect(screen.queryByRole('button', { name: 'Board target' })).toBeNull();
+  });
+
   it('cancel at preview persists nothing and returns to review with edits intact', async () => {
     const onClose = vi.fn();
     useStore.setState({ connection: { url: 'x' } as never });

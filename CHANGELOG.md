@@ -1,3 +1,14 @@
+## v0.13.0 — Voice → kanban: add cards to an existing board (2026-09-21)
+
+The "kanban board" button on a voice note no longer has to create a new board.
+
+### Added
+- **Target picker in the task preview**: choose "New board (named after the note)" (default, unchanged) or any of your existing kanban boards. Chosen board receives the cards in its first column, and opens when you confirm.
+- Cards added to an existing board go through the offline outbox like every card add — no live connection needed for that step (extraction still needs the AI server).
+
+### Fixed
+- Test setup: jsdom's `localStorage` shim no longer exists under Node ≥ 25 — the test setup now provides an in-memory fallback so the theme-override tests pass again.
+
 ## v0.12.2 — Back button returns to the right list (2026-09-21)
 
 Field fix: pressing back from an open note landed on the checklists list instead of the notes list.

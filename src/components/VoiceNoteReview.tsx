@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as api from '../api/client';
 import type { VoiceRecordingDto } from '../api/types';
 import { useStore } from '../stores/store';
+import Dropdown from './Dropdown';
 
 export const CAP_SECS = 480; // 8-minute cap, mirrors audio::MAX_SECS (spec §7)
 
@@ -37,11 +38,12 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const [busy, setBusy] = useState(false);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [atCap, setAtCap] = useState(false);
-  const { connection, saveVoiceNoteWithBoard } = useStore();
+  const { connection, saveVoiceNoteWithBoard, checklists } = useStore();
   const [extracting, setExtracting] = useState(false);
   const [preview, setPreview] = useState<string[] | null>(null);
   const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
   const [boardNotice, setBoardNotice] = useState<string | null>(null);
+  const [targetBoardId, setTargetBoardId] = useState(''); // '' = new board named after the note
   const mounted = useRef(true);
   const stoppedRef = useRef(false); // Stop pressed before the start-chain finished (permission prompt window)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -236,6 +238,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
         text: currentText(),
         tasks: preview ?? [],
         noteSavedId: savedNoteId,
+        targetBoardId: targetBoardId || null,
       });
       if (!mounted.current) return;
       onClose(); // board is selected by the store; NOT onSaved (board wins)
@@ -244,7 +247,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
       const err = e as Error & { boardStage?: boolean; noteId?: string };
       if (err.boardStage) {
         setSavedNoteId(err.noteId ?? null);
-        setBoardNotice(`Note saved — board creation failed: ${fmt(e)} Adjust the tasks and try again.`);
+        setBoardNotice(`Note saved — ${targetBoardId ? 'adding cards to the board' : 'board creation'} failed: ${fmt(e)} Adjust the tasks and try again.`);
       } else {
         setError(fmt(e));
       }
@@ -297,7 +300,32 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
             {preview ? (
               <div className="board-preview">
                 <h3>Board tasks</h3>
-                <p className="voice-hint">Board “{(title.trim() || 'Tasks from voice note')}” in “{category}” — every card starts in the first column.</p>
+                {(() => {
+                  // checklists can be briefly null mid-refresh (refreshAll replaces the whole slice)
+                  const boards = (checklists ?? []).filter((c) => c.listType === 'kanban' || c.listType === 'task');
+                  const target = boards.find((b) => b.id === targetBoardId);
+                  return (
+                    <>
+                      {boards.length > 0 && (
+                        <Dropdown
+                          value={targetBoardId}
+                          options={[
+                            { id: '', name: `New board (named after the note)` },
+                            ...boards.map((b) => ({ id: b.id, name: b.title })),
+                          ]}
+                          onChange={setTargetBoardId}
+                          placeholder="New board (named after the note)"
+                          ariaLabel="Board target"
+                        />
+                      )}
+                      <p className="voice-hint">
+                        {target
+                          ? `Adding to “${target.title}” — cards land in the first column.`
+                          : `Board “${(title.trim() || 'Tasks from voice note')}” in “${category}” — every card starts in the first column.`}
+                      </p>
+                    </>
+                  );
+                })()}
                 {preview.map((t, i) => (
                   <div className="board-task-row" key={i}>
                     <input value={t} onChange={(e) => setPreview(preview.map((v, j) => (j === i ? e.target.value : v)))} />
