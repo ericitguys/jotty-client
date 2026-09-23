@@ -1,3 +1,7 @@
+## v0.14.1 — Android app renamed to "Jotty Mobile" (2026-09-22)
+
+The Android launcher shows **Jotty Mobile** in the app drawer and recents (was "jotty-desktop"). Desktop unchanged.
+
 ## v0.14.0 — Launcher branding on Linux (2026-09-22)
 
 Settings gains a "Launcher branding" section (desktop only, visible when your jotty server provides a name or icon).
