@@ -1,3 +1,14 @@
+## v0.14.0 — Launcher branding on Linux (2026-09-22)
+
+Settings gains a "Launcher branding" section (desktop only, visible when your jotty server provides a name or icon).
+
+### Added
+- **"Brand this installation"**: the app menu entry (name + icon) on Linux now follows the server's branding. Under the hood it writes a user-level menu entry (~/.local/share/applications/jotty-desktop.desktop) that shadows the packaged one — standard XDG precedence, survives updates, no root. "Restore default" removes it.
+- Only touches an entry jotty wrote (marked internally) — foreign menu entries are left alone.
+
+### Not possible on Android
+- The Android launcher icon/name are compiled into the APK; Android has no supported way to apply a downloaded icon at runtime (the only mechanism, activity aliases, requires every icon pre-bundled). In-app branding stays the only branding on Android.
+
 ## v0.13.0 — Voice → kanban: add cards to an existing board (2026-09-21)
 
 The "kanban board" button on a voice note no longer has to create a new board.

@@ -182,3 +182,45 @@ describe('SettingsModal appearance (theme picker)', () => {
     expect(localStorage.getItem('jotty.theme-override')).toBe(null);
   });
 });
+
+describe('SettingsModal launcher branding (desktop)', () => {
+  const branding = { name: 'Acme Notes', iconDataUrl: 'data:image/png;base64,AAA', themeColor: null };
+  const mockStatus = (supported: boolean, active = false) => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'branding_desktop_status') return Promise.resolve({ supported, active });
+      if (cmd === 'branding_desktop_apply') return Promise.resolve('/home/u/.local/share/applications/jotty-desktop.desktop');
+      if (cmd === 'branding_desktop_remove') return Promise.resolve(null);
+      return Promise.resolve(null);
+    });
+  };
+
+  it('shows the toggle when supported and the server has branding; apply passes name + icon', async () => {
+    mockStatus(true, false);
+    useStore.setState({ branding });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Brand this installation' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('branding_desktop_apply', { name: 'Acme Notes', iconDataUrl: 'data:image/png;base64,AAA' }));
+    expect(await screen.findByText(/Menu entry updated/i)).toBeInTheDocument();
+  });
+
+  it('active state offers Restore default and calls remove', async () => {
+    mockStatus(true, true);
+    useStore.setState({ branding });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore default' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('branding_desktop_remove'));
+  });
+
+  it('hidden when unsupported (Android) or when the server has no branding', async () => {
+    mockStatus(false, false);
+    useStore.setState({ branding });
+    const r1 = render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Brand this installation' })).toBeNull());
+    r1.unmount();
+    mockStatus(true, false);
+    useStore.setState({ branding: { name: null, iconDataUrl: null, themeColor: null } });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Brand this installation' })).toBeNull());
+  });
+});

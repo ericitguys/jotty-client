@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod commands;
+pub mod desktop_branding;
 pub mod db;
 pub mod error;
 pub mod jotty;
@@ -78,6 +79,9 @@ pub fn run() {
             commands::download_update,
             commands::install_update,
             commands::open_update_url,
+            commands::branding_desktop_status,
+            commands::branding_desktop_apply,
+            commands::branding_desktop_remove,
             commands::restart_app,
             commands::get_prefs,
             commands::get_branding,

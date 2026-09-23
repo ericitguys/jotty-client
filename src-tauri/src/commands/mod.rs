@@ -1394,6 +1394,57 @@ pub async fn voice_delete_note_audio(
     voice_delete_note_audio_inner(&mut conn, &note_id).map_err(|e| e.to_string())
 }
 
+/// Desktop launcher branding (Linux): the packaged menu entry
+/// (/usr/share/applications/jotty-desktop.desktop) can be shadowed by a
+/// user-level file with the same desktop-file id (XDG precedence) carrying the
+/// server's name + icon. Android has no equivalent — launcher icon/label are
+/// compiled APK resources; those commands report supported=false there.
+#[tauri::command]
+pub fn branding_desktop_status() -> Result<crate::desktop_branding::BrandingDesktopStatus, String> {
+    if cfg!(target_os = "android") {
+        return Ok(crate::desktop_branding::BrandingDesktopStatus { supported: false, active: false });
+    }
+    let Some(data_dir) = crate::desktop_branding::xdg_data_home() else {
+        return Ok(crate::desktop_branding::BrandingDesktopStatus { supported: false, active: false });
+    };
+    Ok(crate::desktop_branding::status_inner(&data_dir))
+}
+
+#[tauri::command]
+pub fn branding_desktop_apply(
+    name: Option<String>,
+    icon_data_url: Option<String>,
+) -> Result<String, String> {
+    if cfg!(target_os = "android") {
+        return Err("launcher branding is desktop-only (Android locks the launcher icon)".into());
+    }
+    let data_dir = crate::desktop_branding::xdg_data_home().ok_or("no home directory")?;
+    let packaged_paths = vec![
+        std::path::PathBuf::from("/usr/share/applications/jotty-desktop.desktop"),
+        std::path::PathBuf::from("/usr/local/share/applications/jotty-desktop.desktop"),
+    ];
+    let path = crate::desktop_branding::apply_inner(&data_dir, &packaged_paths, name.as_deref(), icon_data_url.as_deref())?;
+    // Best effort menu refresh; menus also watch the dirs themselves.
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(data_dir.join("applications"))
+        .spawn();
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn branding_desktop_remove() -> Result<(), String> {
+    if cfg!(target_os = "android") {
+        return Err("launcher branding is desktop-only".into());
+    }
+    let data_dir = crate::desktop_branding::xdg_data_home().ok_or("no home directory")?;
+    crate::desktop_branding::remove_inner(&data_dir)?;
+    let _ = std::process::Command::new("update-desktop-database")
+        .arg(data_dir.join("applications"))
+        .spawn();
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

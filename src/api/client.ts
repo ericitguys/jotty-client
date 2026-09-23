@@ -40,6 +40,12 @@ export const openUpdateUrl = (url: string) => invoke<void>('open_update_url', { 
 export const restartApp = () => invoke<void>('restart_app');
 export const getPrefs = () => invoke<T.UserPrefs>('get_prefs');
 export const getBranding = () => invoke<T.Branding>('get_branding');
+
+export const brandingDesktopStatus = () =>
+  invoke<{ supported: boolean; active: boolean }>('branding_desktop_status');
+export const brandingDesktopApply = (name: string | null, iconDataUrl: string | null) =>
+  invoke<string>('branding_desktop_apply', { name, iconDataUrl });
+export const brandingDesktopRemove = () => invoke<void>('branding_desktop_remove');
 export const voiceStartRecording = () => invoke<T.VoiceRecordingDto>('voice_start_recording');
 export const voiceStopRecording = () => invoke<T.VoiceRecordingDto>('voice_stop_recording');
 export const voiceTranscribe = (recordingId: string) => invoke<T.VoiceRecordingDto>('voice_transcribe', { recordingId });

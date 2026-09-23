@@ -28,6 +28,9 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const [phase, setPhase] = useState<UpdatePhase>({ kind: 'idle' });
   const [rpmPath, setRpmPath] = useState<string | null>(null);
   const [updateHint, setUpdateHint] = useState<string | null>(null);
+  const branding = useStore((s) => s.branding);
+  const [bdStatus, setBdStatus] = useState<{ supported: boolean; active: boolean } | null>(null);
+  const [bdMsg, setBdMsg] = useState<string | null>(null);
   // Android: no pkexec/dnf — the guided flow hands the APK URL to the system
   // browser/Download Manager and the user installs via the system prompt.
   const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
@@ -49,6 +52,8 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
         api.aiGetModels().then((m) => { if (Array.isArray(m)) setModels(m); }).catch(() => {});
       }
     }).catch(() => {});
+    // Launcher-branding availability (desktop-only, needs server name/icon)
+    api.brandingDesktopStatus().then((s) => setBdStatus(s)).catch(() => setBdStatus({ supported: false, active: false }));
   }, [mode]);
 
   const fmtErr = (e: unknown) => String(e).replace(/^.*Error: /, '');
@@ -164,6 +169,27 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
               />
               <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
             </div>
+            {bdStatus?.supported && (branding?.name || branding?.iconDataUrl) && (
+              <div className="branding-settings">
+                <h3>Launcher branding</h3>
+                <p className="voice-hint">Show the server's name and icon in your system's app menu.</p>
+                {bdStatus.active ? (
+                  <button onClick={async () => {
+                    try { await api.brandingDesktopRemove(); setBdStatus({ supported: true, active: false }); setBdMsg('Menu entry restored to the default.'); }
+                    catch (e) { setBdMsg(fmtErr(e)); }
+                  }}>Restore default</button>
+                ) : (
+                  <button className="primary" onClick={async () => {
+                    try {
+                      await api.brandingDesktopApply(branding?.name ?? null, branding?.iconDataUrl ?? null);
+                      setBdStatus({ supported: true, active: true });
+                      setBdMsg('Menu entry updated — the change appears in your app menu within seconds.');
+                    } catch (e) { setBdMsg(fmtErr(e)); }
+                  }}>Brand this installation</button>
+                )}
+                {bdMsg && <p className="voice-hint">{bdMsg}</p>}
+              </div>
+            )}
             <div className="ai-settings">
               <h3>AI server (OpenWebUI)</h3>
               <input placeholder="https://ai.example.com" value={aiBase} onChange={(e) => setAiBase(e.target.value)} />
