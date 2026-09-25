@@ -198,6 +198,7 @@ pub(crate) fn add_item_inner(
     text: &str,
     parent_local_id: Option<String>,
     status: Option<String>,
+    target_date: Option<String>,
 ) -> AppResult<ItemDto> {
     let tx = conn.transaction()?;
     let row = items::insert_local(&tx, &items::NewItem {
@@ -206,17 +207,27 @@ pub(crate) fn add_item_inner(
         text: text.into(),
         status: status.clone(),
         priority: None,
-        target_date: None,
+        target_date: target_date.clone(),
     })?;
     // Ruling D: create → {checklist_id, item_local_id, text, parent_local_id: opt}
     // (NO temp_local_id key — push.rs never reads it). Kanban cards add "status"
     // ONLY when Some: the plain-list payload stays byte-identical (pinned by tests).
+    // targetDate is NOT in the create payload — upstream POST takes no date; the
+    // adjacent set_date op (below) PATCHes it after the create replays.
     let mut payload = serde_json::json!({
         "checklist_id": checklist_id, "item_local_id": &row.local_id, "text": &row.text,
         "parent_local_id": parent_local_id.as_deref()
     });
     if let Some(st) = &status { payload["status"] = serde_json::json!(st); }
     outbox::enqueue(&tx, "create", "checklist_item", &row.local_id, &payload)?;
+    if let Some(d) = &target_date {
+        // FIFO-adjacent: the create replays first, then the date lands on the
+        // prepended card (upstream createItem inserts at index 0 — the fresh
+        // snapshot's first text match IS the new card).
+        outbox::enqueue(&tx, "set_date", "checklist_item", &row.local_id, &serde_json::json!({
+            "checklist_id": checklist_id, "item_local_id": &row.local_id, "targetDate": d
+        }))?;
+    }
     tx.commit()?;
     Ok(ItemDto::from(row))
 }
@@ -738,9 +749,10 @@ pub async fn add_item(
     text: String,
     parent_local_id: Option<String>,
     status: Option<String>,
+    target_date: Option<String>,
 ) -> Result<ItemDto, String> {
     let mut conn = state.db.lock().await;
-    add_item_inner(&mut conn, &checklist_id, &text, parent_local_id, status).map_err(|e| e.to_string())
+    add_item_inner(&mut conn, &checklist_id, &text, parent_local_id, status, target_date).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1542,9 +1554,9 @@ mod tests {
         let mut conn = db();
         let done = create_checklist_inner(&mut conn, "Done", "Home").unwrap();
         let open = create_checklist_inner(&mut conn, "Open", "Home").unwrap();
-        let di = add_item_inner(&mut conn, &done.id, "d", None, None).unwrap();
+        let di = add_item_inner(&mut conn, &done.id, "d", None, None, None).unwrap();
         set_item_checked_inner(&mut conn, &done.id, &di.local_id, true).unwrap();
-        add_item_inner(&mut conn, &open.id, "o", None, None).unwrap();
+        add_item_inner(&mut conn, &open.id, "o", None, None, None).unwrap();
         let lists = list_checklists_inner(&conn).unwrap();
         let done_dto = lists.iter().find(|l| l.id == done.id).unwrap();
         let open_dto = lists.iter().find(|l| l.id == open.id).unwrap();
@@ -1556,7 +1568,7 @@ mod tests {
     async fn item_ops_enqueue_with_dependencies() {
         let mut conn = db();
         let list = create_checklist_inner(&mut conn, "L", "Home").unwrap();
-        let item = add_item_inner(&mut conn, &list.id, "a", None, None).unwrap();
+        let item = add_item_inner(&mut conn, &list.id, "a", None, None, None).unwrap();
         set_item_checked_inner(&mut conn, &list.id, &item.local_id, true).unwrap();
         reorder_items_inner(&mut conn, &list.id, vec![item.local_id.clone()]).unwrap();
         let ops = outbox::next_batch(&conn, 10).unwrap();
@@ -2365,18 +2377,53 @@ mod tests {
     async fn add_item_inner_carries_status_for_kanban() {
         let mut conn = db();
         let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
-        let dto = add_item_inner(&mut conn, &list.id, "card".into(), None, Some("in_progress".into())).unwrap();
+        let dto = add_item_inner(&mut conn, &list.id, "card".into(), None, Some("in_progress".into()), None).unwrap();
         assert_eq!(dto.status.as_deref(), Some("in_progress"));
         let ops = outbox::next_batch(&conn, 10).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
         assert_eq!(payload["status"], "in_progress");
         // plain lists: status None -> payload carries NO status key
-        let dto2 = add_item_inner(&mut conn, &list.id, "plain".into(), None, None).unwrap();
+        let dto2 = add_item_inner(&mut conn, &list.id, "plain".into(), None, None, None).unwrap();
         let ops = outbox::next_batch(&conn, 10).unwrap();
         assert_eq!(ops.len(), 2);
         let payload2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert!(payload2.get("status").is_none());
         assert_eq!(dto2.status, None);
+    }
+
+    #[tokio::test]
+    async fn add_item_inner_with_target_date_enqueues_create_then_set_date() {
+        // appoints: creating a card WITH a date = one tx writing the row (date
+        // included) + the create op + the set_date op (None date = unchanged
+        // single-create shape, Ruling D byte-identical).
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+
+        let dto = add_item_inner(&mut conn, &list.id, "dentist".into(), None, Some("todo".into()), Some("2026-10-05".into())).unwrap();
+        assert_eq!(dto.target_date.as_deref(), Some("2026-10-05"));
+        let row = items::get(&conn, &dto.local_id).unwrap().unwrap();
+        assert!(row.dirty);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2, "create op then set_date op, FIFO");
+        assert_eq!(ops[0].op_type, "create");
+        let create_payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(create_payload["status"], "todo");
+        assert!(create_payload.get("targetDate").is_none(), "create payload stays byte-identical (upstream POST takes no date)");
+        assert_eq!(ops[1].op_type, "set_date");
+        assert_eq!(ops[1].entity_id, dto.local_id);
+        let date_payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert_eq!(date_payload["checklist_id"], list.id.as_str());
+        assert_eq!(date_payload["item_local_id"], dto.local_id.as_str());
+        assert_eq!(date_payload["targetDate"], "2026-10-05");
+
+        // no date: single create op, no targetDate key, row target_date None
+        let dto2 = add_item_inner(&mut conn, &list.id, "plain".into(), None, None, None).unwrap();
+        assert_eq!(dto2.target_date, None);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 3, "2 prior + 1 create, no set_date");
+        assert_eq!(ops[2].op_type, "create");
+        let payload: serde_json::Value = serde_json::from_str(&ops[2].payload).unwrap();
+        assert!(payload.get("targetDate").is_none());
     }
 
     // board_statuses.checklist_id REFERENCES checklists(id) (schema v3) and the

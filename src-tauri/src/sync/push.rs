@@ -864,6 +864,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn item_create_with_date_replays_create_then_set_date_at_prepend_path() {
+        // create-with-date flow: create op (POST text+status, NO date — upstream
+        // POST takes none) then the adjacent set_date op. The row is never-synced
+        // (server_path None); upstream createItem PREPENDS (crud.ts: items:
+        // [newItem, ...shiftedItems]) so the fresh snapshot holds the NEW card at
+        // path "0" FIRST — an older identical-text card sits at "1" and must be
+        // untouched (text-scan first-match = the prepended card).
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-new","index":0,"text":"dentist","completed":false,"status":"todo"},
+                    {"id":"srv-old","index":1,"text":"dentist","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let post_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ph = post_hits.clone();
+        Mock::given(method("POST")).and(path("/api/checklists/l1/items"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"text":"dentist","status":"todo"})))
+            .respond_with(move |_: &_| {
+                ph.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let patch_new = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let patch_old = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pn = patch_new.clone();
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"targetDate":"2026-10-05"})))
+            .respond_with(move |_: &_| {
+                pn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let po = patch_old.clone();
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/1"))
+            .respond_with(move |_: &_| {
+                po.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','task','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "dentist".into(), status: Some("todo".into()), priority: None, target_date: None,
+        }).unwrap();
+        // create op (byte-identical payload: no targetDate key) + adjacent set_date op
+        outbox::enqueue(&conn, "create", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "text": "dentist", "parent_local_id": null, "status": "todo"})).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "targetDate": "2026-10-05"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "create then set_date both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(post_hits.load(std::sync::atomic::Ordering::SeqCst), 1, "create POSTs text+status only");
+        assert_eq!(patch_new.load(std::sync::atomic::Ordering::SeqCst), 1, "date PATCHes the prepended card (path 0)");
+        assert_eq!(patch_old.load(std::sync::atomic::Ordering::SeqCst), 0, "the older same-text card is never touched");
+    }
+
+    #[tokio::test]
     async fn item_multi_op_same_run() {
         let s = MockServer::start().await;
         // check then uncheck the SAME item in one run: the own-claim memo must

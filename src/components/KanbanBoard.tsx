@@ -13,6 +13,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const [renameText, setRenameText] = useState('');
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newCard, setNewCard] = useState('');
+  const [newCardDate, setNewCardDate] = useState('');
   // date editor (appointments): which card's date is being edited + the picker value
   const [dating, setDating] = useState<string | null>(null);
   const [dateVal, setDateVal] = useState('');
@@ -58,11 +59,13 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   };
   const addCard = async (colId: string) => {
     if (!newCard.trim()) return;
-    await api.addItem(checklistId, newCard.trim(), null, colId);
+    await api.addItem(checklistId, newCard.trim(), null, colId, newCardDate || null);
     setNewCard('');
+    setNewCardDate('');
     setAddingTo(null);
     await reload();
   };
+  const closeAddForm = () => { setAddingTo(null); setNewCard(''); setNewCardDate(''); };
   const saveDate = async (localId: string) => {
     setDating(null);
     setMenuFor(null);
@@ -73,7 +76,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); }} />}
+      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); closeAddForm(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -136,10 +139,18 @@ export default function KanbanBoard({ checklistId, items, reload }: {
               </div>
             ))}
             {addingTo === col.id ? (
-              <input className="kanban-add-input" placeholder="New card" autoFocus value={newCard}
-                     onChange={(e) => setNewCard(e.target.value)}
-                     onBlur={() => { setAddingTo(null); setNewCard(''); }}
-                     onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && addCard(col.id)} />
+              <div className="kanban-add-form">
+                <input className="kanban-add-input" placeholder="New card" autoFocus value={newCard}
+                       onChange={(e) => setNewCard(e.target.value)}
+                       onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && addCard(col.id)} />
+                <input type="date" aria-label="Date (optional)" value={newCardDate}
+                       onChange={(e) => setNewCardDate(e.target.value)}
+                       onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && addCard(col.id)} />
+                <div className="kanban-add-actions">
+                  <button className="kanban-add-confirm" onClick={() => addCard(col.id)}>Add card</button>
+                  <button onClick={closeAddForm}>Cancel</button>
+                </div>
+              </div>
             ) : (
               <button className="kanban-add" onClick={() => setAddingTo(col.id)}>+</button>
             )}

@@ -624,6 +624,11 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .kanban-badge { font-size: 10.5px; background: var(--badge-surface); color: var(--muted); border-radius: 6px; padding: 1px 5px; }
 .kanban-add { border-style: dashed; background: transparent; color: var(--muted); width: 100%; }
 .kanban-add-input { width: 100%; }
+.kanban-add-form { position: relative; z-index: 60; display: flex; flex-direction: column; gap: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.kanban-add-form input[type="date"] { width: 100%; padding: 6px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13.5px; }
+.kanban-add-actions { display: flex; gap: 6px; }
+.kanban-add-actions button { flex: 1; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 13.5px; }
+.kanban-add-actions .kanban-add-confirm { background: var(--primary, #9d5ffe); border-color: transparent; color: #fff; }
 .kanban-menu { position: absolute; z-index: 60; top: 100%; left: 8px; right: 8px; margin-top: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,0.35); display: flex; flex-direction: column; padding: 4px 0; }
 .kanban-menu button { background: transparent; border: none; text-align: left; padding: 7px 12px; border-radius: 0; font-size: 13.5px; }
 .kanban-menu button:hover { background: var(--row-hover); }

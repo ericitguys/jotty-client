@@ -143,4 +143,41 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: null }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
+
+  it('add form asks for a date; committing with one sends targetDate on add_item (no second invoke)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getAllByText('+').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText('+')[0]);
+    // the form asks BEFORE saving: text + date + Add/Cancel
+    fireEvent.change(screen.getByPlaceholderText('New card'), { target: { value: 'dentist' } });
+    fireEvent.change(screen.getByLabelText('Date (optional)'), { target: { value: '2026-10-05' } });
+    fireEvent.click(screen.getByText('Add card'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b1', text: 'dentist', parentLocalId: null, status: 'todo', targetDate: '2026-10-05' }));
+    expect(invoke).not.toHaveBeenCalledWith('set_item_target_date', expect.anything());
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('add form commit without a date keeps the byte-frozen 4-key add_item shape', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getAllByText('+').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText('+')[0]);
+    fireEvent.change(screen.getByPlaceholderText('New card'), { target: { value: 'plain card' } });
+    fireEvent.keyDown(screen.getByPlaceholderText('New card'), { key: 'Enter' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b1', text: 'plain card', parentLocalId: null, status: 'todo' }));
+    const call = invoke.mock.calls.find((c) => c[0] === 'add_item');
+    expect(call![1]).not.toHaveProperty('targetDate');
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('add form Cancel closes without invoking', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getAllByText('+').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByText('+')[0]);
+    fireEvent.change(screen.getByPlaceholderText('New card'), { target: { value: 'nope' } });
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(invoke).not.toHaveBeenCalledWith('add_item', expect.anything());
+  });
 });

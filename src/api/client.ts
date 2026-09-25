@@ -12,7 +12,13 @@ export const getChecklist = (id: string) => invoke<T.ChecklistDto>('get_checklis
 export const createChecklist = (title: string, category: string) => invoke<T.ChecklistDto>('create_checklist', { title, category });
 export const updateChecklist = (id: string, title: string, category: string) => invoke<T.ChecklistDto>('update_checklist', { id, title, category });
 export const deleteChecklist = (id: string) => invoke<void>('delete_checklist', { id });
-export const addItem = (checklistId: string, text: string, parentLocalId: string | null, status: string | null) => invoke<T.ItemDto>('add_item', { checklistId, text, parentLocalId, status });
+// Optional targetDate: key sent ONLY when provided (kanban add form) — call
+// sites without it keep the exact 4-key invoke shape (byte-frozen fences).
+export const addItem = (checklistId: string, text: string, parentLocalId: string | null, status: string | null, targetDate?: string | null) => {
+  const args: Record<string, unknown> = { checklistId, text, parentLocalId, status };
+  if (targetDate) args.targetDate = targetDate;
+  return invoke<T.ItemDto>('add_item', args);
+};
 export const setItemText = (checklistId: string, itemLocalId: string, text: string) => invoke<void>('set_item_text', { checklistId, itemLocalId, text });
 export const setItemChecked = (checklistId: string, itemLocalId: string, checked: boolean) => invoke<void>('set_item_checked', { checklistId, itemLocalId, checked });
 export const setItemStatus = (checklistId: string, itemLocalId: string, status: string) => invoke<void>('set_item_status', { checklistId, itemLocalId, status });
