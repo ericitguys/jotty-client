@@ -282,6 +282,25 @@ pub(crate) fn set_item_status_inner(
     Ok(())
 }
 
+/// Kanban card date (appointments): set/clear target_date + enqueue the
+/// "set_date" op. One tx (invariant 1). Payload carries camelCase targetDate —
+/// the shape push.rs replays against PATCH /api/checklists/{id}/items/{path}
+/// (string = set, null = clear).
+pub(crate) fn set_item_target_date_inner(
+    conn: &mut Connection,
+    checklist_id: &str,
+    item_local_id: &str,
+    target_date: Option<String>,
+) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    items::set_target_date(&tx, item_local_id, target_date.clone())?;
+    outbox::enqueue(&tx, "set_date", "checklist_item", item_local_id, &serde_json::json!({
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "targetDate": target_date
+    }))?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub(crate) fn delete_item_inner(conn: &mut Connection, checklist_id: &str, item_local_id: &str) -> AppResult<()> {
     let tx = conn.transaction()?;
     items::delete_local(&tx, item_local_id)?;
@@ -755,6 +774,17 @@ pub async fn set_item_status(
 ) -> Result<(), String> {
     let mut conn = state.db.lock().await;
     set_item_status_inner(&mut conn, &checklist_id, &item_local_id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_item_target_date(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    target_date: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    set_item_target_date_inner(&mut conn, &checklist_id, &item_local_id, target_date).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2294,6 +2324,41 @@ mod tests {
         let r = items::get(&conn, &it.local_id).unwrap().unwrap();
         assert!(!r.completed);
         assert_eq!(r.status.as_deref(), Some("completed"));
+    }
+
+    #[tokio::test]
+    async fn set_item_target_date_inner_updates_row_and_enqueues() {
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        // set: row target_date updated + dirty, ONE set_date op (R1: entity_id = local_id)
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, Some("2026-10-05".into())).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.target_date.as_deref(), Some("2026-10-05"));
+        assert!(r.dirty);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "set_date");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, it.local_id);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["checklist_id"], list.id.as_str());
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+        assert_eq!(payload["targetDate"], "2026-10-05");
+
+        // clear (None): row NULLs the date, second op payload carries null
+        // (upstream PATCH semantics: targetDate null -> cleared server-side)
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, None).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert!(r.target_date.is_none());
+        assert_eq!(outbox::next_batch(&conn, 10).unwrap().len(), 2);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert!(payload["targetDate"].is_null());
     }
 
     #[tokio::test]

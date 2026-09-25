@@ -261,6 +261,23 @@ impl JottyClient {
         Ok(())
     }
 
+    /// PATCH /api/checklists/{listId}/items/{indexPath} — targetDate only.
+    /// Upstream route (items/[itemIndex]/route.ts, source-verified 2026-09-25):
+    /// targetDate must be a string or null; null clears ("" formData -> undefined).
+    /// Partial update: other fields untouched.
+    pub async fn update_item_target_date(&self, list_id: &str, path: &str, target_date: Option<&str>) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["targetDate"] = match target_date {
+            Some(d) => serde_json::Value::String(d.to_string()),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
     pub async fn check_item(&self, list_id: &str, path: &str, checked: bool) -> AppResult<()> {
         let suffix = if checked { "check" } else { "uncheck" };
         self.api_send::<serde_json::Value>(

@@ -27,6 +27,7 @@ beforeEach(() => {
   invoke.mockImplementation((cmd: string) => {
     if (cmd === 'get_board_columns') return Promise.resolve(board);
     if (cmd === 'fetch_task_board') return Promise.resolve(board);
+    if (cmd === 'set_item_target_date') return Promise.resolve({});
     return Promise.resolve({});
   });
 });
@@ -112,6 +113,34 @@ describe('KanbanBoard', () => {
     const targetCol = container.querySelectorAll('.kanban-col')[2];
     fireEvent.drop(targetCol, { dataTransfer: dt });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_status', { checklistId: 'b1', itemLocalId: 'i1', status: 'completed' }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('menu Set date prefills the picker; saving calls set_item_target_date and reloads', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set date'));
+    // prefilled with the card's existing target date
+    const input = screen.getByDisplayValue('2026-10-01') as HTMLInputElement;
+    expect(input.type).toBe('date');
+    fireEvent.change(input, { target: { value: '2026-10-05' } });
+    fireEvent.click(screen.getByText('Save date'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-05' }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('Set date with a cleared input saves null (clears the date)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set date'));
+    const input = screen.getByDisplayValue('2026-10-01');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save date'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: null }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 });

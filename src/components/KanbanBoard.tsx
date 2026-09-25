@@ -13,6 +13,9 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const [renameText, setRenameText] = useState('');
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newCard, setNewCard] = useState('');
+  // date editor (appointments): which card's date is being edited + the picker value
+  const [dating, setDating] = useState<string | null>(null);
+  const [dateVal, setDateVal] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -60,10 +63,17 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     setAddingTo(null);
     await reload();
   };
+  const saveDate = async (localId: string) => {
+    setDating(null);
+    setMenuFor(null);
+    // empty picker = clear (null clears server-side; the badge disappears on reload)
+    await api.setItemTargetDate(checklistId, localId, dateVal || null);
+    await reload();
+  };
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); }} />}
+      {(menuFor || renaming) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -82,7 +92,11 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                    onClick={(e) => {
                      e.stopPropagation();
                      if (renaming) return;
-                     setMenuFor((m) => (m === item.localId ? null : item.localId));
+                     setMenuFor((m) => {
+                       const next = m === item.localId ? null : item.localId;
+                       if (next !== item.localId) setDating(null);
+                       return next;
+                     });
                    }}>
                 {renaming === item.localId ? (
                   <input value={renameText} autoFocus
@@ -99,11 +113,24 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                 </span>
                 {menuFor === item.localId && (
                   <div className="kanban-menu" onClick={(e) => e.stopPropagation()}>
-                    {cols.filter((c) => c.id !== col.id).map((c) => (
-                      <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
-                    ))}
-                    <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
-                    <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>
+                    {dating === item.localId ? (
+                      <div className="kanban-date-edit">
+                        <input type="date" value={dateVal} autoFocus
+                               onChange={(e) => setDateVal(e.target.value)}
+                               onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && saveDate(item.localId)} />
+                        <button onClick={() => saveDate(item.localId)}>Save date</button>
+                        <button onClick={() => setDating(null)}>Back</button>
+                      </div>
+                    ) : (
+                      <>
+                        {cols.filter((c) => c.id !== col.id).map((c) => (
+                          <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
+                        ))}
+                        <button onClick={() => { setDateVal(item.targetDate ?? ''); setDating(item.localId); }}>Set date</button>
+                        <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
+                        <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

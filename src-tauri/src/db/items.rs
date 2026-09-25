@@ -181,6 +181,15 @@ pub fn set_checked(conn: &Connection, local_id: &str, checked: bool) -> AppResul
     Ok(item)
 }
 
+/// Set/clear a kanban card's target date. Row always marked dirty=1 (the
+/// queued set_date op owns the server write; until it replays the local
+/// value is the truth and must not be clobbered by a pull).
+pub fn set_target_date(conn: &Connection, local_id: &str, target_date: Option<String>) -> AppResult<ItemRow> {
+    conn.execute("UPDATE checklist_items SET target_date=?2, dirty=1 WHERE local_id=?1", rusqlite::params![local_id, target_date])?;
+    let item = get(conn, local_id)?.ok_or_else(|| crate::error::AppError::Other("item not found".into()))?;
+    Ok(item)
+}
+
 /// Mirrors upstream applyStatus (item-status-utils.ts, source-verified 2026-09-20):
 /// target autoComplete -> completed=1; status CHANGED on a completed row -> completed=0;
 /// same-status no-op -> completed untouched. Row always marked dirty=1.

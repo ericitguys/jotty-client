@@ -16,6 +16,8 @@ export const addItem = (checklistId: string, text: string, parentLocalId: string
 export const setItemText = (checklistId: string, itemLocalId: string, text: string) => invoke<void>('set_item_text', { checklistId, itemLocalId, text });
 export const setItemChecked = (checklistId: string, itemLocalId: string, checked: boolean) => invoke<void>('set_item_checked', { checklistId, itemLocalId, checked });
 export const setItemStatus = (checklistId: string, itemLocalId: string, status: string) => invoke<void>('set_item_status', { checklistId, itemLocalId, status });
+// Set/clear a kanban card's target date (appointments): null clears server-side.
+export const setItemTargetDate = (checklistId: string, itemLocalId: string, targetDate: string | null) => invoke<void>('set_item_target_date', { checklistId, itemLocalId, targetDate });
 export const getBoardColumns = (checklistId: string) => invoke<T.BoardDto>('get_board_columns', { checklistId });
 export const fetchTaskBoard = (checklistId: string) => invoke<T.BoardDto>('fetch_task_board', { checklistId });
 export const createBoard = (title: string, category: string) => invoke<T.ChecklistDto>('create_task_board', { title, category });

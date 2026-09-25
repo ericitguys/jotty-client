@@ -171,6 +171,23 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     },
                     Err(e) => Err(e),
                 }
+                ("checklist_item", "set_date") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        // text-verified (check-op class): a mis-targeted date write
+                        // stamps a date on the WRONG card — same hazard family as
+                        // mis-targeted checks/status moves.
+                        Ok(path) => match client.update_item_target_date(
+                            &item_list_id, &path,
+                            // payload targetDate null/absent -> None -> PATCH null (clears)
+                            payload["targetDate"].as_str(),
+                        ).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
                 ("checklist_item", "delete") => match fetch_list_snapshot(client, &item_list_id).await {
                     Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => match client.delete_item(&item_list_id, &path).await {
@@ -793,6 +810,57 @@ mod tests {
         assert_eq!(stats.pushed, 1, "rename must patch the stored path even though server text differs");
         assert_eq!(stats.conflicts, 0);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_set_date_ops_replay_as_target_date_patches() {
+        // one SET + one CLEAR op on the same card in one run: each op resolves
+        // fresh and PATCHes the stored path with the exact wire body upstream's
+        // PATCH route accepts (targetDate string; null clears). Per-endpoint hit
+        // counters (T12 N1 class) pin the body shape AND the target path.
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let set_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let clear_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sh = set_hits.clone();
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"targetDate":"2026-10-05"})))
+            .respond_with(move |_: &_| {
+                sh.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let ch = clear_hits.clone();
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"targetDate": null})))
+            .respond_with(move |_: &_| {
+                ch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "targetDate": "2026-10-05"})).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "targetDate": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "set + clear ops must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(set_hits.load(std::sync::atomic::Ordering::SeqCst), 1, "set op must PATCH targetDate string at the card's path");
+        assert_eq!(clear_hits.load(std::sync::atomic::Ordering::SeqCst), 1, "clear op must PATCH targetDate null");
     }
 
     #[tokio::test]
