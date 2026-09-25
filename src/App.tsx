@@ -103,13 +103,24 @@ export default function App() {
     refreshAll();
     refreshUpdate();
     // resume prompt (spec §6): unsaved non-recording drafts survive restart
-    api.voiceListUnsaved().then((rows) => {
-      if (Array.isArray(rows) && rows.length > 0) setResumeRows(rows);
-    }).catch(() => {});
+    refreshVoiceDrafts();
     const un = listen('sync-updated', () => refreshAll());
-    const uv = listen('voice-updated', () => refreshAll());
+    const uv = listen('voice-updated', () => { refreshAll(); refreshVoiceDrafts(); });
     return () => { un.then((f) => f()); uv.then((f) => f()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshAll, refreshUpdate]);
+
+  // Draft surfacing (field report 2026-09-25): a voice draft created mid-session
+  // (e.g. a transcription failed and the modal was closed) must reach the resume
+  // prompt without waiting for the next app start. Called on mount, on voice
+  // modal close, and on the voice-updated event. In-flight transcriptions are
+  // withheld — they surface on a later refresh once completed (or as failed
+  // drafts after the startup sweep on restart).
+  const refreshVoiceDrafts = () => {
+    api.voiceListUnsaved().then((rows) => {
+      if (Array.isArray(rows) && rows.length > 0) setResumeRows(rows.filter((r) => r.state !== 'transcribing'));
+    }).catch(() => {});
+  };
 
   const startVoiceNote = async () => {
     // unconfigured AI server -> prompt to open Settings (spec §4)
@@ -125,6 +136,14 @@ export default function App() {
     setContentNonce((n) => n + 1); // retranscribe saves change content under an open editor
     selectNote(noteId);
     refreshAll();
+  };
+
+  // Closing a voice modal re-checks for unsaved drafts: a mid-session draft
+  // (failed transcription, abandoned recording) surfaces in the resume prompt
+  // immediately instead of waiting for the next app start (field report 2026-09-25).
+  const closeVoice = () => {
+    setVoice(null);
+    refreshVoiceDrafts();
   };
 
   useEffect(() => {
@@ -200,13 +219,13 @@ export default function App() {
         </div>
       )}
       {voice?.mode === 'new' && (
-        <VoiceNoteReview mode="new" onClose={() => setVoice(null)} onSaved={noteSaved} />
+        <VoiceNoteReview mode="new" onClose={closeVoice} onSaved={noteSaved} />
       )}
       {voice?.mode === 'resume' && (
-        <VoiceNoteReview mode="resume" recording={voice.recording} onClose={() => setVoice(null)} onSaved={noteSaved} />
+        <VoiceNoteReview mode="resume" recording={voice.recording} onClose={closeVoice} onSaved={noteSaved} />
       )}
       {voice?.mode === 'retranscribe' && (
-        <VoiceNoteReview mode="retranscribe" noteId={voice.noteId} onClose={() => setVoice(null)} onSaved={noteSaved} />
+        <VoiceNoteReview mode="retranscribe" noteId={voice.noteId} onClose={closeVoice} onSaved={noteSaved} />
       )}
     </div>
   );

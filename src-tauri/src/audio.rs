@@ -506,4 +506,22 @@ impl VoiceRecorder {
             .map_err(|_| "recorder thread crashed".to_string())?;
         Ok((session.recording_id, duration))
     }
+
+    /// TEST SEAM: install a fake live session so command-level tests can
+    /// exercise the already-active paths (re-attach, stop-after-attach)
+    /// without an audio device. The writer handle is a thread that returns
+    /// immediately, so a later stop() joins instantly.
+    #[cfg(test)]
+    pub(crate) fn prime_session(&self, recording_id: &str) {
+        let (tx, rx) = mpsc::channel::<Ctrl>();
+        let handle = std::thread::spawn(move || {
+            let _keepalive = rx; // a later stop()'s Ctrl::Stop send fails silently
+            480.0f64
+        });
+        *self.session.lock().unwrap() = Some(Session {
+            recording_id: recording_id.into(),
+            ctrl: tx,
+            handle,
+        });
+    }
 }

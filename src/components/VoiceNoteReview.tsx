@@ -70,6 +70,12 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
           const row = await api.voiceStartRecording();
           if (cancelled || stoppedRef.current) return; // user already stopped (or closed) mid-start
           setRec(row);
+          // Re-attach (field report 2026-09-25): the row carries the true
+          // recording start — continue the timer from there, not from zero.
+          // If the 8-minute cap already elapsed the writer self-stopped and the
+          // existing cap effect below fires Stop → transcribe immediately.
+          const startAt = Date.parse(row.createdAt);
+          setElapsed(Number.isFinite(startAt) ? Math.max(0, Math.floor((Date.now() - startAt) / 1000)) : 0);
           setPhase('recording');
         } catch (e) {
           if (cancelled) return;
@@ -81,6 +87,10 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
     }
     if (mode === 'resume' && recording) {
       enterReview(recording); // stale 'transcribing'/failed rows land in review w/ retry
+      // A 'recorded' draft never got transcribed (app killed between stop and
+      // transcribe, or a live session that hit the cap unwatched): running the
+      // transcription is the obvious next step — an empty review is a dead end.
+      if (recording.state === 'recorded') void retryTranscribe();
     }
     if (mode === 'retranscribe' && noteId) {
       let cancelled = false;
@@ -119,6 +129,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   }, [elapsed, phase]);
 
   const stopRecording = async (atCap = false) => {
+    if (stoppedRef.current) return; // idempotent: a Stop/cap race must not double-stop
     stoppedRef.current = true; // late start-chain arrivals must not clobber this session
     setPhase('transcribing');
     setAtCap(atCap);
@@ -261,7 +272,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const boardEnabled = !!connection && !!currentText().trim() && !busy && !extracting && phase === 'review';
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={phase === 'recording' ? undefined : onClose}>
       <div className="modal voice-modal" onClick={(e) => e.stopPropagation()}>
         {phase === 'recording' && (
           <>

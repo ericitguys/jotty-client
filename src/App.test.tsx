@@ -446,6 +446,38 @@ describe('web preference mirroring', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_delete_recording', { recordingId: 'r1' }));
   });
 
+  it('closing the voice note modal re-checks for unsaved drafts (field report 2026-09-25: a draft must surface without a restart)', async () => {
+    // the draft list is empty on mount; the SAME query after closing the modal
+    // must run again and surface the draft
+    let listCalls = 0;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') {
+        listCalls++;
+        return Promise.resolve(listCalls === 1 ? [] : [
+          { id: 'r1', path: '/data/voice/r1.wav', durationSecs: 3, rawTranscript: 'draft', tidiedTranscript: null, state: 'transcribed', lastError: null, createdAt: '2026-09-18T00:00:00Z' },
+        ]);
+      }
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+      if (cmd === 'voice_start_recording') return Promise.resolve({ id: 'r2', path: '/data/voice/r2.wav', durationSecs: 0, rawTranscript: null, tidiedTranscript: null, state: 'recording', lastError: null, createdAt: new Date().toISOString() });
+      if (cmd === 'voice_delete_recording') return Promise.resolve(null);
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('🎙 New voice note')).toBeInTheDocument());
+    expect(screen.queryByText('Unfinished voice note')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('🎙 New voice note'));
+    await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
+    // close the modal (recording-phase Cancel): the draft list must re-run and prompt
+    fireEvent.click(screen.getByText('Cancel'));
+    await waitFor(() => expect(screen.getByText('Unfinished voice note')).toBeInTheDocument());
+    await waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(2));
+  });
+
   it('menu button toggles the navigation drawer (mobile)', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());

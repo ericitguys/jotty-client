@@ -950,6 +950,19 @@ pub fn restart_app(app: tauri::AppHandle) {
 
 // ---- voice notes (spec 2026-09-18) -----------------------------------------
 
+/// Re-attach to an already-live recording session (field report 2026-09-25):
+/// returns the active staging row so the overlay can resume Stop/Cancel
+/// control of it. A session whose row is gone or no longer 'recording' is an
+/// inconsistent state — refuse rather than silently double-start.
+fn attach_to_active(conn: &Connection, active_id: &str) -> AppResult<VoiceRecordingDto> {
+    match crate::db::voice::get(conn, active_id) {
+        Ok(Some(row)) if row.state == crate::db::voice::ST_RECORDING => Ok(row.into()),
+        _ => Err(crate::error::AppError::Other(
+            "a recording is already active".into(),
+        )),
+    }
+}
+
 fn voice_dto(conn: &Connection, id: &str) -> AppResult<VoiceRecordingDto> {
     Ok(crate::db::voice::get(conn, id)?
         .ok_or_else(|| crate::error::AppError::Other("recording vanished".into()))?
@@ -962,6 +975,13 @@ pub(crate) fn voice_start_recording_inner(
     recorder: &crate::audio::VoiceRecorder,
     prepare: impl FnOnce() -> Result<crate::audio::PreparedInput, String>,
 ) -> AppResult<VoiceRecordingDto> {
+    // Re-attach (field report 2026-09-25): dismissing the overlay mid-recording
+    // leaves the live session running with its staging row in 'recording'. A
+    // second start must return the ACTIVE recording so the user can get back
+    // into it (Stop → review) or cancel it — never a dead-end error.
+    if let Some(active) = recorder.active_id() {
+        return attach_to_active(conn, &active);
+    }
     // device probe FIRST: no partial state on failure (spec §7)
     let prepared = match prepare() {
         Ok(p) => p,
@@ -1688,6 +1708,75 @@ mod tests {
         // the staging row was deleted too (list_unsaved excludes 'recording', so query directly)
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM voice_recordings", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn voice_start_while_active_returns_active_row() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let voice_dir = std::path::Path::new(dir.path()).join("voice");
+        std::mem::forget(dir);
+        // seed the live session + its staging row, as a dismissed overlay leaves them
+        let recorder = crate::audio::VoiceRecorder::default();
+        let path = voice_dir.join("rA.wav");
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        std::fs::File::create(&path).unwrap();
+        conn.execute(
+            "INSERT INTO voice_recordings(id, path, duration_secs, state, created_at) VALUES ('rA', ?1, 0, 'recording', '2026-09-25T00:00:00Z')",
+            [path.to_string_lossy().as_ref()],
+        ).unwrap();
+        recorder.prime_session("rA");
+        let row = voice_start_recording_inner(
+            &conn,
+            &voice_dir,
+            &recorder,
+            || panic!("device probe must not run on re-attach"),
+        ).unwrap();
+        assert_eq!(row.id, "rA");
+        assert_eq!(row.state, "recording");
+        // exactly one staging row: no second recording was created
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM voice_recordings", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        // the live session is untouched
+        assert_eq!(recorder.active_id().as_deref(), Some("rA"));
+    }
+
+    #[test]
+    fn attach_to_active_missing_row_errors() {
+        let conn = db();
+        let err = attach_to_active(&conn, "ghost").unwrap_err();
+        assert!(err.to_string().contains("already active"));
+    }
+
+    #[test]
+    fn attach_to_active_non_recording_row_errors() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rB.wav");
+        std::fs::File::create(&path).unwrap();
+        conn.execute(
+            "INSERT INTO voice_recordings(id, path, duration_secs, state, created_at) VALUES ('rB', ?1, 3.0, 'recorded', '2026-09-25T00:00:00Z')",
+            [path.to_string_lossy().as_ref()],
+        ).unwrap();
+        let err = attach_to_active(&conn, "rB").unwrap_err();
+        assert!(err.to_string().contains("already active"));
+    }
+
+    #[test]
+    fn attach_to_active_returns_the_recording_row() {
+        let conn = db();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rC.wav");
+        std::fs::File::create(&path).unwrap();
+        conn.execute(
+            "INSERT INTO voice_recordings(id, path, duration_secs, state, created_at) VALUES ('rC', ?1, 0, 'recording', '2026-09-25T00:00:00Z')",
+            [path.to_string_lossy().as_ref()],
+        ).unwrap();
+        let row = attach_to_active(&conn, "rC").unwrap();
+        assert_eq!(row.id, "rC");
+        assert_eq!(row.state, "recording");
+        // the wav file was NOT deleted by the attach
+        assert!(path.exists());
     }
 
     #[test]

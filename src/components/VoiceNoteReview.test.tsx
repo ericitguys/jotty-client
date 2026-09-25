@@ -33,7 +33,9 @@ beforeEach(() => {
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: gm } });
   (globalThis as unknown as { __lastGum: unknown }).__lastGum = gm;
   invoke.mockImplementation((cmd: string) => {
-    if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
+    // fresh createdAt: the component derives the re-attach timer from it — a
+    // stale fixture date would read as "recording for days" (cap auto-stop)
+    if (cmd === 'voice_start_recording') return Promise.resolve({ ...recordedRow, createdAt: new Date().toISOString() });
     if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
     if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world. Second sentence.', lastError: null });
     if (cmd === 'voice_tidy') return Promise.resolve({ tidied: 'Hello, world.' });
@@ -229,6 +231,56 @@ describe('VoiceNoteReview', () => {
     fireEvent.click(screen.getByText('Cancel'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_delete_recording', { recordingId: 'r1' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  // field report 2026-09-25: the overlay was dismissed mid-recording; pressing
+  // the voice button again must RE-ATTACH to the live recording, not dead-end.
+  it('re-attach: the recording timer continues from the row createdAt, not zero', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_start_recording') {
+        return Promise.resolve({ ...recordedRow, createdAt: new Date(Date.now() - 90_000).toISOString() });
+      }
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    // 90s of audio already captured when the overlay reopens
+    await waitFor(() => expect(screen.getByText(/Recording/)).toHaveTextContent('1:30'));
+  });
+
+  it('cap-attach probe: the recording self-stopped, so stop + transcribe run immediately', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_start_recording') {
+        return Promise.resolve({ ...recordedRow, createdAt: new Date(Date.now() - 490_000).toISOString() });
+      }
+      if (cmd === 'voice_stop_recording') return Promise.resolve({ ...recordedRow, durationSecs: 480 });
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world. Second sentence.', lastError: null });
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_stop_recording'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_transcribe', { recordingId: 'r1' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('Hello world. Second sentence.'));
+    expect(screen.getByText('Stopped at the 8-minute cap.')).toBeInTheDocument();
+  });
+
+  it('tapping the backdrop during a live recording does NOT dismiss it (Stop/Cancel are the exits)', async () => {
+    const onClose = vi.fn();
+    render(<VoiceNoteReview mode="new" onClose={onClose} onSaved={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
+    fireEvent.click(document.querySelector('.modal-backdrop')!);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText(/Recording/)).toBeInTheDocument();
+    // the guard is phase-scoped: once reviewing, tapping outside still closes
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByText('Review voice note')).toBeInTheDocument());
+    fireEvent.click(document.querySelector('.modal-backdrop')!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume of a never-transcribed (recorded) draft transcribes it instead of an empty dead end', async () => {
+    render(<VoiceNoteReview mode="resume" recording={{ ...recordedRow, state: 'recorded', rawTranscript: null }} onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_transcribe', { recordingId: 'r1' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('Hello world. Second sentence.'));
   });
 
   it('titleFromTranscript: first sentence, truncation, empty fallback', () => {
