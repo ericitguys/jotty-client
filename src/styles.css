@@ -940,3 +940,147 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   /* kanban columns stay readable on phones (board scrolls horizontally) */
   .kanban-col { width: 82vw; max-width: 340px; }
 }
+
+/* === P3 task 3: diagram renderers, node views, preview shapes =============
+   Tokens only (R: no Tailwind). Covers the R19 preview walk output
+   (.diagram-svg-wrap/.diagram-error-box/.diagram-placeholder), the
+   in-editor NodeViews (.diagram-node-container + actions), the draw.io
+   fullscreen iframe modal (R22) and the lazy excalidraw editor (R21). */
+
+/* --- preview/injected diagram surfaces --- */
+.diagram-svg-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  max-width: 100%;
+  overflow: auto;
+  padding: 4px;
+}
+.diagram-svg-wrap svg { max-width: 100%; height: auto; }
+
+.diagram-placeholder {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 14px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--row);
+}
+
+.diagram-placeholder-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 12px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--panel);
+}
+.diagram-placeholder-block p { margin: 0; }
+
+.diagram-error-box {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  color: var(--fg);
+  overflow: hidden;
+}
+.diagram-error-title { font-weight: 700; font-size: 12px; color: var(--accent-text); }
+.diagram-error-detail { font-family: monospace; font-size: 11px; color: var(--muted); word-break: break-word; }
+
+.diagram-frame { position: relative; border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 12px 0; background: var(--panel); }
+.diagram-theme-toggle {
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--row); color: var(--fg);
+  font-size: 12px; padding: 2px 8px; cursor: pointer;
+}
+
+/* --- in-editor node views (mermaid/drawio/excalidraw) --- */
+.diagram-node-container {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 10px 0;
+  background: var(--panel);
+}
+.diagram-node-actions {
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  display: flex; gap: 4px;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.diagram-node-container:hover .diagram-node-actions,
+.diagram-node-container:focus-within .diagram-node-actions { opacity: 1; }
+.diagram-action {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--row); color: var(--fg);
+  font-size: 11px; padding: 2px 8px; cursor: pointer;
+}
+.diagram-action:hover { background: var(--row-hover); border-color: var(--accent); }
+.diagram-danger { background: transparent; color: #e95c5c; border-color: var(--border); }
+.diagram-primary { background: var(--accent); color: var(--fg); }
+.diagram-create-row { display: flex; justify-content: center; gap: 8px; padding: 12px 0; }
+.diagram-create-row button, .diagram-edit-actions button, .prompt-actions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--row); color: var(--fg);
+  font-size: 12px; padding: 6px 12px; cursor: pointer;
+}
+.diagram-create-row button:hover, .diagram-edit-actions button:hover { border-color: var(--accent); }
+
+/* fullscreen edit modals (draw.io iframe, excalidraw editor) */
+.diagram-modal-fullscreen { align-items: stretch; }
+.diagram-card-fullscreen {
+  width: calc(100vw - 24px);
+  height: calc(100vh - 24px);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  gap: 8px;
+}
+.diagram-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.diagram-modal-head h2 { margin: 0; font-size: 14px; color: var(--fg); }
+.diagram-iframe { flex: 1; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.excalidraw-editor { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+
+/* mermaid edit textarea (portal parity) */
+.diagram-edit-stack { display: flex; flex-direction: column; gap: 12px; }
+.diagram-edit-textarea {
+  width: 100%; min-height: 240px; resize: vertical;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-input); color: var(--fg);
+  font-family: monospace; font-size: 12px; padding: 10px;
+}
+.diagram-edit-actions { display: flex; justify-content: space-between; gap: 8px; }
+.diagram-edit-actions-right { display: flex; gap: 8px; }
+.diagram-confirm-card { width: min(360px, calc(100vw - 48px)); }
+
+/* --- callouts (P3, T2 nodes render div[data-type=callout]) --- */
+.callout-wrapper {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.callout-icon { flex: 0 0 auto; font-size: 14px; line-height: 1.4; }
+.callout-content { flex: 1; min-width: 0; }
+.callout-content > :first-child { margin-top: 0; }
+.callout-content > :last-child { margin-bottom: 0; }
+.callout-info { border-left-color: var(--accent); }
+.callout-warning { border-left-color: #e5a13c; }
+.callout-success { border-left-color: #4caf78; }
+.callout-danger { border-left-color: #e95c5c; }

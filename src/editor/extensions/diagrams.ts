@@ -1,8 +1,15 @@
 import { Node, mergeAttributes } from '@tiptap/core';
+import { ReactNodeViewRenderer } from '@tiptap/react';
 
-// P3 diagram nodes (portal-exact shapes, NodeViews deferred to T3/ship-QA
-// per ruling R21 — these headless nodes carry attrs/parseHTML/renderHTML
-// + insert commands only; no mermaid/excalidraw/draw.io deps land here).
+import {
+  DrawioNodeView,
+  ExcalidrawNodeView,
+  MermaidNodeView,
+} from './diagramsNodeViews';
+
+// P3 diagram nodes (portal-exact shapes). NodeViews attached T3 per R21 —
+// the visual/edit surfaces live in ./diagramsNodeViews.tsx (React), while
+// this module keeps the headless attrs/parseHTML/renderHTML + commands.
 // Persistence shapes are consumed from the T1 serialization layer
 // (src/editor/markdown.ts): ```mermaid fence and base64 HTML comments.
 
@@ -78,6 +85,10 @@ export const MermaidExtension = Node.create({
             attrs: { content },
           }),
     };
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(MermaidNodeView);
   },
 });
 
@@ -178,6 +189,10 @@ export const DrawioExtension = Node.create<DrawioOptions>({
           }),
     };
   },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(DrawioNodeView);
+  },
 });
 
 // --- excalidraw (portal ExcalidrawExtension.tsx:230-322, minus NodeView) ---
@@ -258,5 +273,9 @@ export const ExcalidrawExtension = Node.create({
             attrs: { diagramData: null },
           }),
     };
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(ExcalidrawNodeView);
   },
 });

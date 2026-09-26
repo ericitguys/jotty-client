@@ -1,8 +1,9 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Editor } from '@tiptap/core';
 import hljs from 'highlight.js/lib/core';
 import markdown from 'highlight.js/lib/languages/markdown';
 import { convertMarkdownToHtml } from '../editor/markdown';
+import { enhanceDiagramFragment, renderMermaidToSvg } from './diagrams/diagramUtils';
 
 // R12 (plan): the desktop consolidates on highlight.js (the TipTap code-block
 // path already uses it via lowlight) — the raw-editor overlay registers the
@@ -34,13 +35,9 @@ export default function MarkdownEditor({
   if (preview) {
     // Read-only preview: the same remark/rehype pipeline the storage contract
     // uses (raw HTML passes through; script stripping happens at TipTap load,
-    // not here). No textarea is rendered in preview mode.
-    return (
-      <div
-        className="md-preview"
-        dangerouslySetInnerHTML={{ __html: convertMarkdownToHtml(value) }}
-      />
-    );
+    // not here). No textarea is rendered in preview mode. Diagram shapes
+    // (R19) are enriched in place by <MarkdownPreview> below.
+    return <MarkdownPreview value={value} />;
   }
 
   const lines = value.split('\n');
@@ -88,5 +85,38 @@ export default function MarkdownEditor({
         />
       </div>
     </div>
+  );
+}
+
+// R19 (plan): the preview keeps the convertMarkdownToHtml +
+// dangerouslySetInnerHTML pipeline, then a post-process walk enriches the
+// rendered fragment in place — ```mermaid fences arrive as
+// div[data-mermaid][data-mermaid-content] (rendered via guarded lazy
+// mermaid.render, theme from the live CSS custom properties, error-box
+// fallback), and draw.io / excalidraw shapes arrive as
+// div[data-drawio-*] / div[data-excalidraw-*] with RAW svg payloads
+// (base64-tolerant), injected inline with the dark-mode invert filter.
+// The walk is idempotent (data-diagram-done / data-diagram-mermaid flags)
+// and every injection re-checks node connectivity, so re-renders and
+// double-mounts never double-render.
+function MarkdownPreview({ value }: { value: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    enhanceDiagramFragment(containerRef.current, {
+      renderMermaid: (code) => renderMermaidToSvg(code),
+    }).catch(() => {
+      // The walk itself never rejects (per-block try/catch), but a full
+      // rejection must never take the preview down.
+    });
+  }, [value]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="md-preview"
+      dangerouslySetInnerHTML={{ __html: convertMarkdownToHtml(value) }}
+    />
   );
 }
