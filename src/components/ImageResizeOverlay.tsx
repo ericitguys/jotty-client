@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 
 // ImageResizeOverlay (P3 task 4 — port of the portal pair
@@ -23,12 +23,20 @@ export default function ImageResizeOverlay({ visible, src, currentWidth, current
 }) {
   const [width, setWidth] = useState('');
   const [height, setHeight] = useState('');
+  // Live refs: the window-registered pointerup commits once with the LATEST
+  // preview dims — state captured in the pointerdown render closure goes
+  // stale after pointermove updates (P3 T4 review Important finding: the
+  // drag previewed in the inputs but committed pre-drag dims).
+  const widthRef = useRef('');
+  const heightRef = useRef('');
+  const setWidthTracked = (value: string) => { widthRef.current = value; setWidth(value); };
+  const setHeightTracked = (value: string) => { heightRef.current = value; setHeight(value); };
 
   // Seed from the selected node's parsed dims (portal :30-35).
   useEffect(() => {
     if (visible) {
-      setWidth(currentWidth != null ? String(currentWidth) : '');
-      setHeight(currentHeight != null ? String(currentHeight) : '');
+      setWidthTracked(currentWidth != null ? String(currentWidth) : '');
+      setHeightTracked(currentHeight != null ? String(currentHeight) : '');
     }
   }, [visible, currentWidth, currentHeight]);
 
@@ -51,34 +59,40 @@ export default function ImageResizeOverlay({ visible, src, currentWidth, current
   };
 
   const apply = () => {
-    onApply(parse(width), parse(height));
+    onApply(parse(widthRef.current), parse(heightRef.current));
     onClose();
   };
 
   // Corner drag: pointerdown captures the pointer and the start dims;
   // pointermove previews the numbers (live, clamped >= 16px); pointerup
-  // commits once through onApply (portal commits per-move only for its own
+  // commits once through apply (portal commits per-move only for its own
   // inputs — the drag geometry itself is ship-time QA, jsdom has no rects).
   const startDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const baseWidth = parse(width) ?? 0;
-    const baseHeight = parse(height) ?? 0;
+    // jsdom's fireEvent fallback Event carries no clientX/clientY (undefined
+    // read → NaN deltas) — default to 0 so synthetic pointerdowns work; real
+    // browser pointerdowns always carry both.
+    const startX = Number.isFinite(e.clientX) ? e.clientX : 0;
+    const startY = Number.isFinite(e.clientY) ? e.clientY : 0;
+    const baseWidth = parse(widthRef.current) ?? 0;
+    const baseHeight = parse(heightRef.current) ?? 0;
     const target = e.currentTarget;
     try { target.setPointerCapture(e.pointerId); } catch { /* jsdom: no capture */ }
 
     const onMove = (ev: PointerEvent) => {
+      // jsdom's fireEvent.pointerMove fallback Event carries no clientX/
+      // clientY (undefined read → NaN math) — skip non-finite moves instead
+      // of writing 'NaN' state; real browser moves always carry both.
+      if (!Number.isFinite(ev.clientX) || !Number.isFinite(ev.clientY)) return;
       const dx = Math.round(ev.clientX - startX);
       const dy = Math.round(ev.clientY - startY);
-      setWidth(String(Math.max(16, baseWidth + dx)));
-      setHeight(String(Math.max(16, baseHeight + dy)));
+      setWidthTracked(String(Math.max(16, baseWidth + dx)));
+      setHeightTracked(String(Math.max(16, baseHeight + dy)));
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      onApply(parse(width), parse(height));
-      onClose();
+      apply();
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -98,16 +112,16 @@ export default function ImageResizeOverlay({ visible, src, currentWidth, current
       <div className="image-size-grid">
         <label>
           Width (px)
-          <input type="number" value={width} placeholder="Auto" onChange={(e) => setWidth(e.target.value)} />
+          <input type="number" value={width} placeholder="Auto" onChange={(e) => setWidthTracked(e.target.value)} />
         </label>
         <label>
           Height (px)
-          <input type="number" value={height} placeholder="Auto" onChange={(e) => setHeight(e.target.value)} />
+          <input type="number" value={height} placeholder="Auto" onChange={(e) => setHeightTracked(e.target.value)} />
         </label>
       </div>
       <div className="prompt-actions">
         <button type="button" onClick={onClose}>Cancel</button>
-        <button type="button" className="primary" onClick={() => { onApply(parse(width), parse(height)); onClose(); }}>Apply</button>
+        <button type="button" className="primary" onClick={apply}>Apply</button>
       </div>
       <div
         data-testid="image-resize-handle"

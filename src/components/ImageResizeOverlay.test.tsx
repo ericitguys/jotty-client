@@ -105,4 +105,37 @@ describe('ImageResizeOverlay', () => {
     expect(attrs?.style).toBe('width: 640px; height: 200px');
     expect(editor.getHTML()).toMatch(/style="width: 640px; height: 200px;?"/);
   });
+
+  it('drag commit uses LIVE preview dims, not the pointerdown closure (review Important)', () => {
+    const onApply = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ImageResizeOverlay
+        visible
+        src="https://example.com/i.png"
+        currentWidth={300}
+        currentHeight={200}
+        onApply={onApply}
+        onClose={onClose}
+      />,
+    );
+    fireEvent.pointerDown(screen.getByTestId('image-resize-handle'), { clientX: 100, clientY: 100, pointerId: 1 });
+    // jsdom's fireEvent.pointerMove fallback Event loses clientX on dispatch
+    // (probe: ev.clientX undefined at the listener) — capture the registered
+    // onMove/onUp and invoke them with a real MouseEvent (clientX honored).
+    const moves: Array<(ev: unknown) => void> = [];
+    const ups: Array<(ev: unknown) => void> = [];
+    const origAdd = window.addEventListener.bind(window);
+    vi.spyOn(window, 'addEventListener').mockImplementation(((type: string, fn: (ev: unknown) => void) => {
+      if (type === 'pointermove') moves.push(fn);
+      if (type === 'pointerup') ups.push(fn);
+      return origAdd(type, fn as EventListener);
+    }) as typeof window.addEventListener);
+    fireEvent.pointerDown(screen.getByTestId('image-resize-handle'), { clientX: 100, clientY: 100, pointerId: 1 });
+    expect(moves.length).toBe(1);
+    moves[0]!(new MouseEvent('pointermove', { clientX: 40, clientY: 120 }));
+    ups[0]!(new Event('pointerup'));
+    expect(onApply).toHaveBeenCalledWith(340, 320);
+    expect(onClose).toHaveBeenCalled();
+  });
 });
