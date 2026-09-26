@@ -191,4 +191,23 @@ describe('NoteEditor', () => {
     expect(item).not.toBeNull();
     expect(item?.textContent).toBe('done');
   });
+
+  // P2 task 5 (R13): the toolbar Table button opens the shared insert modal;
+  // Insert drives insertTable on the live editor (3 rows + a header row).
+  it('Table button opens the insert modal; Insert creates a 3-row table with a header row', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Rows')).toBeNull(); // closed until requested
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Table' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    await waitFor(() => expect(screen.getByLabelText('Rows')).toBeInTheDocument());
+    expect(screen.getByLabelText('Rows')).toHaveValue(3);
+    expect(screen.getByLabelText('Header row')).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Insert' }));
+    await waitFor(() => {
+      expect(document.querySelectorAll('.tiptap table tr')).toHaveLength(3);
+      expect(document.querySelector('.tiptap table th')).not.toBeNull();
+    });
+    await waitFor(() => expect(screen.queryByLabelText('Rows')).toBeNull()); // closes after insert
+  });
 });

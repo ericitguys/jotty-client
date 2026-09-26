@@ -34,7 +34,7 @@ function TBtn({ label, onClick, active, disabled, children }: {
   );
 }
 
-export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview, onLinkRequest }: {
+export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview, onLinkRequest, onTableInsertRequest }: {
   editor: Editor | null;
   // Markdown mode (P2 task 3): when onToggleMode is provided a segmented
   // [Visual | Markdown] control renders at the LEFT of the toolbar (portal
@@ -50,6 +50,10 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
   // state — the browser's native prompt dialog is replaced by the PromptModal
   // mounted there.
   onLinkRequest?: () => void;
+  // Table (P2 task 5, R13): the button body routes through NoteEditor's
+  // TableInsertModal via onTableInsertRequest — the P1 fixed 3x3 insert is
+  // gone (both table entry points ask rows/cols through the shared modal).
+  onTableInsertRequest?: () => void;
 }) {
   // Active-state styling tracks the live document: re-render on every editor
   // transaction (the tick pattern NoteEditor also keeps for editor-driven UI).
@@ -126,9 +130,11 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
       <TBtn label="Ordered list" active={editor?.isActive('orderedList')} disabled={dis || md} onClick={() => chain().toggleOrderedList().run()}>1≡</TBtn>
       <TBtn label="Task list" active={editor?.isActive('taskList')} disabled={dis || md} onClick={() => chain().toggleTaskList().run()}>☑</TBtn>
       <TBtn label="Blockquote" active={editor?.isActive('blockquote')} disabled={dis || md} onClick={() => chain().toggleBlockquote().run()}>❝</TBtn>
-      {/* Deterministic P1 insert (R9): fixed 3x3 grid with a header row — no
-          prompt. Rows/cols are edited afterwards via the table context bar. */}
-      <TBtn label="Table" disabled={dis || md} onClick={() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</TBtn>
+      {/* Table (P2 task 5, R13): opens NoteEditor's TableInsertModal via
+          onTableInsertRequest — the P1 fixed 3x3 insert is removed (parity:
+          both table entry points ask rows/cols). The button still renders
+          (and the toolbar tests still find it) when no handler is wired. */}
+      <TBtn label="Table" disabled={dis || md} onClick={() => onTableInsertRequest?.()}>⊞</TBtn>
       <span className="edt-sep" />
       {/* Link (P2 task 4): opens NoteEditor's PromptModal via onLinkRequest —
           the P1 native-prompt placeholder is gone. The button still renders

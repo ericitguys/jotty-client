@@ -69,14 +69,19 @@ export const SLASH_ITEMS: SlashItem[] = [
     title: 'Table',
     hint: 'Rows × columns grid',
     command: ({ editor, range }) => {
-      // P1 ruling: prompt-based rows/cols grid (upstream's modal is P3).
-      // Guarded for jsdom/headless where prompt() is unusable — bail out
-      // silently instead of crashing (the headless tests never pick Table).
-      if (typeof prompt !== 'function') return;
-      const rows = Number(prompt('Table rows', '3'));
-      const cols = Number(prompt('Table columns', '3'));
-      if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 1 || cols < 1) return;
-      editor.chain().focus().deleteRange(range).insertTable({ rows, cols, withHeaderRow: true }).run();
+      // P2 task 5 (R13/R14): the /table item opens the shared TableInsertModal
+      // instead of prompting. The suggestion plugin cannot render into React,
+      // so the command plants a storage flag carrying the /query range (the
+      // modal's onInsert deletes it before insertTable; nothing is inserted
+      // here) and pings the React layer with a meta transaction — the same
+      // dispatch safety argument as the sync() ping above: a command body
+      // runs outside any view update, so this dispatch cannot re-enter one.
+      editor.storage.tableModal = { open: true, range };
+      try {
+        if (!editor.isDestroyed) {
+          editor.view.dispatch(editor.state.tr.setMeta('tableModal', Date.now()));
+        }
+      } catch { /* view tearing down: nothing left to notify */ }
     },
   },
 ];
@@ -101,6 +106,17 @@ export interface SlashCommandsStorage {
   query: string;
   range: Range | null;
   items: SlashItem[];
+}
+
+// Table-insert modal request (P2 task 5, R13): the slash /table item no
+// longer prompts — its command plants this flag under editor.storage.tableModal
+// (carrying the /query range that onInsert deletes before insertTable) and
+// pings a meta transaction; NoteEditor's transaction tick re-renders, re-reads
+// it and mounts <TableInsertModal> (the suggestion plugin cannot render into
+// React — the same mirror-and-tick pattern the slash popup itself uses).
+export interface TableModalStorage {
+  open: boolean;
+  range: Range | null;
 }
 
 // Typing `/` at the start of a block opens the slash-commands menu

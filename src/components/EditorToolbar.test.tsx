@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { noteEditorExtensions } from '../editor/extensions';
 import EditorToolbar from './EditorToolbar';
@@ -70,14 +70,22 @@ describe('EditorToolbar', () => {
     expect(editor.getHTML()).toContain('data-type="taskList"');
   });
 
-  it('Table button inserts a fixed 3x3 table with a header row (no prompt)', () => {
+  // P2 task 5 (R13): the Table button routes through NoteEditor's
+  // TableInsertModal via onTableInsertRequest — the P1 fixed 3x3 insert is
+  // gone (both table entry points ask rows/cols through the shared modal).
+  it('Table button routes through onTableInsertRequest — no fixed 3x3 insert', () => {
+    const editor = makeEditor('<p>hi</p>');
+    const onTableInsertRequest = vi.fn();
+    render(<EditorToolbar editor={editor} onTableInsertRequest={onTableInsertRequest} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    expect(onTableInsertRequest).toHaveBeenCalledTimes(1);
+    expect(editor.getHTML()).not.toContain('<table');
+  });
+
+  it('Table button stays inert when no handler is wired', () => {
     const editor = makeEditor('<p>hi</p>');
     render(<EditorToolbar editor={editor} />);
     fireEvent.click(screen.getByRole('button', { name: 'Table' }));
-    const json = editor.getJSON() as { content?: Array<{ type: string; content?: unknown[] }> };
-    const table = json.content?.find((n) => n.type === 'table');
-    expect(table).toBeDefined();
-    expect(table?.content ?? []).toHaveLength(3);
-    expect(editor.getHTML()).toContain('<th');
+    expect(editor.getHTML()).not.toContain('<table');
   });
 });

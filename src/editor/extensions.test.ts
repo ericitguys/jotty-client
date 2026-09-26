@@ -121,4 +121,18 @@ describe('slash commands', () => {
     item.command({ editor, range: { from: 1, to: 2 } });
     expect(editor.isActive('codeBlock')).toBe(true);
   });
+
+  // P2 task 5 (R13): the /table item opens the shared TableInsertModal via an
+  // editor-storage flag + meta-tick ping (the suggestion plugin cannot render
+  // into React) — no prompt(), no immediate insert; the insert is modal-driven.
+  it('the Table item plants the tableModal storage flag instead of inserting', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    const item = SLASH_ITEMS.find((i) => i.title === 'Table')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    const flag = editor.storage.tableModal as { open: boolean; range: unknown } | undefined;
+    expect(flag?.open).toBe(true);
+    expect(flag?.range).toEqual({ from: 1, to: 2 });
+    expect(editor.getHTML()).not.toContain('<table');
+  });
 });

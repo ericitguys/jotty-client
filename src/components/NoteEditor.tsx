@@ -6,10 +6,11 @@ import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown';
-import type { SlashCommandsStorage, SlashItem } from '../editor/slashCommands';
+import type { SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
 import PromptModal from './modals/PromptModal';
+import TableInsertModal from './modals/TableInsertModal';
 import SlashMenu from './SlashMenu';
 import TableToolbar from './TableToolbar';
 import MarkdownEditor from './MarkdownEditor';
@@ -142,6 +143,37 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     setLinkRequest({ hasSelection: !editor.state.selection.empty });
   };
 
+  // Table insert modal (P2 task 5, R13): ONE modal for both entry points.
+  // The toolbar button routes through React state (nothing to delete — the
+  // table inserts at the caret); the slash /table item plants an editor-
+  // storage flag that the transaction tick above re-renders and reads here
+  // (a suggestion callback cannot render into React). range null =
+  // toolbar-origin; a Range = slash-origin (delete the /query text first).
+  const [tableModalViaToolbar, setTableModalViaToolbar] = useState(false);
+  const tableModalFlag = editor
+    ? ((editor.storage.tableModal ?? undefined) as TableModalStorage | undefined)
+    : undefined;
+  const tableModalRange = tableModalFlag?.open ? tableModalFlag.range ?? null : null;
+  const isTableModalOpen = tableModalViaToolbar || tableModalRange !== null;
+
+  const closeTableModal = () => {
+    setTableModalViaToolbar(false);
+    if (!editor || !tableModalFlag?.open) return;
+    editor.storage.tableModal = { open: false, range: null };
+    try {
+      editor.view.dispatch(editor.state.tr.setMeta('tableModal', Date.now()));
+    } catch { /* view tearing down: nothing left to notify */ }
+  };
+
+  const insertTableFromModal = (rows: number, cols: number, withHeaderRow: boolean) => {
+    if (!editor) return;
+    if (tableModalRange) {
+      editor.chain().focus().deleteRange(tableModalRange).insertTable({ rows, cols, withHeaderRow }).run();
+    } else {
+      editor.chain().focus().insertTable({ rows, cols, withHeaderRow }).run();
+    }
+  };
+
   // Selection bubble menu (portal parity P1): visible while a non-empty text
   // selection exists outside a code block; hidden on Escape, an empty
   // selection, or after a bubble button applies (onClose).
@@ -232,6 +264,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         preview={mdPreview}
         onTogglePreview={() => setMdPreview((p) => !p)}
         onLinkRequest={openLinkRequest}
+        onTableInsertRequest={() => setTableModalViaToolbar(true)}
       />
       {/* Markdown mode (P2 task 3): the TipTap host stays mounted (the editor
           instance must stay alive) and is hidden via the `hidden` attribute;
@@ -278,6 +311,16 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           if (linkRequest.hasSelection) { editor.chain().focus().setLink({ href: url }).run(); return; }
           editor.chain().focus().insertContent(`<a href="${url}">${url}</a>`).run();
         }}
+      />
+      {/* Table insert modal (P2 task 5, R13): the ONE insert surface for both
+          entry points — the toolbar's Table button (React state; inserts at
+          the caret) and the slash /table item (storage flag; deletes the
+          /query range first). P1's fixed 3x3 toolbar insert and the slash
+          item's native prompt body are both gone. */}
+      <TableInsertModal
+        isOpen={isTableModalOpen}
+        onClose={closeTableModal}
+        onInsert={insertTableFromModal}
       />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}

@@ -741,6 +741,25 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .modal-card input { width: 100%; }
 .prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .prompt-actions button { min-width: 84px; }
+/* TableInsertModal (P2 task 5): rows/cols grid inputs + the header-row
+   toggle, same card family as PromptModal (.modal-card). Tokens only. */
+.table-insert-grid { display: flex; gap: 12px; }
+.table-insert-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  color: var(--muted);
+  font-size: 13px;
+}
+.table-insert-grid input { width: 100%; }
+.table-insert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .modal {
   width: min(440px, calc(100vw - 48px));
   display: flex;
