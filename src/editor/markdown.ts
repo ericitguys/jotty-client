@@ -175,6 +175,36 @@ export const createTurndownService = (): TurndownService => {
     replacement: (content) => `<kbd>${content}</kbd>`,
   });
 
+  // P2-gap fix (portal custom-html-utils.tsx:11-48 + 126-165): the four
+  // pre-existing marks (Highlight→mark, Underline→u, Subscript→sub,
+  // Superscript→sup) had NO turndown rules, so their styling was DROPPED on
+  // markdown save→reload. Shapes portal-exact: mark preserves its style
+  // attribute, u/sub/sup carry no attributes.
+  service.addRule('mark', {
+    filter: (node) => node.nodeName.toLowerCase() === 'mark',
+    replacement: (content, node) => {
+      const element = node as HTMLElement;
+      const style = element.getAttribute('style');
+      const attrs = style ? ` style="${style}"` : '';
+      return `<mark${attrs}>${content}</mark>`;
+    },
+  });
+
+  service.addRule('underline', {
+    filter: (node) => node.nodeName.toLowerCase() === 'u',
+    replacement: (content) => `<u>${content}</u>`,
+  });
+
+  service.addRule('subscript', {
+    filter: (node) => node.nodeName.toLowerCase() === 'sub',
+    replacement: (content) => `<sub>${content}</sub>`,
+  });
+
+  service.addRule('superscript', {
+    filter: (node) => node.nodeName.toLowerCase() === 'sup',
+    replacement: (content) => `<sup>${content}</sup>`,
+  });
+
   return service;
 };
 

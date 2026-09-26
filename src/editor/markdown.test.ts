@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { Editor } from '@tiptap/core';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from './markdown';
+import { noteEditorExtensions } from './extensions';
+
+function editorWith(content: string): Editor {
+  return new Editor({
+    extensions: noteEditorExtensions(),
+    content,
+  });
+}
 
 describe('markdown serialization (portal pipeline)', () => {
   it('round-trips headings, emphasis and inline code', () => {
@@ -224,5 +233,31 @@ describe('P3 diagram + rich-block shapes (portal-exact serialization)', () => {
     expect(convertHtmlToMarkdown(p('image', 'https://x/a.png', 'a.png'))).toContain('![a.png](https://x/a.png)');
     expect(convertHtmlToMarkdown(p('video', 'https://x/v.mp4', 'v.mp4'))).toContain('[🎥 v.mp4](https://x/v.mp4)');
     expect(convertHtmlToMarkdown(p('file', 'https://x/f.pdf', 'f.pdf'))).toContain('[📎 f.pdf](https://x/f.pdf)');
+  });
+});
+
+describe('P2-gap mark serialization fix (portal custom-html-utils.tsx:11-48)', () => {
+  it('mark keeps its style attr; bare mark serializes without one', () => {
+    const md = convertHtmlToMarkdown(
+      '<p><mark style="background-color: rgb(255, 0, 0); color: rgb(255, 255, 255)">hl</mark></p>',
+    );
+    expect(md).toContain('<mark style="background-color: rgb(255, 0, 0); color: rgb(255, 255, 255)">hl</mark>');
+    expect(convertHtmlToMarkdown('<p><mark>plain</mark></p>')).toContain('<mark>plain</mark>');
+  });
+
+  it('u / sub / sup serialize as inline HTML (previously dropped wholesale)', () => {
+    const md = convertHtmlToMarkdown('<p><u>under</u> <sub>sub</sub> <sup>sup</sup></p>');
+    expect(md).toContain('<u>under</u>');
+    expect(md).toContain('<sub>sub</sub>');
+    expect(md).toContain('<sup>sup</sup>');
+  });
+
+  it('styled highlight parses back into the Highlight mark (native parse)', () => {
+    const editor = editorWith('<p><mark style="background-color: rgb(255, 0, 0)">hl</mark></p>');
+    const json = editor.getJSON() as {
+      content?: Array<{ content?: Array<{ marks?: Array<{ type: string; attrs?: { color?: string } }> }> }>;
+    };
+    const mark = json.content?.[0]?.content?.[0]?.marks?.find((m) => m.type === 'highlight');
+    expect(mark?.attrs?.color).toBe('rgb(255, 0, 0)');
   });
 });
