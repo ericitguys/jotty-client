@@ -454,6 +454,40 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 #note-editor .tiptap ul { padding-left: 1.3em; }
 #saving { color: var(--amber); font-size: 12px; align-self: flex-end; }
 
+/* ---------- markdown mode (P2 task 3) ---------- */
+.edt-mode { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; }
+.edt-mode .edt-btn { height: 24px; min-width: 0; font-size: 12px; padding: 0 8px; border-radius: 4px; }
+.edt-preview-btn { font-size: 12px; color: var(--muted); }
+.edt-preview-btn.active { color: var(--accent); }
+
+.md-editor { display: flex; gap: 6px; min-height: 55vh; }
+.md-editor-gutter { display: flex; flex-direction: column; padding: 5px 6px 5px 0; min-width: 2.4em; text-align: right; color: var(--muted); font-family: inherit; font-size: 14px; line-height: 1.6; user-select: none; }
+.md-editor-stack { position: relative; flex: 1; min-width: 0; min-height: 55vh; }
+.md-editor-overlay, .md-editor-area {
+  margin: 0; padding: 4px 2px; font-family: inherit; font-size: 14px; line-height: 1.6;
+  letter-spacing: normal; tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal;
+  box-sizing: border-box;
+}
+.md-editor-overlay { position: absolute; inset: 0; overflow: hidden; pointer-events: none; background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 8px; color: var(--fg); }
+.md-editor-overlay code { display: block; background: none; padding: 0; font-size: 14px; color: var(--fg); }
+.md-editor-area { position: relative; width: 100%; height: 100%; border: 1px solid transparent; background: transparent; color: transparent; caret-color: var(--fg); outline: none; resize: none; overflow-y: auto; }
+.md-preview { min-height: 55vh; padding: 4px 2px; line-height: 1.6; }
+#note-editor .md-preview h1, #note-editor .md-preview h2, #note-editor .md-preview h3 { color: var(--accent-strong-text); margin: 0.7em 0 0.3em; }
+#note-editor .md-preview a { color: var(--accent); }
+#note-editor .md-preview blockquote { border-left: 3px solid var(--accent); margin: 0.5em 0; padding: 2px 12px; color: var(--muted); }
+#note-editor .md-preview pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+#note-editor .md-preview code { background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+#note-editor .md-preview pre code { background: none; padding: 0; }
+
+/* overlay token colors — same palette as .tiptap pre code above */
+#note-editor .md-editor-overlay .hljs-section { color: #ff7b72; }
+#note-editor .md-editor-overlay .hljs-bullet { color: #79c0ff; }
+#note-editor .md-editor-overlay .hljs-quote { color: #8b949e; }
+#note-editor .md-editor-overlay .hljs-string, #note-editor .md-editor-overlay .hljs-code, #note-editor .md-editor-overlay .hljs-link_url { color: #a5d6ff; }
+#note-editor .md-editor-overlay .hljs-link { color: var(--accent); }
+#note-editor .md-editor-overlay .hljs-strong { font-weight: 600; }
+#note-editor .md-editor-overlay .hljs-emphasis { font-style: italic; }
+
 /* editor toolbar (portal parity P1) */
 .edt-toolbar { display: flex; align-items: center; gap: 2px; padding: 4px 8px; background: var(--bg); border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; flex-wrap: wrap; }
 .edt-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; border: none; background: transparent; color: var(--fg); border-radius: 5px; cursor: pointer; font-size: 13px; padding: 0 6px; }

@@ -11,6 +11,7 @@ import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
 import SlashMenu from './SlashMenu';
 import TableToolbar from './TableToolbar';
+import MarkdownEditor from './MarkdownEditor';
 import type { NoteDto } from '../api/types';
 
 // Place the slash popup just below the `/` block start, clamped-free fixed
@@ -31,6 +32,12 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [audioDur, setAudioDur] = useState<number | null>(null);
+  // Markdown mode (P2 task 3): isMarkdownMode swaps the visual TipTap surface
+  // for the raw markdown editor; markdownDraft holds the raw text while in
+  // markdown mode; mdPreview toggles the read-only preview in the toolbar.
+  const [isMarkdownMode, setIsMarkdownMode] = useState(false);
+  const [markdownDraft, setMarkdownDraft] = useState('');
+  const [mdPreview, setMdPreview] = useState(false);
   // Storage contract (P2): update_note persists markdown. Editor updates
   // arrive pre-converted (onUpdate); title/category edits carry the last
   // stored value, which may still be legacy HTML as loaded — normalize here
@@ -43,6 +50,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   });
 
   useEffect(() => {
+    setIsMarkdownMode(false); // note switch leaves markdown mode (stale-draft guard)
     let cancelled = false;
     (async () => {
       const note: NoteDto | null = await api.getNote(noteId);
@@ -104,6 +112,23 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     editor.on('transaction', onTx);
     return () => { editor.off('transaction', onTx); };
   }, [editor]);
+
+  // Mode toggle (P2 task 3, portal toggleMode semantics): visual→markdown
+  // snapshots the live document as markdown; markdown→visual loads the draft
+  // converted to HTML with emitUpdate=false (installed TipTap 2.27.3
+  // setContent is positional: (content, emitUpdate?, parseOptions?, options?)),
+  // so the switch never fires onUpdate / autosave — the draft is already the
+  // autosave content while in markdown mode.
+  const toggleMarkdownMode = () => {
+    if (!editor) return;
+    if (!isMarkdownMode) {
+      setMarkdownDraft(convertHtmlToMarkdown(editor.getHTML()));
+      setIsMarkdownMode(true);
+      return;
+    }
+    editor.commands.setContent(convertMarkdownToHtml(markdownDraft), false);
+    setIsMarkdownMode(false);
+  };
 
   // Selection bubble menu (portal parity P1): visible while a non-empty text
   // selection exists outside a code block; hidden on Escape, an empty
@@ -188,17 +213,41 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           <button className="voice-delete-audio" onClick={deleteAudio}>Delete audio</button>
         </div>
       )}
-      <EditorToolbar editor={editor} />
-      <EditorContent editor={editor} />
-      {editor && (
+      <EditorToolbar
+        editor={editor}
+        markdownMode={isMarkdownMode}
+        onToggleMode={toggleMarkdownMode}
+        preview={mdPreview}
+        onTogglePreview={() => setMdPreview((p) => !p)}
+      />
+      {/* Markdown mode (P2 task 3): the TipTap host stays mounted (the editor
+          instance must stay alive) and is hidden via the `hidden` attribute;
+          the raw markdown editor replaces it visually. Edits persist through
+          the SAME autosave.setValue path — the Task-2 save boundary
+          normalization already passes non-HTML content through verbatim. */}
+      <div hidden={isMarkdownMode}>
+        <EditorContent editor={editor} />
+      </div>
+      {isMarkdownMode && (
+        <MarkdownEditor
+          value={markdownDraft}
+          onChange={(md) => {
+            setMarkdownDraft(md);
+            autosave.setValue({ title: metaRef.current.title, content: md, category: metaRef.current.category });
+          }}
+          editor={editor}
+          preview={mdPreview}
+        />
+      )}
+      {editor && !isMarkdownMode && (
         <BubbleMenu
           editor={editor}
           visible={bubbleVisible}
           onClose={() => setBubbleVisible(false)}
         />
       )}
-      {editor && <TableToolbar editor={editor} visible={tableVisible} />}
-      {slashMenu}
+      {editor && !isMarkdownMode && <TableToolbar editor={editor} visible={tableVisible} />}
+      {!isMarkdownMode && slashMenu}
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}
         <button className="cl-save" onClick={() => autosave.flush()}>Save</button>
