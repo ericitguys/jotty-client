@@ -27,7 +27,10 @@ export default function App() {
   const [contentNonce, setContentNonce] = useState(0); // remounts NoteEditor after a retranscribe save
 
   // Branding mirror: window title follows the instance's app name. The native
-  // setTitle call is best-effort (skipped outside a real webview, e.g. tests).
+  // setTitle call is best-effort (skipped outside a real webview, e.g. tests)
+  // and needs the core:window:allow-set-title capability grant — core:default
+  // alone does NOT allow it, and the denial would surface here as a silent
+  // catch (the 0.15.2 "titlebar never followed branding" bug).
   const title = branding?.name ?? 'jotty·desktop';
   useEffect(() => {
     document.title = title;
@@ -35,7 +38,7 @@ export default function App() {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().setTitle(title);
-      } catch { /* not in a Tauri webview (vitest) or unsupported */ }
+      } catch { /* no Tauri webview (vitest), or ACL-denied */ }
     })();
   }, [title]);
   const [showSearch, setShowSearch] = useState(false);
