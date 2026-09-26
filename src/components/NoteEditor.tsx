@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import type { Editor, Range } from '@tiptap/core';
+import { NodeSelection } from '@tiptap/pm/state';
 import * as api from '../api/client';
 import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
+import { applyImageSize } from '../editor/imageResize';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown';
-import type { SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
+import type { ImageModalStorage, SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
 import PromptModal from './modals/PromptModal';
 import TableInsertModal from './modals/TableInsertModal';
+import ImageSizeModal from './ImageSizeModal';
+import ImageResizeOverlay from './ImageResizeOverlay';
 import SlashMenu from './SlashMenu';
 import TableToolbar from './TableToolbar';
 import MarkdownEditor from './MarkdownEditor';
@@ -174,6 +178,91 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     }
   };
 
+  // Image insert flow (P3 task 4, R23): ONE modal chain for the entry points
+  // — the slash /image item plants an editor-storage flag that the
+  // transaction tick re-renders and reads here (a suggestion callback cannot
+  // render into React — the /table pattern), and the Extra-dropdown button
+  // lands with T6 through the same state. Stage 1 = PromptModal ("Add
+  // Image") collects the URL; stage 2 = ImageSizeModal (live preview) sizes
+  // it; Apply deletes the /query range (slash origin) and insertImage's.
+  // Cancel/Escape/backdrop at any stage inserts nothing.
+  const [imageSizing, setImageSizing] = useState<{ src: string; range: Range | null } | null>(null);
+  const imageModalFlag = editor
+    ? ((editor.storage.imageModal ?? undefined) as ImageModalStorage | undefined)
+    : undefined;
+  const isImagePromptOpen = !!imageModalFlag?.open;
+
+  const clearImageFlag = () => {
+    if (!editor || !imageModalFlag?.open) return;
+    editor.storage.imageModal = { open: false, range: null };
+    try {
+      editor.view.dispatch(editor.state.tr.setMeta('imageModal', Date.now()));
+    } catch { /* view tearing down: nothing left to notify */ }
+  };
+
+  const confirmImageUrl = (url: string) => {
+    const range = imageModalFlag?.range ?? null;
+    clearImageFlag();
+    if (!url) return;
+    setImageSizing({ src: url, range });
+  };
+
+  const insertImageFromModal = (width: number | null, height: number | null) => {
+    if (!editor || !imageSizing) return;
+    const options: { src: string; width?: number; height?: number } = { src: imageSizing.src };
+    if (width != null && width > 0) options.width = width;
+    if (height != null && height > 0) options.height = height;
+    if (imageSizing.range) {
+      editor.chain().focus().deleteRange(imageSizing.range).insertImage(options).run();
+    } else {
+      editor.chain().focus().insertImage(options).run();
+    }
+  };
+
+  // Selection-driven resize overlay (P3 task 4 — the portal useImageResize
+  // hook collapses into this transaction-tick read): mounted while a
+  // NodeSelection sits on an image node; px dims come off the node's attrs
+  // (parsed from the style attr at parse time); Apply dispatches
+  // setNodeMarkup (applyImageSize) and parks the caret after the image so
+  // the selection leaves the node (portal's closeOverlay). Drag geometry is
+  // ship-time QA — jsdom has no rects (coordsAtPos falls back to the default
+  // corner, like slashCoords above).
+  const selectedImage = (() => {
+    if (!editor || isMarkdownMode) return null;
+    const sel = editor.state.selection;
+    if (!(sel instanceof NodeSelection)) return null;
+    if (sel.node.type.name !== 'image') return null;
+    let top = 0;
+    let left = 0;
+    try {
+      const c = editor.view.coordsAtPos(sel.from);
+      top = c.bottom + 8;
+      left = c.left;
+    } catch { /* headless/jsdom: default corner */ }
+    return {
+      pos: sel.from,
+      src: (sel.node.attrs.src as string) ?? '',
+      width: sel.node.attrs.width as number | null,
+      height: sel.node.attrs.height as number | null,
+      top,
+      left,
+    };
+  })();
+
+  const closeImageOverlay = () => {
+    if (!editor || !selectedImage) return;
+    try {
+      editor.commands.setTextSelection(Math.min(selectedImage.pos + 1, editor.state.doc.content.size));
+    } catch { /* headless/jsdom */ }
+  };
+
+  const applyImageSizeFromOverlay = (width: number | null, height: number | null) => {
+    if (!editor || !selectedImage) return;
+    if (applyImageSize(editor, selectedImage.src, width, height)) {
+      closeImageOverlay();
+    }
+  };
+
   // Selection bubble menu (portal parity P1): visible while a non-empty text
   // selection exists outside a code block; hidden on Escape, an empty
   // selection, or after a bubble button applies (onClose).
@@ -294,6 +383,22 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         />
       )}
       {editor && !isMarkdownMode && <TableToolbar editor={editor} visible={tableVisible} />}
+      {/* Selection-driven resize overlay (P3 task 4, useImageResize port):
+          mounted while a NodeSelection sits on an image node; Apply
+          dispatches the setNodeMarkup resize and parks the caret after the
+          image. Position falls back to the default corner headless. */}
+      {editor && !isMarkdownMode && selectedImage && (
+        <ImageResizeOverlay
+          visible
+          src={selectedImage.src}
+          currentWidth={selectedImage.width}
+          currentHeight={selectedImage.height}
+          top={selectedImage.top}
+          left={selectedImage.left}
+          onApply={applyImageSizeFromOverlay}
+          onClose={closeImageOverlay}
+        />
+      )}
       {!isMarkdownMode && slashMenu}
       {/* Link modal (P2 task 4): the single prompt surface for both Link
           buttons. P1 link logic verbatim, with R17 replacing the second
@@ -321,6 +426,26 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         isOpen={isTableModalOpen}
         onClose={closeTableModal}
         onInsert={insertTableFromModal}
+      />
+      {/* Image insert flow (P3 task 4, R23): stage 1 = PromptModal ("Add
+          Image" / "Enter image URL") — the single URL surface for the /image
+          slash item (the Extra-dropdown button lands with T6 through the same
+          state); stage 2 = ImageSizeModal with the live preview — Apply
+          deletes the /query range and insertImage's; Cancel/Escape/backdrop
+          at any stage inserts nothing. */}
+      <PromptModal
+        isOpen={isImagePromptOpen}
+        onClose={clearImageFlag}
+        onConfirm={confirmImageUrl}
+        title="Add Image"
+        message="Enter image URL"
+        placeholder="https://example.com/image.jpg"
+      />
+      <ImageSizeModal
+        isOpen={!!imageSizing}
+        onClose={() => setImageSizing(null)}
+        onConfirm={insertImageFromModal}
+        imageUrl={imageSizing?.src}
       />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}

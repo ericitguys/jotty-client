@@ -84,6 +84,24 @@ export const SLASH_ITEMS: SlashItem[] = [
       } catch { /* view tearing down: nothing left to notify */ }
     },
   },
+  {
+    id: 'image',
+    title: 'Image',
+    hint: 'Insert an image',
+    command: ({ editor, range }) => {
+      // P3 task 4 (R23): the /image item opens the shared insert flow instead
+      // of prompting — PromptModal ("Add Image") → ImageSizeModal. Same
+      // storage-flag + meta-tick pattern as the /table item above (the
+      // suggestion plugin cannot render into React; the range rides along
+      // and the Apply step deletes it before insertImage).
+      editor.storage.imageModal = { open: true, range };
+      try {
+        if (!editor.isDestroyed) {
+          editor.view.dispatch(editor.state.tr.setMeta('imageModal', Date.now()));
+        }
+      } catch { /* view tearing down: nothing left to notify */ }
+    },
+  },
 ];
 
 // Case-insensitive substring filter on the item title.
@@ -115,6 +133,18 @@ export interface SlashCommandsStorage {
 // it and mounts <TableInsertModal> (the suggestion plugin cannot render into
 // React — the same mirror-and-tick pattern the slash popup itself uses).
 export interface TableModalStorage {
+  open: boolean;
+  range: Range | null;
+}
+
+// Image-insert modal request (P3 task 4, R23): the slash /Image item plants
+// this flag under editor.storage.imageModal (carrying the /query range that
+// the Apply step deletes before insertImage) and pings a meta transaction;
+// NoteEditor's transaction tick re-renders, re-reads it and mounts the
+// PromptModal → ImageSizeModal chain (no native prompt dialog — the same
+// mirror-and-tick
+// pattern as the /table item above).
+export interface ImageModalStorage {
   open: boolean;
   range: Range | null;
 }

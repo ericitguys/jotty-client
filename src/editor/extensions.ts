@@ -24,6 +24,7 @@ import {
   FileAttachmentExtension,
   toggleDetails,
 } from './extensions/rich-blocks';
+import { JottyImage } from './extensions/image';
 import { FontFamily, Abbreviation, Kbd } from './extensions/inline-marks';
 
 export { toggleDetails };
@@ -116,6 +117,9 @@ export function noteEditorExtensions() {
     ExcalidrawExtension,
     DetailsExtension,
     CalloutExtension,
+    // P3 task 4 (portal editorConfig.ts:149-169): URL-only image node with
+    // the px sizing attrs (R18; inline: false is the stock default — block).
+    JottyImage.configure({ inline: false }),
     FileAttachmentExtension.configure({
       HTMLAttributes: {
         class: 'file-attachment',

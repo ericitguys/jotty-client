@@ -75,14 +75,19 @@ export const createTurndownService = (): TurndownService => {
   });
 
   // Image: sized (non-zero width/height) → inline <img> with px style; unsized → link (portal :276-306).
+  // P3 task 4: the editor's image node serializes size through the STYLE
+  // attribute (extension attrs width/height → style="width: Npx; height:
+  // Npx"), so after the legacy width/height attrs the rule falls back to
+  // parsing the px decls out of the style attr.
   service.addRule('image', {
     filter: (node) => node.nodeName === 'IMG',
     replacement: (_content, node) => {
       const element = node as HTMLElement;
       const src = element.getAttribute('src');
       const alt = element.getAttribute('alt') || '';
-      const width = element.getAttribute('width');
-      const height = element.getAttribute('height');
+      const styleAttr = element.getAttribute('style') || '';
+      const width = element.getAttribute('width') || styleAttr.match(/width:\s*(\d+)px/)?.[1] || '';
+      const height = element.getAttribute('height') || styleAttr.match(/height:\s*(\d+)px/)?.[1] || '';
       if (!src) return '';
       if (
         (width && width !== '0' && width.trim() !== '') ||

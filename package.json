@@ -15,6 +15,7 @@
     "@tiptap/extension-code-block-lowlight": "^2.27.3",
     "@tiptap/extension-color": "^2.27.3",
     "@tiptap/extension-highlight": "^2.27.3",
+    "@tiptap/extension-image": "^2.27.3",
     "@tiptap/extension-link": "^2.10.0",
     "@tiptap/extension-subscript": "^2.27.3",
     "@tiptap/extension-superscript": "^2.27.3",
