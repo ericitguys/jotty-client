@@ -209,3 +209,30 @@ describe('createDrawioProtocolHandler (R22 postMessage protocol, pure parts)', (
     expect(handler.isOriginAllowed('https://evil.example.com')).toBe(false);
   });
 });
+
+// --- P3 task 5 (portal UMR a-override :213-216 parity): attachment cards ---
+
+describe('enhanceDiagramFragment — file-attachment link cards', () => {
+  const previewHtml =
+    '<div class="md-preview"><p><a href="https://x/f.pdf">📎 f.pdf</a><a href="https://x/v.mp4">🎥 v.mp4</a><a href="https://x/other">plain link</a><a>📎 no href</a></p></div>';
+
+  it('classes attachment-prefixed links; leaves plain/href-less links untouched', async () => {
+    document.body.innerHTML = previewHtml;
+    const container = document.querySelector('.md-preview') as HTMLElement;
+    await enhanceDiagramFragment(container, {});
+    const links = container.querySelectorAll('a');
+    expect(links[0]?.classList.contains('file-attachment-link')).toBe(true);
+    expect(links[1]?.classList.contains('file-attachment-link')).toBe(true);
+    expect(links[2]?.classList.contains('file-attachment-link')).toBe(false);
+    // no href → not an attachment (portal checks `childText.startsWith(...) && href`)
+    expect(links[3]?.classList.contains('file-attachment-link')).toBe(false);
+  });
+
+  it('is idempotent — a second walk keeps exactly the two cards', async () => {
+    document.body.innerHTML = previewHtml;
+    const container = document.querySelector('.md-preview') as HTMLElement;
+    await enhanceDiagramFragment(container, {});
+    await enhanceDiagramFragment(container, {});
+    expect(container.querySelectorAll('a.file-attachment-link')).toHaveLength(2);
+  });
+});

@@ -1,10 +1,10 @@
-import { Node, mergeAttributes } from '@tiptap/core';
+import { Node, InputRule, mergeAttributes } from '@tiptap/core';
 import type { Editor } from '@tiptap/core';
 
 // P3 rich-block nodes (portal-exact shapes, NodeViews deferred per R21):
-// details (collapsible), callout, fileAttachment. InputRules for the
-// 📎/🎥/![img] parse-back ride T5 per the plan — this file ships the
-// node attrs/parseHTML/renderHTML + insert/toggle commands only.
+// details (collapsible), callout, fileAttachment. The fileAttachment
+// 📎/🎥/![img] input rules + the R18 URL sniff landed with T5 (below);
+// this file ships the node attrs/parseHTML/renderHTML + insert commands.
 
 export type CalloutType = 'info' | 'warning' | 'success' | 'danger';
 
@@ -246,10 +246,64 @@ export const CalloutExtension = Node.create({
 });
 
 // --- fileAttachment (portal FileAttachment/FileAttachmentExtension.tsx,
-// minus NodeView and InputRules — the 📎/🎥/![img] input rules ride T5) ---
+// minus NodeView — the 📎/🎥/![img] input rules land with T5) ---
 
 export interface FileAttachmentOptions {
   HTMLAttributes: Record<string, unknown>;
+}
+
+// --- R18 type/fileName sniff (portal /api/ prefixes + desktop extension
+// sniff; portal FileAttachmentExtension.tsx:151 mimeType constants) ---
+
+export interface SniffedFileAttachment {
+  url: string;
+  fileName: string;
+  mimeType: string;
+  type: 'image' | 'video' | 'file';
+}
+
+const SNIFF_MIME: Record<SniffedFileAttachment['type'], string> = {
+  image: 'image/jpeg',
+  video: 'video/mp4',
+  file: 'application/octet-stream',
+};
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+const VIDEO_EXT = /\.(mp4|webm)$/i;
+
+/**
+ * R18 sniff from the URL path. Portal-served URLs keep the portal sniff
+ * (`/api/image/` → image, `/api/video/` → video — round-tripped
+ * portal-authored attachments stay correct); any other URL sniffs by path
+ * extension; everything else is a generic file. The fileName is the last
+ * percent-decoded path segment (query/hash stripped), 'attachment' when the
+ * URL has none. Malformed percent-escapes keep the raw segment (portal's
+ * empty catch).
+ */
+export function sniffFileAttachment(url: string): SniffedFileAttachment {
+  const path = url.split(/[?#]/)[0];
+  let last = path.slice(path.lastIndexOf('/') + 1);
+  try {
+    last = decodeURIComponent(last);
+  } catch {
+    // Portal-exact: undecodable segment keeps the raw form.
+  }
+  let type: SniffedFileAttachment['type'] = 'file';
+  if (url.includes('/api/image/')) {
+    type = 'image';
+  } else if (url.includes('/api/video/')) {
+    type = 'video';
+  } else if (IMAGE_EXT.test(last)) {
+    type = 'image';
+  } else if (VIDEO_EXT.test(last)) {
+    type = 'video';
+  }
+  return {
+    url,
+    fileName: last || 'attachment',
+    mimeType: SNIFF_MIME[type],
+    type,
+  };
 }
 
 export const FileAttachmentExtension = Node.create<FileAttachmentOptions>({
@@ -350,6 +404,63 @@ export const FileAttachmentExtension = Node.create<FileAttachmentOptions>({
         HTMLAttributes,
       ),
       `[📎 ${node.attrs.fileName}](${node.attrs.url})`,
+    ];
+  },
+
+  // Typed parse-back (portal FileAttachmentExtension.tsx:137-173, plus the
+  // plan's ![name](url) form). The typed label is the fileName; type and
+  // mimeType come from the R18 sniff (portal /api/ prefixes first for
+  // round-tripped portal URLs, then the desktop extension sniff). The
+  // regexes are portal-exact — including the \s+ gap after the emoji.
+  addInputRules() {
+    return [
+      new InputRule({
+        find: /\[📎\s+([^\]]+)\]\(([^)]+)\)/g,
+        handler: ({ match, commands }) => {
+          const [, fileName, url] = match;
+          const sniffed = sniffFileAttachment(url);
+          commands.insertContent({
+            type: this.name,
+            attrs: {
+              url,
+              fileName,
+              mimeType: sniffed.mimeType,
+              type: sniffed.type,
+            },
+          });
+        },
+      }),
+      new InputRule({
+        find: /\[🎥\s+([^\]]+)\]\(([^)]+)\)/g,
+        handler: ({ match, commands }) => {
+          const [, fileName, url] = match;
+          commands.insertContent({
+            type: this.name,
+            attrs: {
+              url,
+              fileName,
+              mimeType: 'video/mp4',
+              type: 'video',
+            },
+          });
+        },
+      }),
+      new InputRule({
+        find: /!\[([^\]]+)\]\(([^)]+)\)/g,
+        handler: ({ match, commands }) => {
+          const [, fileName, url] = match;
+          const sniffed = sniffFileAttachment(url);
+          commands.insertContent({
+            type: this.name,
+            attrs: {
+              url,
+              fileName,
+              mimeType: sniffed.mimeType,
+              type: sniffed.type,
+            },
+          });
+        },
+      }),
     ];
   },
 

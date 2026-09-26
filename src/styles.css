@@ -474,6 +474,26 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .md-preview { min-height: 55vh; padding: 4px 2px; line-height: 1.6; }
 #note-editor .md-preview h1, #note-editor .md-preview h2, #note-editor .md-preview h3 { color: var(--accent-strong-text); margin: 0.7em 0 0.3em; }
 #note-editor .md-preview a { color: var(--accent); }
+/* File/video attachment link cards (P3 task 5 — portal UnifiedMarkdownRenderer
+   a-override :213-216 parity: [📎 name](url) / [🎥 name](url) links render as
+   attachment cards; the class is applied by the preview walk). */
+#note-editor .md-preview a.file-attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  padding: 6px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-weight: 500;
+  text-decoration: none;
+}
+#note-editor .md-preview a.file-attachment-link:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
 #note-editor .md-preview blockquote { border-left: 3px solid var(--accent); margin: 0.5em 0; padding: 2px 12px; color: var(--muted); }
 #note-editor .md-preview pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 #note-editor .md-preview code { background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; font-size: 13px; }

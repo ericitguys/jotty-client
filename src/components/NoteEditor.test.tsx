@@ -210,4 +210,18 @@ describe('NoteEditor', () => {
     });
     await waitFor(() => expect(screen.queryByLabelText('Rows')).toBeNull()); // closes after insert
   });
+
+  // P3 task 5 (R18): the file-attachment insert surface is the shared
+  // "Attachment URL" PromptModal, reachable once a surface plants the
+  // fileModal storage flag (the /file slash item + Extra-dropdown File
+  // button land with T6). jsdom cannot reach the live editor instance to
+  // plant the flag (the /table //image storage-open-effect gap class), so
+  // this fence pins the R18 surface name + the closed-by-default state;
+  // the confirm→sniff→setFileAttachment chain is covered headlessly in
+  // p3-extensions.test.ts.
+  it('keeps the Attachment URL prompt closed until the fileModal flag is planted (T6)', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
+    expect(screen.queryByRole('dialog', { name: 'Attachment URL' })).toBeNull();
+  });
 });

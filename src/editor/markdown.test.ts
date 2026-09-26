@@ -260,4 +260,21 @@ describe('P2-gap mark serialization fix (portal custom-html-utils.tsx:11-48)', (
     const mark = json.content?.[0]?.content?.[0]?.marks?.find((m) => m.type === 'highlight');
     expect(mark?.attrs?.color).toBe('rgb(255, 0, 0)');
   });
+
+  // --- P3 task 5: fileAttachment persisted link forms are md-stable ---
+  it('fileAttachment link forms are markdown-stable (md → html → md)', () => {
+    // file/video links keep their exact link text; the image form survives
+    // through the unsized-image link (the fileAttachment-image persistence
+    // shape, portal :233-254).
+    const forms = [
+      { md: '[📎 f.pdf](https://x/f.pdf)', marker: 'href="https://x/f.pdf"' },
+      { md: '[🎥 v.mp4](https://x/v.mp4)', marker: 'href="https://x/v.mp4"' },
+      { md: '![a.png](https://x/a.png)', marker: 'src="https://x/a.png"' },
+    ];
+    for (const form of forms) {
+      const html = convertMarkdownToHtml(form.md);
+      expect(html).toContain(form.marker);
+      expect(convertHtmlToMarkdown(html)).toContain(form.md);
+    }
+  });
 });

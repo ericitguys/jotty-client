@@ -8,7 +8,8 @@ import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
 import { applyImageSize } from '../editor/imageResize';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown';
-import type { ImageModalStorage, SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
+import type { FileModalStorage, ImageModalStorage, SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
+import { sniffFileAttachment } from '../editor/extensions/rich-blocks';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
 import PromptModal from './modals/PromptModal';
@@ -216,6 +217,40 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
       editor.chain().focus().deleteRange(imageSizing.range).insertImage(options).run();
     } else {
       editor.chain().focus().insertImage(options).run();
+    }
+  };
+
+  // File-attachment insert flow (P3 task 5, R18): URL-ONLY insert surface —
+  // no FileModal/upload exists (the server has no REST upload endpoint), so
+  // the single stage is this PromptModal ("Attachment URL"). The /file slash
+  // item (T6) plants the editor-storage flag that the transaction tick
+  // re-renders and reads here (the /table //image pattern; T6's Extra-
+  // dropdown File button goes through the same flag). Confirm sniffs the
+  // attachment type from the URL (portal /api/ prefixes, then extension)
+  // and inserts the fileAttachment node; Cancel/Escape/backdrop inserts
+  // nothing.
+  const fileModalFlag = editor
+    ? ((editor.storage.fileModal ?? undefined) as FileModalStorage | undefined)
+    : undefined;
+  const isFilePromptOpen = !!fileModalFlag?.open;
+
+  const clearFileFlag = () => {
+    if (!editor || !fileModalFlag?.open) return;
+    editor.storage.fileModal = { open: false, range: null };
+    try {
+      editor.view.dispatch(editor.state.tr.setMeta('fileModal', Date.now()));
+    } catch { /* view tearing down: nothing left to notify */ }
+  };
+
+  const confirmFileUrl = (url: string) => {
+    const range = fileModalFlag?.range ?? null;
+    clearFileFlag();
+    if (!editor || !url) return;
+    const sniffed = sniffFileAttachment(url);
+    if (range) {
+      editor.chain().focus().deleteRange(range).setFileAttachment(sniffed).run();
+    } else {
+      editor.chain().focus().setFileAttachment(sniffed).run();
     }
   };
 
@@ -446,6 +481,19 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         onClose={() => setImageSizing(null)}
         onConfirm={insertImageFromModal}
         imageUrl={imageSizing?.src}
+      />
+      {/* File-attachment insert flow (P3 task 5, R18): URL-ONLY — the single
+          "Attachment URL" PromptModal; the /file slash item and the
+          Extra-dropdown File button (T6) plant the fileModal flag this modal
+          reads. Confirm sniffs the type from the URL and setFileAttachment's;
+          Cancel/Escape/backdrop inserts nothing. */}
+      <PromptModal
+        isOpen={isFilePromptOpen}
+        onClose={clearFileFlag}
+        onConfirm={confirmFileUrl}
+        title="Attachment URL"
+        message="Enter file URL"
+        placeholder="https://example.com/file.pdf"
       />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}

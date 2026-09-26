@@ -149,6 +149,19 @@ export interface ImageModalStorage {
   range: Range | null;
 }
 
+// File-attachment insert request (P3 task 5, R18): the /file slash item and
+// the Extra-dropdown File button (T6) plant this flag under
+// editor.storage.fileModal (carrying the /query range that the confirm step
+// deletes before setFileAttachment) and ping a meta transaction;
+// NoteEditor's transaction tick re-renders, re-reads it and mounts the
+// PromptModal "Attachment URL" (URL-ONLY — no FileModal/upload: the server
+// has no REST upload endpoint; the same mirror-and-tick pattern as the
+// /table and /image items above).
+export interface FileModalStorage {
+  open: boolean;
+  range: Range | null;
+}
+
 // Typing `/` at the start of a block opens the slash-commands menu
 // (@tiptap/suggestion under the hood; state mirrored to storage above).
 // Keyboard selection (arrows/Enter) is ship-time QA — Escape closes by

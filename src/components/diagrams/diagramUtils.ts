@@ -264,6 +264,20 @@ export const enhanceDiagramFragment = async (
       }
     }),
   );
+
+  // File/video attachment link cards (P3 task 5 — portal
+  // UnifiedMarkdownRenderer a-override :213-216 parity): markdown links
+  // whose text carries the 📎/🎥 attachment prefix (and an href) render as
+  // attachment cards via the `file-attachment-link` class (styles.css).
+  // classList.add is idempotent, so re-walks (re-renders, double-mounts)
+  // never double-apply. Links without an href are not attachments
+  // (portal: `childText.startsWith(...) && href`).
+  for (const link of Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
+    const text = link.textContent ?? '';
+    if (text.startsWith('📎 ') || text.startsWith('🎥 ')) {
+      link.classList.add('file-attachment-link');
+    }
+  }
 };
 
 // --- R22: draw.io embed postMessage protocol (pure, testable parts) ---

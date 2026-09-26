@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
 import {
   noteEditorExtensions,
@@ -13,6 +13,7 @@ import {
   DetailsExtension,
   CalloutExtension,
   FileAttachmentExtension,
+  sniffFileAttachment,
 } from './extensions/rich-blocks';
 import { FontFamily, Abbreviation, Kbd } from './extensions/inline-marks';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from './markdown';
@@ -420,5 +421,142 @@ describe('P3 inline marks (fontFamily / abbreviation / kbd)', () => {
     expect(markMatch).not.toBeNull();
     expect(markMatch?.[0]).toContain('background-color: rgb(255, 0, 0)');
     expect(markMatch?.[0].endsWith('>hl</mark>')).toBe(true);
+  });
+});
+
+// --- P3 task 5 (R18): FileAttachment URL insert + typed parse-back ---
+
+describe('P3 fileAttachment insert (R18 URL-only) + parse rules', () => {
+  const liveEditors: Editor[] = [];
+  function editorWithLive(content: string): Editor {
+    const ed = editorWith(content);
+    liveEditors.push(ed);
+    return ed;
+  }
+  afterEach(() => {
+    // T4 teardown hygiene: destroy live views so no DOMObserver timer
+    // outlives this describe's jsdom environment (inter-file flake class).
+    for (const ed of liveEditors.splice(0)) ed.destroy();
+  });
+
+  /**
+   * Drive the typed-input path exactly as ProseMirror does: the input-rules
+   * plugin advertises `handleTextInput`, and someProp invokes the first
+   * plugin prop that handles it (headless-safe — no DOM events needed).
+   * The typed text is NOT yet in the doc when the prop runs (mirroring real
+   * keystrokes — the default insertion is cancelled when a rule fires).
+   */
+  function typeText(editor: Editor, text: string): boolean {
+    const { from, to } = editor.state.selection;
+    // The prop's real signature carries a 5th `deflt` continuation (default
+    // insertion); the input-rules handler never calls it when a rule fires.
+    return (
+      editor.view.someProp(
+        'handleTextInput',
+        (f) => f(editor.view, from, to, text, () => editor.view.state.tr),
+      ) === true
+    );
+  }
+
+  it('sniffFileAttachment maps file extensions to attachment types', () => {
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp']) {
+      expect(sniffFileAttachment(`https://x/pic.${ext}`)?.type).toBe('image');
+    }
+    for (const ext of ['mp4', 'webm']) {
+      expect(sniffFileAttachment(`https://x/clip.${ext}`)?.type).toBe('video');
+    }
+    const other = sniffFileAttachment('https://x/file.pdf');
+    expect(other?.type).toBe('file');
+    expect(other?.mimeType).toBe('application/octet-stream');
+    expect(sniffFileAttachment('https://x/no-ext')?.type).toBe('file');
+    expect(sniffFileAttachment('https://x/A.PNG')?.type).toBe('image');
+  });
+
+  it('sniffFileAttachment keeps the portal /api/image|video/ prefix sniff', () => {
+    expect(sniffFileAttachment('https://host/api/image/u/pic')?.type).toBe('image');
+    expect(sniffFileAttachment('https://host/api/video/u/clip')?.type).toBe('video');
+    expect(sniffFileAttachment('https://host/api/file/u/doc')?.type).toBe('file');
+  });
+
+  it('sniffFileAttachment mirrors the portal mimeType constants', () => {
+    expect(sniffFileAttachment('https://x/a.png')?.mimeType).toBe('image/jpeg');
+    expect(sniffFileAttachment('https://x/v.mp4')?.mimeType).toBe('video/mp4');
+    expect(sniffFileAttachment('https://x/f.pdf')?.mimeType).toBe('application/octet-stream');
+  });
+
+  it('sniffFileAttachment derives fileName from the last decoded path segment (query/hash stripped)', () => {
+    expect(sniffFileAttachment('https://x/my%20file.pdf?token=1')?.fileName).toBe('my file.pdf');
+    expect(sniffFileAttachment('https://x/a.png#frag')?.fileName).toBe('a.png');
+    expect(sniffFileAttachment('https://x/')?.fileName).toBe('attachment');
+    expect(sniffFileAttachment('https://x/f.pdf')?.fileName).toBe('f.pdf');
+  });
+
+  it('typing [📎 name](url) parses back into a fileAttachment node (sniffed type)', () => {
+    const editor = editorWithLive('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    expect(typeText(editor, '[📎 f.pdf](https://x/f.pdf)')).toBe(true);
+    const attrs = firstNodeAttrs(editor, 'fileAttachment');
+    expect(attrs?.url).toBe('https://x/f.pdf');
+    expect(attrs?.fileName).toBe('f.pdf');
+    expect(attrs?.mimeType).toBe('application/octet-stream');
+    expect(attrs?.type).toBe('file');
+  });
+
+  it('typing [📎 name](image-url) sniffs image from the extension', () => {
+    const editor = editorWithLive('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    expect(typeText(editor, '[📎 a.png](https://x/a.png)')).toBe(true);
+    const attrs = firstNodeAttrs(editor, 'fileAttachment');
+    expect(attrs?.type).toBe('image');
+    expect(attrs?.mimeType).toBe('image/jpeg');
+    expect(attrs?.fileName).toBe('a.png');
+  });
+
+  it('typing [🎥 name](url) parses back into a video attachment (portal-exact mime)', () => {
+    const editor = editorWithLive('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    expect(typeText(editor, '[🎥 v.mp4](https://x/v.mp4)')).toBe(true);
+    const attrs = firstNodeAttrs(editor, 'fileAttachment');
+    expect(attrs?.url).toBe('https://x/v.mp4');
+    expect(attrs?.fileName).toBe('v.mp4');
+    expect(attrs?.mimeType).toBe('video/mp4');
+    expect(attrs?.type).toBe('video');
+  });
+
+  it('typing ![name](url) parses back into an image attachment', () => {
+    const editor = editorWithLive('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    expect(typeText(editor, '![a.png](https://x/a.png)')).toBe(true);
+    const attrs = firstNodeAttrs(editor, 'fileAttachment');
+    expect(attrs?.type).toBe('image');
+    expect(attrs?.fileName).toBe('a.png');
+  });
+
+  it('requires the portal \\s+ gap after the emoji (📎name does not match)', () => {
+    const editor = editorWithLive('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    expect(typeText(editor, '[📎f.pdf](https://x/f.pdf)')).toBe(false);
+    expect(firstNodeAttrs(editor, 'fileAttachment')).toBeUndefined();
+  });
+
+  it('image/video attachments round-trip the persisted link forms through the extension', () => {
+    // Fences for the T1 serialization legs at the node level (the file-type
+    // leg is pinned by the T2 test above; these cover the other two forms).
+    const image = editorWithLive('<p>x</p>');
+    image.commands.setFileAttachment({
+      url: 'https://x/a.png',
+      fileName: 'a.png',
+      mimeType: 'image/jpeg',
+      type: 'image',
+    });
+    expect(convertHtmlToMarkdown(image.getHTML())).toContain('![a.png](https://x/a.png)');
+    const video = editorWithLive('<p>x</p>');
+    video.commands.setFileAttachment({
+      url: 'https://x/v.mp4',
+      fileName: 'v.mp4',
+      mimeType: 'video/mp4',
+      type: 'video',
+    });
+    expect(convertHtmlToMarkdown(video.getHTML())).toContain('[🎥 v.mp4](https://x/v.mp4)');
   });
 });
