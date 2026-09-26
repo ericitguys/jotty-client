@@ -889,7 +889,9 @@ fn best_effort_set_title(app: &tauri::AppHandle, name: &str) {
         use tauri::Manager as _;
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.set_title(name);
-            #[cfg(target_os = "linux")]
+            // Android is also target_os=linux — the gtk block must exclude it
+            // (the dep itself is target-gated out of android builds).
+            #[cfg(all(target_os = "linux", not(target_os = "android")))]
             if let Ok(gtk_win) = win.gtk_window() {
                 use gtk::prelude::*;
                 if let Some(titlebar) = gtk_win.titlebar() {
