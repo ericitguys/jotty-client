@@ -1,6 +1,16 @@
 import { Node, mergeAttributes } from '@tiptap/core';
 import { ReactNodeViewRenderer } from '@tiptap/react';
 
+// Portal-exact default mermaid template (portal DiagramsDropdown.tsx:27-32 +
+// SlashCommands.tsx Mermaid item) — shared by the toolbar dropdown, the
+// /mermaid slash item, and the markdown-mode textarea insert.
+export const DEFAULT_MERMAID = `graph TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Option 1]
+    B -->|No| D[Option 2]
+    C --> E[End]
+    D --> E`;
+
 import {
   DrawioNodeView,
   ExcalidrawNodeView,

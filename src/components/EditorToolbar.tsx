@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
 import type { Editor } from '@tiptap/core';
 import Dropdown, { type DropdownOption } from './Dropdown';
+import DiagramsDropdown from './DiagramsDropdown';
+import FontFamilyDropdown from './FontFamilyDropdown';
+import ExtraItemsDropdown from './ExtraItemsDropdown';
 import { applyCodeLanguage, CODE_LANGS, findActiveCodeLanguage } from '../editor/extensions';
 
 // R4 (plan): fixed 8-preset text-color palette — no picker wheel in P1.
 // The hex IS the option id, so picking applies `style="color: <hex>"` directly.
+// P3 task 6 polish: the portal ColorPicker PRESET_COLORS opens with the
+// settings-default reset (portal BubbleMenu.tsx:117-119 branches empty
+// → unsetColor) — mirrored here as a non-hex sentinel FIRST option
+// (never a color value, so the resting trigger keeps its placeholder).
 const TEXT_COLORS: DropdownOption[] = [
+  { id: 'default', name: 'Default' },
   { id: '#ff5f57', name: 'Red', swatch: { bg: '#ff5f57', primary: 'var(--border)' } },
   { id: '#febc2e', name: 'Yellow', swatch: { bg: '#febc2e', primary: 'var(--border)' } },
   { id: '#28c840', name: 'Green', swatch: { bg: '#28c840', primary: 'var(--border)' } },
@@ -34,7 +42,7 @@ function TBtn({ label, onClick, active, disabled, children }: {
   );
 }
 
-export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview, onLinkRequest, onTableInsertRequest }: {
+export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview, onLinkRequest, onTableInsertRequest, onMarkdownChange, onAbbreviationRequest }: {
   editor: Editor | null;
   // Markdown mode (P2 task 3): when onToggleMode is provided a segmented
   // [Visual | Markdown] control renders at the LEFT of the toolbar (portal
@@ -54,6 +62,15 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
   // TableInsertModal via onTableInsertRequest — the P1 fixed 3x3 insert is
   // gone (both table entry points ask rows/cols through the shared modal).
   onTableInsertRequest?: () => void;
+  // P3 task 6: markdown-mode textarea inserts (the Diagrams dropdown's
+  // Mermaid item). Routes through NoteEditor's setMarkdownDraft + autosave —
+  // the same path MarkdownEditor's onChange uses. Undefined in visual-only
+  // mounts (tests) → the md-mode mermaid item no-ops.
+  onMarkdownChange?: (md: string) => void;
+  // P3 task 6 (R23): the Extra-dropdown Abbreviation button opens
+  // NoteEditor's PromptModal ("Abbreviation") through this state — the
+  // browser's native prompt dialog stays eradicated.
+  onAbbreviationRequest?: () => void;
 }) {
   // Active-state styling tracks the live document: re-render on every editor
   // transaction (the tick pattern NoteEditor also keeps for editor-driven UI).
@@ -116,7 +133,13 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
       <Dropdown
         value={activeColor}
         options={TEXT_COLORS}
-        onChange={(id) => { if (editor) chain().setColor(id).run(); }}
+        onChange={(id) => {
+          if (!editor) return;
+          // P3 task 6: the Default sentinel resets (portal BubbleMenu
+          // :117-119 — empty → unsetColor).
+          if (id === 'default') chain().unsetColor().run();
+          else chain().setColor(id).run();
+        }}
         placeholder="Text color"
         ariaLabel="Text color"
         className="edt-color-dd"
@@ -124,6 +147,16 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
         disabled={dis || md}
       />
       <TBtn label="Highlight" active={editor?.isActive('highlight')} disabled={dis || md} onClick={() => chain().toggleHighlight().run()}><mark>H</mark></TBtn>
+      {/* FontFamily (P3 task 6): its own cluster with the inline marks
+          (portal TiptapToolbar :462-468 — rendered only in visual mode; font
+          spans have no markdown shape). The trigger itself carries the
+          portal text-icon + caret parity. */}
+      {!md && (
+        <>
+          <span className="edt-sep" />
+          <FontFamilyDropdown editor={editor} disabled={dis} />
+        </>
+      )}
       <span className="edt-sep" />
       <TBtn label="Heading" active={editor?.isActive('heading', { level: 2 })} disabled={dis || md} onClick={() => chain().toggleHeading({ level: 2 }).run()}><strong>H</strong></TBtn>
       <TBtn label="Bullet list" active={editor?.isActive('bulletList')} disabled={dis || md} onClick={() => chain().toggleBulletList().run()}>•≡</TBtn>
@@ -135,6 +168,30 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
           both table entry points ask rows/cols). The button still renders
           (and the toolbar tests still find it) when no handler is wired. */}
       <TBtn label="Table" disabled={dis || md} onClick={() => onTableInsertRequest?.()}>⊞</TBtn>
+      {/* Diagrams (P3 task 6): after the Table button (portal TiptapToolbar
+          order — CodeBlocks/Diagrams cluster). The trigger stays ENABLED in
+          markdown mode (portal parity: the Mermaid item textarea-inserts
+          there); draw.io / Excalidraw render disabled with the portal
+          "Rich mode only" hint (DiagramsDropdown :93-124). */}
+      <DiagramsDropdown
+        editor={editor}
+        markdownMode={md}
+        disabled={dis}
+        onMarkdownChange={onMarkdownChange}
+      />
+      {/* Extra items (P3 task 6): Image / File / Abbreviation / Collapsible
+          — the Table/Highlight/Sub/Superset items shipped as toolbar buttons
+          (P1/P2) and are OMITTED. The trigger stays ENABLED in markdown mode
+          while the TipTap-driven items render disabled there (T3 pattern);
+          Image/File plant the existing imageModal/fileModal storage flags
+          (T4/T5 contracts, button origin = range null); Abbreviation opens
+          NoteEditor's PromptModal via onAbbreviationRequest (R23). */}
+      <ExtraItemsDropdown
+        editor={editor}
+        markdownMode={md}
+        disabled={dis}
+        onAbbreviationRequest={onAbbreviationRequest}
+      />
       <span className="edt-sep" />
       {/* Link (P2 task 4): opens NoteEditor's PromptModal via onLinkRequest —
           the P1 native-prompt placeholder is gone. The button still renders

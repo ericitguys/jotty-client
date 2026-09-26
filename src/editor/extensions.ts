@@ -17,7 +17,7 @@ import { common, createLowlight } from 'lowlight';
 import type { Editor } from '@tiptap/core';
 import type { DropdownOption } from '../components/Dropdown';
 import { SlashCommands } from './slashCommands';
-import { MermaidExtension, DrawioExtension, ExcalidrawExtension } from './extensions/diagrams';
+import { MermaidExtension, DrawioExtension, ExcalidrawExtension, DEFAULT_MERMAID } from './extensions/diagrams';
 import {
   DetailsExtension,
   CalloutExtension,
@@ -27,7 +27,7 @@ import {
 import { JottyImage } from './extensions/image';
 import { FontFamily, Abbreviation, Kbd } from './extensions/inline-marks';
 
-export { toggleDetails };
+export { toggleDetails, DEFAULT_MERMAID };
 
 // Code-block languages for the note editor (v0.15.4). lowlight's `common`
 // bundle is the same 37-language set highlight.js ships as its default —

@@ -1204,3 +1204,23 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   cursor: nwse-resize;
   touch-action: none;
 }
+
+/* ---------- P3 task 6 toolbar dropdowns (Diagrams / FontFamily / Extra) ---------- */
+/* Reuse the .jotty-dropdown shell; these add the glyph-row / search /    */
+/* scroll affordances (portal Tailwind parity, tokens only).              */
+.edt-dd { display: inline-flex; }
+.edt-dd .jotty-dropdown-button { padding: 0 6px; min-width: 28px; height: 28px; gap: 2px; font-size: 13px; }
+.edt-dd .jotty-dropdown-menu { right: auto; left: 0; min-width: 210px; max-height: 320px; }
+.edt-dd-item { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 12px; font-size: 13px; background: transparent; border: none; color: var(--fg); }
+.edt-dd-item:hover:not(:disabled), .edt-dd-item.active { background: var(--accent-soft); }
+.edt-dd-item:disabled { opacity: .45; cursor: default; }
+.edt-dd-glyph { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; flex: 0 0 auto; border-radius: 5px; }
+.edt-dd-item-text { display: flex; flex-direction: column; min-width: 0; }
+.edt-dd-title { font-weight: 600; }
+.edt-dd-desc { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.edt-dd-shortcut { margin-left: auto; color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.edt-dd-search { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.edt-dd-search input { width: 100%; padding: 5px 8px; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--fg); outline: none; }
+.edt-fonts { overflow-y: auto; }
+.edt-font-row { font-size: 13px; padding: 7px 12px; }
+.edt-dd-empty { padding: 14px 12px; text-align: center; color: var(--muted); font-size: 12px; }

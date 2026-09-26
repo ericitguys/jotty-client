@@ -143,6 +143,10 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   // and decides between setLink (selection) and insert-anchor (R17: the
   // anchor wraps the URL itself — single-URL modal, no second text prompt).
   const [linkRequest, setLinkRequest] = useState<{ hasSelection: boolean } | null>(null);
+  // P3 task 6 (R23): the Extra-dropdown Abbreviation button opens the
+  // NoteEditor-owned PromptModal below — the browser's native prompt stays
+  // eradicated; Confirm stamps setMark('abbreviation', { title }).
+  const [abbrevModalOpen, setAbbrevModalOpen] = useState(false);
   const openLinkRequest = () => {
     if (!editor) return;
     setLinkRequest({ hasSelection: !editor.state.selection.empty });
@@ -389,6 +393,13 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         onTogglePreview={() => setMdPreview((p) => !p)}
         onLinkRequest={openLinkRequest}
         onTableInsertRequest={() => setTableModalViaToolbar(true)}
+        // P3 task 6: the Diagrams dropdown's Mermaid item textarea-inserts in
+        // markdown mode — the SAME path MarkdownEditor's onChange uses below.
+        onMarkdownChange={(md) => {
+          setMarkdownDraft(md);
+          autosave.setValue({ title: metaRef.current.title, content: md, category: metaRef.current.category });
+        }}
+        onAbbreviationRequest={() => setAbbrevModalOpen(true)}
       />
       {/* Markdown mode (P2 task 3): the TipTap host stays mounted (the editor
           instance must stay alive) and is hidden via the `hidden` attribute;
@@ -494,6 +505,20 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         title="Attachment URL"
         message="Enter file URL"
         placeholder="https://example.com/file.pdf"
+      />
+      {/* Abbreviation insert (P3 task 6, R23 — portal ExtraItemsDropdown
+          :259-267): the Extra-dropdown Abbreviation button routes through
+          this NoteEditor-owned PromptModal; Confirm stamps the abbreviation
+          mark with the typed title (empty input inserts nothing). */}
+      <PromptModal
+        isOpen={abbrevModalOpen}
+        onClose={() => setAbbrevModalOpen(false)}
+        onConfirm={(title) => {
+          if (editor && title) editor.chain().focus().setMark('abbreviation', { title }).run();
+        }}
+        title="Abbreviation"
+        message="Enter abbreviation title (e.g., HyperText Markup Language)"
+        placeholder="HyperText Markup Language"
       />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}

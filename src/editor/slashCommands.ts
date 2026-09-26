@@ -2,6 +2,7 @@ import { Extension } from '@tiptap/core';
 import type { Editor, Range } from '@tiptap/core';
 import Suggestion from '@tiptap/suggestion';
 import type { SuggestionKeyDownProps, SuggestionProps } from '@tiptap/suggestion';
+import { DEFAULT_MERMAID } from './extensions/diagrams';
 
 // Context handed to a slash item's command: the editor plus the range
 // covering the `/query` text the suggestion plugin matched. Every item
@@ -11,9 +12,10 @@ export interface SlashCommandContext {
   range: Range;
 }
 
-// One slash-menu entry. The set mirrors upstream's visual-mode inserters
-// MINUS diagrams/callout/collapsible/image/file (plan ruling R3 — those are
-// P3; the 8 titles in extensions.test.ts are the canonical P1 set).
+// One slash-menu entry. The set mirrors the portal SlashCommands.tsx items —
+// the 8 canonical P1 titles, /image (T4, R23), and the P3 task 6 completers
+// (file / collapsible / callout / mermaid / draw.io / excalidraw) with the
+// portal labels.
 export interface SlashItem {
   id: string;
   title: string;
@@ -101,6 +103,76 @@ export const SLASH_ITEMS: SlashItem[] = [
         }
       } catch { /* view tearing down: nothing left to notify */ }
     },
+  },
+  {
+    id: 'file',
+    title: 'File',
+    hint: 'Insert a file attachment',
+    command: ({ editor, range }) => {
+      // P3 task 6 (R18/R23): the /file item plants the FileModalStorage
+      // flag — the exact /table + /image mirror-and-tick pattern;
+      // NoteEditor's confirm deletes the /query range before
+      // setFileAttachment (no native prompt: the URL arrives through the
+      // "Attachment URL" PromptModal — the button-origin Extra-dropdown
+      // File item plants range: null the same way).
+      editor.storage.fileModal = { open: true, range };
+      try {
+        if (!editor.isDestroyed) {
+          editor.view.dispatch(editor.state.tr.setMeta('fileModal', Date.now()));
+        }
+      } catch { /* view tearing down: nothing left to notify */ }
+    },
+  },
+  {
+    id: 'collapsible',
+    title: 'Collapsible',
+    hint: 'Create a collapsible section',
+    command: ({ editor, range }) => {
+      // Portal SlashCommands.tsx:136-150: read the live selection (the
+      // summary candidate) BEFORE the /query range is deleted. Portal runs
+      // deleteRange + toggleWrap in ONE chain; desktop splits them into two
+      // dispatches — inside one composed transaction the wrap steps are
+      // computed against the pre-delete geometry and map back through the
+      // deleted range to an EMPTY block range (probed: the wrap silently
+      // no-ops), while the separate dispatch sees the post-delete doc.
+      // The observable contract is unchanged: /query deleted, then wrapped.
+      const { from, to, empty } = editor.state.selection;
+      const selectedText = editor.state.doc.textBetween(from, to, ' ');
+      editor.chain().focus().deleteRange(range).run();
+      editor
+        .chain()
+        .focus()
+        .toggleWrap('details', !empty ? { summary: selectedText } : undefined)
+        .run();
+    },
+  },
+  {
+    id: 'callout',
+    title: 'Callout',
+    hint: 'Create a callout block',
+    // Portal :151-158 — the info type; the type change lives in the
+    // callout's own icon menu (Info/Warning/Success/Danger), not at
+    // insert time.
+    command: ({ editor, range }) => editor.chain().focus().deleteRange(range).setCallout('info').run(),
+  },
+  {
+    id: 'mermaid-diagram',
+    title: 'Mermaid Diagram',
+    hint: 'Create a Mermaid diagram',
+    command: ({ editor, range }) =>
+      editor.chain().focus().deleteRange(range).setMermaid(DEFAULT_MERMAID).run(),
+  },
+  {
+    id: 'drawio-diagram',
+    title: 'Draw.io Diagram',
+    hint: 'Create a visual diagram',
+    command: ({ editor, range }) => editor.chain().focus().deleteRange(range).insertDrawIo().run(),
+  },
+  {
+    id: 'excalidraw-diagram',
+    title: 'Excalidraw Diagram',
+    hint: 'Create an Excalidraw diagram',
+    command: ({ editor, range }) => editor.chain().focus().deleteRange(range).insertExcalidraw().run(),
   },
 ];
 

@@ -6,6 +6,8 @@ import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import { noteEditorExtensions, CODE_LANGS, findActiveCodeLanguage, applyCodeLanguage } from './extensions';
 import { SLASH_ITEMS } from './slashCommands';
+import { DEFAULT_MERMAID } from './extensions/diagrams';
+import { convertHtmlToMarkdown, convertMarkdownToHtml } from './markdown';
 
 function editorWith(content: string): Editor {
   return new Editor({
@@ -134,5 +136,114 @@ describe('slash commands', () => {
     expect(flag?.open).toBe(true);
     expect(flag?.range).toEqual({ from: 1, to: 2 });
     expect(editor.getHTML()).not.toContain('<table');
+  });
+});
+
+// --- P3 task 6: the portal-labeled insert items (/image landed with T4;
+// file/collapsible/callout/mermaid/drawio/excalidraw land here) ---
+
+describe('P3 slash additions (file / collapsible / callout / diagrams)', () => {
+  it('offers the portal-labeled P3 items alongside the canonical P1 set', () => {
+    const titles = SLASH_ITEMS.map((i) => i.title);
+    for (const want of ['Image', 'File', 'Collapsible', 'Callout', 'Mermaid Diagram', 'Draw.io Diagram', 'Excalidraw Diagram']) {
+      expect(titles).toContain(want);
+    }
+  });
+
+  it('the File item plants the fileModal storage flag (the T5 contract) instead of inserting', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    const item = SLASH_ITEMS.find((i) => i.title === 'File')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    const flag = editor.storage.fileModal as { open: boolean; range: unknown } | undefined;
+    expect(flag?.open).toBe(true);
+    // slash origin — the /query range rides along; NoteEditor's confirm
+    // deletes it before setFileAttachment (the exact /table + /image pattern).
+    expect(flag?.range).toEqual({ from: 1, to: 2 });
+    expect(editor.getHTML()).not.toContain('data-file-attachment');
+  });
+
+  it('the Collapsible item deletes the /query range and wraps, summary from the selection', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection({ from: 1, to: 2 });
+    const item = SLASH_ITEMS.find((i) => i.title === 'Collapsible')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    const html = editor.getHTML();
+    // T2 shape: the summary serializes BOTH as the details attr and the
+    // summary child element.
+    expect(html).toContain('<details');
+    expect(html).toContain('<summary>x</summary>');
+  });
+
+  it('the Callout item inserts an info callout (portal SlashCommands.tsx:151-158)', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    const item = SLASH_ITEMS.find((i) => i.title === 'Callout')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    const json = editor.getJSON() as { content?: Array<{ type: string; attrs?: { type?: string } }> };
+    expect(json.content?.find((n) => n.type === 'callout')?.attrs?.type).toBe('info');
+  });
+
+  it('the Mermaid item inserts the portal default template', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    const item = SLASH_ITEMS.find((i) => i.title === 'Mermaid Diagram')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    const json = editor.getJSON() as { content?: Array<{ type: string; attrs?: { content?: string } }> };
+    expect(json.content?.find((n) => n.type === 'mermaid')?.attrs?.content).toBe(DEFAULT_MERMAID);
+  });
+
+  it('the Draw.io and Excalidraw items insert their (empty) diagram nodes', () => {
+    const drawio = editorWith('<p>x</p>');
+    drawio.commands.setTextSelection(1);
+    SLASH_ITEMS.find((i) => i.title === 'Draw.io Diagram')!.command({ editor: drawio, range: { from: 1, to: 2 } });
+    expect(drawio.getHTML()).toContain('data-drawio');
+    const excal = editorWith('<p>x</p>');
+    excal.commands.setTextSelection(1);
+    SLASH_ITEMS.find((i) => i.title === 'Excalidraw Diagram')!.command({ editor: excal, range: { from: 1, to: 2 } });
+    expect(excal.getHTML()).toContain('data-excalidraw');
+  });
+});
+
+// --- P3 task 6 polish: the deferred minors ---
+
+describe('P3 polish: subscript/superscript getHTML round-trips (T1-P1 minor)', () => {
+  it('<sub>/<sup> parse and survive the markdown pipeline as tags', () => {
+    const editor = editorWith('<p><sub>sb</sub> <sup>sp</sup></p>');
+    const html = editor.getHTML();
+    expect(html).toContain('<sub>sb</sub>');
+    expect(html).toContain('<sup>sp</sup>');
+    const md = convertHtmlToMarkdown(html);
+    expect(md).toContain('<sub>sb</sub>');
+    expect(md).toContain('<sup>sp</sup>');
+    const editor2 = editorWith(convertMarkdownToHtml(md));
+    expect(editor2.getHTML()).toContain('<sub>sb</sub>');
+    expect(editor2.getHTML()).toContain('<sup>sp</sup>');
+  });
+
+  it('toggleSubscript/toggleSuperscript emit <sub>/<sup> output', () => {
+    const sub = editorWith('<p>plain</p>');
+    sub.commands.setTextSelection({ from: 1, to: 6 });
+    sub.chain().focus().toggleSubscript().run();
+    expect(sub.getHTML()).toContain('<sub>plain</sub>');
+    const sup = editorWith('<p>plain</p>');
+    sup.commands.setTextSelection({ from: 1, to: 6 });
+    sup.chain().focus().toggleSuperscript().run();
+    expect(sup.getHTML()).toContain('<sup>plain</sup>');
+  });
+});
+
+describe('P3 polish: plain highlight keeps a style-less <mark> (P1 minor pin)', () => {
+  // P1 review minor adjudicated (probed at base 4475d3a): the stock
+  // multicolor Highlight renderHTML returns {} for a null color, so the
+  // PLAIN path already serializes a bare <mark> through getHTML AND the
+  // markdown pipeline; the `color: inherit` companion appears only on
+  // COLORED highlights (upstream stock, portal-exact — left untouched).
+  it('a color-less toggleHighlight serializes <mark> WITHOUT a style attr', () => {
+    const editor = editorWith('<p>plain</p>');
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    editor.chain().focus().toggleHighlight().run();
+    expect(editor.getHTML()).toContain('<mark>plain</mark>');
+    expect(editor.getHTML()).not.toContain('<mark style');
   });
 });
