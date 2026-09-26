@@ -10,13 +10,17 @@ export interface DropdownOption {
 // Mirrors upstream jotty's Dropdown (app/_components/GlobalComponents/Dropdowns/Dropdown.tsx):
 // full-width trigger (p-3, rounded, border-border) + absolute menu (bg-card, border, shadow)
 // with hover/selected rows — restyled to this app's CSS tokens instead of Tailwind.
-export default function Dropdown({ value, options, onChange, placeholder, ariaLabel = 'Theme', className = '' }: {
+export default function Dropdown({ value, options, onChange, placeholder, ariaLabel = 'Theme', className = '', disabled = false, swatchClassName = '' }: {
   value: string;
   options: DropdownOption[];
   onChange: (id: string) => void;
   placeholder?: string;
   ariaLabel?: string;
   className?: string;
+  /** Inert trigger — the toolbar renders while the editor is still null. */
+  disabled?: boolean;
+  /** Extra class on the swatch chips (e.g. the toolbar's square color chips). */
+  swatchClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -47,12 +51,13 @@ export default function Dropdown({ value, options, onChange, placeholder, ariaLa
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        disabled={disabled}
         onClick={() => setOpen(!open)}
       >
         <span className="jotty-dropdown-label">
           {selected?.swatch && (
             <span
-              className="jotty-dropdown-swatch"
+              className={`jotty-dropdown-swatch${swatchClassName ? ` ${swatchClassName}` : ''}`}
               style={{ background: selected.swatch.bg, borderColor: selected.swatch.primary }}
             />
           )}
@@ -73,7 +78,7 @@ export default function Dropdown({ value, options, onChange, placeholder, ariaLa
             >
               {o.swatch && (
                 <span
-                  className="jotty-dropdown-swatch"
+                  className={`jotty-dropdown-swatch${swatchClassName ? ` ${swatchClassName}` : ''}`}
                   style={{ background: o.swatch.bg, borderColor: o.swatch.primary }}
                 />
               )}

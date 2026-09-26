@@ -110,7 +110,7 @@ describe('NoteEditor', () => {
     expect(onRetranscribe).toHaveBeenCalledWith('n1');
   });
 
-  it('shows the code language picker in the editor foot', async () => {
+  it('shows the code language picker in the toolbar', async () => {
     render(<NoteEditor noteId="n1" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Code language' })).toBeInTheDocument());
     // opens the site-style menu with the common language set
