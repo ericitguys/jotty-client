@@ -1,12 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
+import type { Editor, Range } from '@tiptap/core';
 import * as api from '../api/client';
 import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
+import type { SlashCommandsStorage, SlashItem } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
+import SlashMenu from './SlashMenu';
 import type { NoteDto } from '../api/types';
+
+// Place the slash popup just below the `/` block start, clamped-free fixed
+// positioning (same coordsAtPos pattern as BubbleMenu — jsdom/headless views
+// fall back to the default corner placement; exact placement is ship-time QA).
+function slashCoords(editor: Editor, range: Range): { top: number; left: number } {
+  try {
+    const c = editor.view.coordsAtPos(range.from);
+    const top = c.bottom + 4;
+    if (Number.isFinite(top) && Number.isFinite(c.left)) return { top, left: c.left };
+  } catch { /* fall through to the default placement */ }
+  return { top: 0, left: 0 };
+}
 
 export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
   const refreshAll = useStore((s) => s.refreshAll);
@@ -91,6 +106,29 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     };
   }, [editor]);
 
+  // Slash-commands popup (portal parity P1): the SlashCommands extension
+  // mirrors its live suggestion state into editor storage and pings a meta
+  // transaction; the transaction tick above re-renders this component, which
+  // re-reads the storage to mount/unmount <SlashMenu>. Escape and applying
+  // an item both deactivate the suggestion, so the same tick unmounts it.
+  const slash = editor ? (editor.storage.slashCommands as SlashCommandsStorage | undefined) : undefined;
+  const slashOpen = !!slash?.open && !!slash.range && slash.items.length > 0;
+  const slashRange = slashOpen && slash?.range ? slash.range : null;
+  const slashMenu = (() => {
+    if (!editor || !slashRange) return null;
+    const range = slashRange;
+    const items = slash?.items ?? [];
+    const { top, left } = slashCoords(editor, range);
+    return (
+      <SlashMenu
+        items={items}
+        top={top}
+        left={left}
+        onPick={(picked: SlashItem) => picked.command({ editor, range })}
+      />
+    );
+  })();
+
   return (
     <div id="note-editor">
       <input
@@ -126,6 +164,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           onClose={() => setBubbleVisible(false)}
         />
       )}
+      {slashMenu}
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}
         <button className="cl-save" onClick={() => autosave.flush()}>Save</button>

@@ -16,6 +16,7 @@ import TableCell from '@tiptap/extension-table-cell';
 import { common, createLowlight } from 'lowlight';
 import type { Editor } from '@tiptap/core';
 import type { DropdownOption } from '../components/Dropdown';
+import { SlashCommands } from './slashCommands';
 
 // Code-block languages for the note editor (v0.15.4). lowlight's `common`
 // bundle is the same 37-language set highlight.js ships as its default —
@@ -74,7 +75,8 @@ const lowlight = createLowlight(common);
 // The extension list for the note editor: StarterKit with its bare codeBlock
 // swapped for CodeBlockLowlight (language attribute + live highlighting), plus
 // the portal-parity P1 set — marks (text style/color/highlight/underline/sub/
-// sup), task lists, and the table family (mirrors upstream editorConfig.ts).
+// sup), task lists, the table family (mirrors upstream editorConfig.ts), and
+// the slash-commands suggestion extension.
 export function noteEditorExtensions() {
   return [
     StarterKit.configure({
@@ -98,6 +100,7 @@ export function noteEditorExtensions() {
     TableHeader,
     TableCell,
     Link,
+    SlashCommands,
   ];
 }
 

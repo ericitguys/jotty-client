@@ -5,6 +5,7 @@ import Link from '@tiptap/extension-link';
 import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import { noteEditorExtensions, CODE_LANGS, findActiveCodeLanguage, applyCodeLanguage } from './extensions';
+import { SLASH_ITEMS } from './slashCommands';
 
 function editorWith(content: string): Editor {
   return new Editor({
@@ -104,3 +105,20 @@ describe('note editor code-block languages', () => {
 
 // Reassure StarterKit import stays used alongside the extension module.
 void StarterKit;
+
+describe('slash commands', () => {
+  it('offers the portal set of inserters', () => {
+    const titles = SLASH_ITEMS.map((i) => i.title);
+    for (const want of ['Heading 1', 'Heading 2', 'Bullet list', 'Ordered list', 'Task list', 'Code block', 'Quote', 'Table']) {
+      expect(titles).toContain(want);
+    }
+  });
+
+  it('running the code-block item converts the current block', () => {
+    const editor = editorWith('<p>x</p>');
+    editor.commands.setTextSelection(1);
+    const item = SLASH_ITEMS.find((i) => i.title === 'Code block')!;
+    item.command({ editor, range: { from: 1, to: 2 } });
+    expect(editor.isActive('codeBlock')).toBe(true);
+  });
+});
