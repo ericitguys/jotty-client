@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
+import Underline from '@tiptap/extension-underline';
+import Highlight from '@tiptap/extension-highlight';
 import { noteEditorExtensions, CODE_LANGS, findActiveCodeLanguage, applyCodeLanguage } from './extensions';
 
 function editorWith(content: string): Editor {
@@ -60,6 +62,43 @@ describe('note editor code-block languages', () => {
     const ext = noteEditorExtensions().find((e) => e.name === 'codeBlock');
     expect(ext).toBeDefined();
     expect((ext as unknown as { options: { lowlight: unknown } }).options.lowlight).toBeDefined();
+  });
+
+  it('parses task list items with checked state and round-trips them', () => {
+    const editor = editorWith(
+      '<ul data-type="taskList"><li data-checked="true" data-type="taskItem"><label><input type="checkbox" checked><span></span></label><div><p>done</p></div></li><li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>open</p></div></li></ul>'
+    );
+    const json = editor.getJSON() as { content?: Array<{ type: string; content?: Array<{ type: string; attrs?: { checked?: boolean } }> }> };
+    const list = json.content?.find((n) => n.type === 'taskList');
+    const items = list?.content ?? [];
+    expect(items).toHaveLength(2);
+    expect(items[0].attrs?.checked).toBe(true);
+    expect(items[1].attrs?.checked).toBe(false);
+    expect(editor.getHTML()).toContain('data-type="taskList"');
+  });
+
+  it('parses and serializes tables', () => {
+    const editor = editorWith(
+      '<table><tr><th>h</th></tr><tr><td>c</td></tr></table>'
+    );
+    const json = editor.getJSON() as { content?: Array<{ type: string }> };
+    expect(json.content?.some((n) => n.type === 'table')).toBe(true);
+    expect(editor.getHTML()).toContain('<th');
+  });
+
+  it('underline and highlight marks round-trip', () => {
+    const editor = editorWith('<p><u>under</u> and <mark data-color="#ff0000" style="background-color: #ff0000; color: #ffffff;">hl</mark></p>');
+    const html = editor.getHTML();
+    expect(html).toContain('<u>');
+    expect(html).toContain('mark');
+  });
+
+  it('color and subscript/superscript marks work', () => {
+    const editor = editorWith('<p>plain</p>');
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    editor.chain().focus().setColor('#ff0000').run();
+    editor.chain().focus().toggleSubscript().run();
+    expect(editor.getHTML()).toContain('color');
   });
 });
 

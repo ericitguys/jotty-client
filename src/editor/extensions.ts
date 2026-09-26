@@ -1,6 +1,18 @@
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import Link from '@tiptap/extension-link';
 import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import TextStyle from '@tiptap/extension-text-style';
+import Color from '@tiptap/extension-color';
+import Highlight from '@tiptap/extension-highlight';
+import Subscript from '@tiptap/extension-subscript';
+import Superscript from '@tiptap/extension-superscript';
+import TaskList from '@tiptap/extension-task-list';
+import TaskItem from '@tiptap/extension-task-item';
+import { Table } from '@tiptap/extension-table';
+import TableRow from '@tiptap/extension-table-row';
+import TableHeader from '@tiptap/extension-table-header';
+import TableCell from '@tiptap/extension-table-cell';
 import { common, createLowlight } from 'lowlight';
 import type { Editor } from '@tiptap/core';
 import type { DropdownOption } from '../components/Dropdown';
@@ -60,7 +72,9 @@ export const CODE_LANGS: DropdownOption[] = [
 const lowlight = createLowlight(common);
 
 // The extension list for the note editor: StarterKit with its bare codeBlock
-// swapped for CodeBlockLowlight (language attribute + live highlighting).
+// swapped for CodeBlockLowlight (language attribute + live highlighting), plus
+// the portal-parity P1 set — marks (text style/color/highlight/underline/sub/
+// sup), task lists, and the table family (mirrors upstream editorConfig.ts).
 export function noteEditorExtensions() {
   return [
     StarterKit.configure({
@@ -71,6 +85,18 @@ export function noteEditorExtensions() {
       defaultLanguage: 'plaintext',
       languageClassPrefix: 'language-',
     }),
+    TextStyle,
+    Color,
+    Highlight.configure({ multicolor: true }),
+    Underline,
+    Subscript,
+    Superscript,
+    TaskList,
+    TaskItem.configure({ nested: true }),
+    Table.configure({ resizable: false }), // resize overlay is P3
+    TableRow,
+    TableHeader,
+    TableCell,
     Link,
   ];
 }
