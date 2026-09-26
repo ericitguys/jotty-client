@@ -34,7 +34,7 @@ function TBtn({ label, onClick, active, disabled, children }: {
   );
 }
 
-export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview }: {
+export default function EditorToolbar({ editor, markdownMode, onToggleMode, preview, onTogglePreview, onLinkRequest }: {
   editor: Editor | null;
   // Markdown mode (P2 task 3): when onToggleMode is provided a segmented
   // [Visual | Markdown] control renders at the LEFT of the toolbar (portal
@@ -46,6 +46,10 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
   onToggleMode?: () => void;
   preview?: boolean;
   onTogglePreview?: () => void;
+  // Link (P2 task 4): the button body routes through NoteEditor's linkRequest
+  // state — the browser's native prompt dialog is replaced by the PromptModal
+  // mounted there.
+  onLinkRequest?: () => void;
 }) {
   // Active-state styling tracks the live document: re-render on every editor
   // transaction (the tick pattern NoteEditor also keeps for editor-driven UI).
@@ -126,15 +130,10 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
           prompt. Rows/cols are edited afterwards via the table context bar. */}
       <TBtn label="Table" disabled={dis || md} onClick={() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</TBtn>
       <span className="edt-sep" />
-      <TBtn label="Link" active={editor?.isActive('link')} disabled={dis || md} onClick={() => {
-        const { from, to } = editor!.state.selection;
-        const url = prompt('Link URL', editor!.getAttributes('link').href || 'https://');
-        if (url === null) return;
-        if (url === '') { chain().unsetLink().run(); return; }
-        if (from !== to) { chain().setLink({ href: url }).run(); return; }
-        const text = prompt('Link text', '');
-        if (text) chain().insertContent(`<a href="${url}">${text}</a>`).run();
-      }}>🔗</TBtn>
+      {/* Link (P2 task 4): opens NoteEditor's PromptModal via onLinkRequest —
+          the P1 native-prompt placeholder is gone. The button still renders
+          (and the toolbar tests still find it) when no handler is wired. */}
+      <TBtn label="Link" active={editor?.isActive('link')} disabled={dis || md} onClick={() => onLinkRequest?.()}>🔗</TBtn>
       <span className="edt-sep" />
       <TBtn label="Undo" disabled={dis || md} onClick={() => chain().undo().run()}>↶</TBtn>
       <TBtn label="Redo" disabled={dis || md} onClick={() => chain().redo().run()}>↷</TBtn>

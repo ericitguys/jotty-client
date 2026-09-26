@@ -19,8 +19,12 @@ function bubbleCoords(editor: Editor): { top: number; left: number } {
   return { top: 0, left: 0 };
 }
 
-export default function BubbleMenu({ editor, visible, onClose }: {
+export default function BubbleMenu({ editor, visible, onClose, onLinkRequest }: {
   editor: Editor; visible: boolean; onClose: () => void;
+  // Link (P2 task 4): routes through NoteEditor's linkRequest state instead
+  // of the browser's native prompt dialog. Without the handler the Link
+  // button is not rendered (conditional render, not display:none).
+  onLinkRequest?: () => void;
 }) {
   // Active-state styling tracks the live document: re-render on every editor
   // transaction (the same tick pattern EditorToolbar uses — ruling R8).
@@ -48,10 +52,9 @@ export default function BubbleMenu({ editor, visible, onClose }: {
       <button aria-label="Italic" className={editor.isActive('italic') ? 'active' : ''} onClick={() => apply(() => chain().toggleItalic().run())}><i>I</i></button>
       <button aria-label="Underline" className={editor.isActive('underline') ? 'active' : ''} onClick={() => apply(() => chain().toggleUnderline().run())}><u>U</u></button>
       <button aria-label="Strikethrough" className={editor.isActive('strike') ? 'active' : ''} onClick={() => apply(() => chain().toggleStrike().run())}><s>S</s></button>
-      <button aria-label="Link" onClick={() => apply(() => {
-        const url = prompt('Link URL', editor.getAttributes('link').href || 'https://');
-        if (url) chain().setLink({ href: url }).run();
-      })}>🔗</button>
+      {onLinkRequest && (
+        <button aria-label="Link" onClick={() => apply(onLinkRequest)}>🔗</button>
+      )}
     </div>
   );
 }

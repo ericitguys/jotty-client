@@ -9,6 +9,7 @@ import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown
 import type { SlashCommandsStorage, SlashItem } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
+import PromptModal from './modals/PromptModal';
 import SlashMenu from './SlashMenu';
 import TableToolbar from './TableToolbar';
 import MarkdownEditor from './MarkdownEditor';
@@ -130,6 +131,17 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     setIsMarkdownMode(false);
   };
 
+  // Link modal (P2 task 4, portal parity): both Link entry points (toolbar
+  // button, bubble-menu pill) route through this state instead of the
+  // browser's native prompt dialog. hasSelection is captured at open time
+  // and decides between setLink (selection) and insert-anchor (R17: the
+  // anchor wraps the URL itself — single-URL modal, no second text prompt).
+  const [linkRequest, setLinkRequest] = useState<{ hasSelection: boolean } | null>(null);
+  const openLinkRequest = () => {
+    if (!editor) return;
+    setLinkRequest({ hasSelection: !editor.state.selection.empty });
+  };
+
   // Selection bubble menu (portal parity P1): visible while a non-empty text
   // selection exists outside a code block; hidden on Escape, an empty
   // selection, or after a bubble button applies (onClose).
@@ -219,6 +231,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
         onToggleMode={toggleMarkdownMode}
         preview={mdPreview}
         onTogglePreview={() => setMdPreview((p) => !p)}
+        onLinkRequest={openLinkRequest}
       />
       {/* Markdown mode (P2 task 3): the TipTap host stays mounted (the editor
           instance must stay alive) and is hidden via the `hidden` attribute;
@@ -244,10 +257,28 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           editor={editor}
           visible={bubbleVisible}
           onClose={() => setBubbleVisible(false)}
+          onLinkRequest={openLinkRequest}
         />
       )}
       {editor && !isMarkdownMode && <TableToolbar editor={editor} visible={tableVisible} />}
       {!isMarkdownMode && slashMenu}
+      {/* Link modal (P2 task 4): the single prompt surface for both Link
+          buttons. P1 link logic verbatim, with R17 replacing the second
+          text prompt: empty value → unsetLink; non-empty selection →
+          setLink(href); no selection → insert an anchor wrapping the URL. */}
+      <PromptModal
+        isOpen={!!linkRequest}
+        onClose={() => setLinkRequest(null)}
+        title="Link URL"
+        placeholder="https://example.com"
+        defaultValue={editor?.getAttributes('link').href ?? ''}
+        onConfirm={(url) => {
+          if (!editor || !linkRequest) return;
+          if (url === '') { editor.chain().focus().unsetLink().run(); return; }
+          if (linkRequest.hasSelection) { editor.chain().focus().setLink({ href: url }).run(); return; }
+          editor.chain().focus().insertContent(`<a href="${url}">${url}</a>`).run();
+        }}
+      />
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}
         <button className="cl-save" onClick={() => autosave.flush()}>Save</button>

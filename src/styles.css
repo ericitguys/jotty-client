@@ -718,8 +718,29 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   backdrop-filter: blur(3px);
   display: grid;
   place-items: center;
-  z-index: 50;
+  /* P2 task 4: 70 — above every editor overlay (bubble pill, slash popup,
+     dropdowns) so the link prompt never stacks under one. */
+  z-index: 70;
 }
+/* PromptModal card (P2 task 4): narrower prompt-style dialog, same token
+   family as .modal (panel surface, soft border) with the tighter 8px radius. */
+.modal-card {
+  width: min(420px, calc(100vw - 48px));
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.modal-card h2 { margin: 0; font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 700; }
+.modal-card p { margin: 0; color: var(--muted); font-size: 13px; }
+.modal-card input { width: 100%; }
+.prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt-actions button { min-width: 84px; }
 .modal {
   width: min(440px, calc(100vw - 48px));
   display: flex;
