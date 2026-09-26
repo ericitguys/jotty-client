@@ -6,6 +6,7 @@ import { useStore } from '../stores/store';
 import { applyCodeLanguage, findActiveCodeLanguage, noteEditorExtensions, CODE_LANGS } from '../editor/extensions';
 import Dropdown, { type DropdownOption } from './Dropdown';
 import EditorToolbar from './EditorToolbar';
+import BubbleMenu from './BubbleMenu';
 import type { NoteDto } from '../api/types';
 
 export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
@@ -76,6 +77,23 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   const langOptions: DropdownOption[] = CODE_LANGS;
   const currentLang = activeLang ?? 'plaintext';
 
+  // Selection bubble menu (portal parity P1): visible while a non-empty text
+  // selection exists outside a code block; hidden on Escape, an empty
+  // selection, or after a bubble button applies (onClose).
+  const [bubbleVisible, setBubbleVisible] = useState(false);
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => setBubbleVisible(!editor.state.selection.empty && !editor.isActive('codeBlock'));
+    sync(); // initial check
+    editor.on('selectionUpdate', sync);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setBubbleVisible(false); };
+    editor.view.dom.addEventListener('keydown', onKey);
+    return () => {
+      editor.off('selectionUpdate', sync);
+      editor.view.dom.removeEventListener('keydown', onKey);
+    };
+  }, [editor]);
+
   return (
     <div id="note-editor">
       <input
@@ -104,6 +122,13 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
       )}
       <EditorToolbar editor={editor} />
       <EditorContent editor={editor} />
+      {editor && (
+        <BubbleMenu
+          editor={editor}
+          visible={bubbleVisible}
+          onClose={() => setBubbleVisible(false)}
+        />
+      )}
       <div className="editor-foot">
         <div className="code-lang-row">
           <Dropdown

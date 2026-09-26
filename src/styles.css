@@ -462,6 +462,36 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .edt-btn:disabled { opacity: .4; cursor: default; }
 .edt-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
 
+/* selection bubble menu (portal parity P1) */
+.edt-bubble {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.edt-bubble button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 5px;
+}
+.edt-bubble button:hover { background: var(--accent-soft); }
+.edt-bubble button.active { background: var(--accent-soft); color: var(--accent); }
+
 /* ---------- sync badge ---------- */
 #sync-badge {
   position: fixed;
