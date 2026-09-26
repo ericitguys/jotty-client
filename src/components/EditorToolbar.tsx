@@ -75,6 +75,9 @@ export default function EditorToolbar({ editor }: { editor: Editor | null }) {
       <TBtn label="Ordered list" active={editor?.isActive('orderedList')} disabled={dis} onClick={() => chain().toggleOrderedList().run()}>1≡</TBtn>
       <TBtn label="Task list" active={editor?.isActive('taskList')} disabled={dis} onClick={() => chain().toggleTaskList().run()}>☑</TBtn>
       <TBtn label="Blockquote" active={editor?.isActive('blockquote')} disabled={dis} onClick={() => chain().toggleBlockquote().run()}>❝</TBtn>
+      {/* Deterministic P1 insert (R9): fixed 3x3 grid with a header row — no
+          prompt. Rows/cols are edited afterwards via the table context bar. */}
+      <TBtn label="Table" disabled={dis} onClick={() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</TBtn>
       <span className="edt-sep" />
       <TBtn label="Link" active={editor?.isActive('link')} disabled={dis} onClick={() => {
         const { from, to } = editor!.state.selection;

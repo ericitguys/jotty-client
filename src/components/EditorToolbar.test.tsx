@@ -21,6 +21,7 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('button', { name: 'Bullet list' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Ordered list' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Blockquote' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Table' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Link' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
     // active state styling flips on the bold button
@@ -67,5 +68,16 @@ describe('EditorToolbar', () => {
     render(<EditorToolbar editor={editor} />);
     fireEvent.click(screen.getByRole('button', { name: 'Task list' }));
     expect(editor.getHTML()).toContain('data-type="taskList"');
+  });
+
+  it('Table button inserts a fixed 3x3 table with a header row (no prompt)', () => {
+    const editor = makeEditor('<p>hi</p>');
+    render(<EditorToolbar editor={editor} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    const json = editor.getJSON() as { content?: Array<{ type: string; content?: unknown[] }> };
+    const table = json.content?.find((n) => n.type === 'table');
+    expect(table).toBeDefined();
+    expect(table?.content ?? []).toHaveLength(3);
+    expect(editor.getHTML()).toContain('<th');
   });
 });

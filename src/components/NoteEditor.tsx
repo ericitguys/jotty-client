@@ -9,6 +9,7 @@ import type { SlashCommandsStorage, SlashItem } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
 import SlashMenu from './SlashMenu';
+import TableToolbar from './TableToolbar';
 import type { NoteDto } from '../api/types';
 
 // Place the slash popup just below the `/` block start, clamped-free fixed
@@ -106,6 +107,23 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
     };
   }, [editor]);
 
+  // Table context toolbar (portal parity P1): visible while the selection sits
+  // inside a table. Synced on transaction + selectionUpdate like the bubble
+  // menu; deleteTable closes it (isActive('table') flips) while row/col edits
+  // keep it open because the caret stays in the table.
+  const [tableVisible, setTableVisible] = useState(false);
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => setTableVisible(editor.isActive('table'));
+    sync(); // initial check
+    editor.on('transaction', sync);
+    editor.on('selectionUpdate', sync);
+    return () => {
+      editor.off('transaction', sync);
+      editor.off('selectionUpdate', sync);
+    };
+  }, [editor]);
+
   // Slash-commands popup (portal parity P1): the SlashCommands extension
   // mirrors its live suggestion state into editor storage and pings a meta
   // transaction; the transaction tick above re-renders this component, which
@@ -164,6 +182,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           onClose={() => setBubbleVisible(false)}
         />
       )}
+      {editor && <TableToolbar editor={editor} visible={tableVisible} />}
       {slashMenu}
       <div className="editor-foot">
         {autosave.saving && <span id="saving">saving…</span>}

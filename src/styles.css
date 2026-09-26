@@ -500,6 +500,36 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .edt-bubble button:hover { background: var(--accent-soft); }
 .edt-bubble button.active { background: var(--accent-soft); color: var(--accent); }
 
+/* table context toolbar (portal parity P1) — fixed bar above the active table */
+.edt-tablebar {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.edt-tablebar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 5px;
+}
+.edt-tablebar button:hover { background: var(--accent-soft); }
+.edt-tablebar button.active { background: var(--accent-soft); color: var(--accent); }
+
 /* slash commands menu (portal parity P1) */
 .edt-slash-menu {
   position: fixed;
