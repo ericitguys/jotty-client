@@ -5,6 +5,7 @@ import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import { applyCodeLanguage, findActiveCodeLanguage, noteEditorExtensions, CODE_LANGS } from '../editor/extensions';
 import Dropdown, { type DropdownOption } from './Dropdown';
+import EditorToolbar from './EditorToolbar';
 import type { NoteDto } from '../api/types';
 
 export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
@@ -101,6 +102,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           <button className="voice-delete-audio" onClick={deleteAudio}>Delete audio</button>
         </div>
       )}
+      <EditorToolbar editor={editor} />
       <EditorContent editor={editor} />
       <div className="editor-foot">
         <div className="code-lang-row">
