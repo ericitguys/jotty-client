@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Link from '@tiptap/extension-link';
 import * as api from '../api/client';
 import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
+import { applyCodeLanguage, findActiveCodeLanguage, noteEditorExtensions, CODE_LANGS } from '../editor/extensions';
+import Dropdown, { type DropdownOption } from './Dropdown';
 import type { NoteDto } from '../api/types';
 
 export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string; onRetranscribe?: (noteId: string) => void }) {
@@ -53,13 +53,27 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   metaRef.current = { title: autosave.value?.title ?? '', category };
 
   const editor = useEditor({
-    extensions: [StarterKit, Link],
+    extensions: noteEditorExtensions(),
     content: autosave.value?.content ?? '',
     onUpdate: ({ editor }) => {
       if (!loadedId) return;
       autosave.setValue({ title: metaRef.current.title, content: editor.getHTML(), category: metaRef.current.category });
     },
   }, [loadedId]);
+
+  // Code-block language (v0.15.4): the picker mirrors the language of the
+  // codeBlock under the cursor and applies a choice to it; outside a code
+  // block it converts the selection. Tracked via a re-render on transaction.
+  const [, setEditorTick] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const onTx = () => setEditorTick((t) => t + 1);
+    editor.on('transaction', onTx);
+    return () => { editor.off('transaction', onTx); };
+  }, [editor]);
+  const activeLang = editor ? findActiveCodeLanguage(editor) : null;
+  const langOptions: DropdownOption[] = CODE_LANGS;
+  const currentLang = activeLang ?? 'plaintext';
 
   return (
     <div id="note-editor">
@@ -89,6 +103,16 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
       )}
       <EditorContent editor={editor} />
       <div className="editor-foot">
+        <div className="code-lang-row">
+          <Dropdown
+            value={currentLang}
+            options={langOptions}
+            onChange={(id) => { if (editor) applyCodeLanguage(editor, id); }}
+            placeholder="Code language"
+            ariaLabel="Code language"
+          />
+          <span className="code-lang-hint">{activeLang ? 'applies to this code block' : 'select text, then pick a language'}</span>
+        </div>
         {autosave.saving && <span id="saving">saving…</span>}
         <button className="cl-save" onClick={() => autosave.flush()}>Save</button>
       </div>

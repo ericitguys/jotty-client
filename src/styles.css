@@ -427,6 +427,30 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   font-size: 13px;
 }
 #note-editor .tiptap pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+#note-editor .tiptap pre code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--fg);
+  white-space: pre;
+}
+/* lowlight (highlight.js) token colors — GitHub-dark-ish, tuned to this app's palette */
+#note-editor .tiptap pre code .hljs-keyword, #note-editor .tiptap pre code .hljs-selector-tag, #note-editor .tiptap pre code .hljs-literal, #note-editor .tiptap pre code .hljs-section { color: #ff7b72; }
+#note-editor .tiptap pre code .hljs-string, #note-editor .tiptap pre code .hljs-attr, #note-editor .tiptap pre code .hljs-addition { color: #a5d6ff; }
+#note-editor .tiptap pre code .hljs-title, #note-editor .tiptap pre code .hljs-name, #note-editor .tiptap pre code .hljs-function { color: #d2a8ff; }
+#note-editor .tiptap pre code .hljs-comment, #note-editor .tiptap pre code .hljs-quote { color: #8b949e; }
+#note-editor .tiptap pre code .hljs-number, #note-editor .tiptap pre code .hljs-symbol, #note-editor .tiptap pre code .hljs-bullet { color: #79c0ff; }
+#note-editor .tiptap pre code .hljs-variable, #note-editor .tiptap pre code .hljs-template-variable, #note-editor .tiptap pre code .hljs-type, #note-editor .tiptap pre code .hljs-built_in { color: #ffa657; }
+#note-editor .tiptap pre code .hljs-deletion { color: #ffa198; }
+#note-editor .tiptap pre code .hljs-emphasis { font-style: italic; }
+#note-editor .tiptap pre code .hljs-strong { font-weight: 600; }
+
+/* code language picker row in the editor foot */
+.code-lang-row { display: flex; align-items: center; gap: 8px; margin-right: auto; }
+.code-lang-row .jotty-dropdown { min-width: 170px; }
+.code-lang-row .jotty-dropdown-button { padding: 5px 10px; font-size: 12px; }
+.code-lang-row .jotty-dropdown-menu { max-height: 260px; overflow-y: auto; right: auto; left: 0; }
+.code-lang-hint { color: var(--muted); font-size: 11px; }
 #note-editor .tiptap ul { padding-left: 1.3em; }
 #saving { color: var(--amber); font-size: 12px; align-self: flex-end; }
 

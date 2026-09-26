@@ -109,4 +109,34 @@ describe('NoteEditor', () => {
     fireEvent.click(screen.getByText('Re-transcribe'));
     expect(onRetranscribe).toHaveBeenCalledWith('n1');
   });
+
+  it('shows the code language picker in the editor foot', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Code language' })).toBeInTheDocument());
+    // opens the site-style menu with the common language set
+    fireEvent.click(screen.getByRole('button', { name: 'Code language' }));
+    expect(await screen.findByRole('option', { name: 'Python' })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'Rust' }).length).toBeGreaterThan(0);
+  });
+
+  it('selecting a language inside a code block stamps the language class', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<pre><code>x = 1</code></pre>', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    // click into the code block so the cursor sits inside it
+    const code = await waitFor(() => {
+      const el = document.querySelector('.tiptap pre code');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    fireEvent.click(code);
+    fireEvent.click(screen.getByRole('button', { name: 'Code language' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Python' }));
+    // the editor updates the block language; the hint flips to the in-block text
+    await waitFor(() => expect(document.querySelector('.code-lang-hint')?.textContent).toBe('applies to this code block'));
+    expect(document.querySelector('.tiptap pre code')?.className).toContain('language-python');
+  });
 });
