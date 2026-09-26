@@ -29,7 +29,8 @@ describe('NoteEditor', () => {
     fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Work' } });
     // idle past the 800ms debounce window (real timers per ruling Q)
     await new Promise((resolve) => setTimeout(resolve, 1100));
-    expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: '<p>hello</p>', category: 'Work' });
+    // R16 (P2 storage contract): the save payload is markdown — turndown of the legacy '<p>hello</p>' body.
+    expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: 'hello', category: 'Work' });
   });
 
   it('save button flushes pending edits immediately and refreshes the store', async () => {
@@ -38,7 +39,8 @@ describe('NoteEditor', () => {
     fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Urgent' } });
     // NO debounce wait — Save must commit right away
     fireEvent.click(screen.getByText('Save'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: '<p>hello</p>', category: 'Urgent' }));
+    // R16 (P2 storage contract): the save payload is markdown — turndown of the legacy '<p>hello</p>' body.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', { id: 'n1', title: 'T', content: 'hello', category: 'Urgent' }));
     // refreshAll evidence: the store re-pulls the lists
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_notes'));
   });
@@ -138,5 +140,55 @@ describe('NoteEditor', () => {
     // the editor updates the block language; the hint flips to the in-block text
     await waitFor(() => expect(document.querySelector('.code-lang-hint')?.textContent).toBe('applies to this code block'));
     expect(document.querySelector('.tiptap pre code')?.className).toContain('language-python');
+  });
+
+  // P2 storage contract: the editor save payload serializes to markdown.
+  it('saves markdown: visual edit persists converted markdown, not HTML', async () => {
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    // drive a visual edit the way the suite drives the editor (toolbar
+    // command on the loaded paragraph): Heading turns <p>hello</p> → <h2>
+    fireEvent.click(screen.getByText('hello'));
+    fireEvent.click(screen.getByRole('button', { name: 'Heading' }));
+    // idle past the 800ms debounce window (real timers per ruling Q)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const updates = invoke.mock.calls.filter((c) => c[0] === 'update_note');
+    expect(updates.length).toBeGreaterThan(0);
+    const content = (updates[updates.length - 1][1] as { content: string }).content;
+    expect(content).not.toMatch(/^</); // persisted as markdown, not raw HTML
+    expect(content).toBe('## hello'); // md marker: turndown of <h2>hello</h2>
+  });
+
+  // P2 back-compat fence: legacy HTML notes (startsWith '<') load + edit as today.
+  it('loads legacy HTML notes unchanged (startsWith <)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>legacy html</p>', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    // fed to TipTap as HTML: a real paragraph, not the literal markdown text
+    await waitFor(() => expect(document.querySelector('.tiptap p')?.textContent).toBe('legacy html'));
+    // ...and it still edits: toolbar Task list converts the loaded paragraph
+    fireEvent.click(screen.getByRole('button', { name: 'Task list' }));
+    expect(await screen.findByText('legacy html')).toBeInTheDocument();
+    // task item node view renders li[data-checked] (no data-type attr in the DOM)
+    await waitFor(() => expect(document.querySelector('.tiptap ul[data-type="taskList"] li[data-checked="false"]')).not.toBeNull());
+  });
+
+  // P2 storage contract: markdown notes (no '<' prefix) parse into the visual editor.
+  it('loads markdown notes (no < prefix) parsed to the visual editor', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '# Title\n\n- [x] done', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    // '# Title' → <h1>; '- [x] done' → a checked task item (portal taskItem shape)
+    await waitFor(() => expect(document.querySelector('.tiptap h1')?.textContent).toBe('Title'));
+    const item = document.querySelector('.tiptap ul[data-type="taskList"] li[data-checked="true"]');
+    expect(item).not.toBeNull();
+    expect(item?.textContent).toBe('done');
   });
 });

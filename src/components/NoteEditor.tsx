@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import type { Editor, Range } from '@tiptap/core';
 import * as api from '../api/client';
 import { useAutosave } from '../hooks/useAutosave';
 import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
+import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown';
 import type { SlashCommandsStorage, SlashItem } from '../editor/slashCommands';
 import EditorToolbar from './EditorToolbar';
 import BubbleMenu from './BubbleMenu';
@@ -30,9 +31,14 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [audioDur, setAudioDur] = useState<number | null>(null);
+  // Storage contract (P2): update_note persists markdown. Editor updates
+  // arrive pre-converted (onUpdate); title/category edits carry the last
+  // stored value, which may still be legacy HTML as loaded — normalize here
+  // so every save path persists markdown. Payload shape {id,title,content,category} unchanged.
   const autosave = useAutosave(async (v: { title: string; content: string; category: string }) => {
     if (!loadedId) return;
-    await api.updateNote(loadedId, v.title, v.content, v.category);
+    const content = v.content.trim().startsWith('<') ? convertHtmlToMarkdown(v.content) : v.content;
+    await api.updateNote(loadedId, v.title, content, v.category);
     await refreshAll();
   });
 
@@ -69,12 +75,21 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   const metaRef = useRef({ title: '', category: 'Uncategorized' });
   metaRef.current = { title: autosave.value?.title ?? '', category };
 
+  // Storage contract (P2): TipTap is always fed HTML — legacy HTML notes
+  // (startsWith '<') pass through untouched, markdown notes convert at load
+  // (portal init semantics). autosave.value.content itself stays the RAW note
+  // string as loaded; once saved it is markdown (onUpdate re-converts).
+  const editorContent = useMemo(() => {
+    const raw = autosave.value?.content ?? '';
+    return raw.trim().startsWith('<') ? raw : convertMarkdownToHtml(raw);
+  }, [autosave.value?.content]);
+
   const editor = useEditor({
     extensions: noteEditorExtensions(),
-    content: autosave.value?.content ?? '',
+    content: editorContent,
     onUpdate: ({ editor }) => {
       if (!loadedId) return;
-      autosave.setValue({ title: metaRef.current.title, content: editor.getHTML(), category: metaRef.current.category });
+      autosave.setValue({ title: metaRef.current.title, content: convertHtmlToMarkdown(editor.getHTML()), category: metaRef.current.category });
     },
   }, [loadedId]);
 
