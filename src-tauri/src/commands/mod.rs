@@ -855,7 +855,8 @@ pub async fn get_prefs(state: tauri::State<'_, AppState>) -> Result<crate::jotty
 /// Instance branding mirror (v0.9.0): name + best icon from the public
 /// /api/manifest. Also sets the window/taskbar icon best-effort (X11;
 /// some Wayland compositors ignore runtime icon changes; the installed
-/// .desktop launcher icon is baked into the bundle and cannot follow).
+/// .desktop launcher icon is baked into the bundle and cannot follow),
+/// and mirrors the window title (v0.15.3: see apply_branding_title).
 #[tauri::command]
 pub async fn get_branding(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> Result<crate::commands::dto::BrandingDto, String> {
     let Some(client) = state.client.read().await.clone() else {
@@ -865,7 +866,56 @@ pub async fn get_branding(state: tauri::State<'_, AppState>, app: tauri::AppHand
     if let Some(bytes) = &data.icon_bytes {
         best_effort_set_icon(&app, bytes);
     }
+    if let Some(name) = &data.name {
+        best_effort_set_title(&app, name);
+    }
     Ok(crate::commands::dto::BrandingDto { name: data.name, icon_data_url: data.icon_data_url, theme_color: data.theme_color })
+}
+
+/// Mirror the window title to the branding name (v0.15.3 fix: on Wayland the
+/// JS setTitle path is visually inert — tao's Wayland window embeds the title
+/// in a GtkHeaderBar built ONCE at window creation (tao wayland/header.rs
+/// WlHeader::setup), and gtk_window_set_title does not repaint a custom
+/// titlebar — GTK only shows the title property in its default titlebar).
+/// So besides the tauri set_title (which keeps the GTK/X11 title correct),
+/// find the HeaderBar tao installed and update its title label directly.
+/// Best-effort by design: missing window / no titlebar (X11 has none) / no
+/// HeaderBar must never fail the branding command.
+fn best_effort_set_title(app: &tauri::AppHandle, name: &str) {
+    #[cfg(target_os = "android")]
+    let _ = (app, name);
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri::Manager as _;
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.set_title(name);
+            #[cfg(target_os = "linux")]
+            if let Ok(gtk_win) = win.gtk_window() {
+                use gtk::prelude::*;
+                if let Some(titlebar) = gtk_win.titlebar() {
+                    if let Some(header) = find_headerbar(&titlebar) {
+                        header.set_title(Some(name));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", not(target_os = "android")))]
+fn find_headerbar(widget: &gtk::Widget) -> Option<gtk::HeaderBar> {
+    use gtk::prelude::*;
+    if let Ok(header) = widget.clone().downcast::<gtk::HeaderBar>() {
+        return Some(header);
+    }
+    if let Some(container) = widget.dynamic_cast_ref::<gtk::Container>() {
+        for child in container.children() {
+            if let Some(found) = find_headerbar(&child) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn best_effort_set_icon(app: &tauri::AppHandle, bytes: &[u8]) {
@@ -1513,6 +1563,51 @@ mod tests {
     use crate::db::{board, migrations, open, outbox};
     use crate::keys::KeyStore as _;
     use rusqlite::Connection;
+
+    // v0.15.3 title-mirror regression: on Wayland, tao embeds the window title
+    // in a GtkHeaderBar (built once via WlHeader::setup) and later
+    // gtk_window_set_title calls do not repaint a custom titlebar, so the JS
+    // setTitle path is visually inert on the user's GNOME session. The fix
+    // walks the titlebar and updates the HeaderBar directly. This test builds
+    // the same widget tree tao installs (EventBox containing a HeaderBar set
+    // as the window's titlebar), runs find_headerbar + set_title, and asserts
+    // the label changed. GTK needs a display: skip (not fail) when none is
+    // available, e.g. plain CI; run under Xvfb for real coverage.
+    #[test]
+    fn find_headerbar_updates_tao_wayland_header_title() {
+        #[cfg(target_os = "linux")]
+        {
+            if gtk::init().is_err() {
+                eprintln!("skipped: no display for gtk::init");
+                return;
+            }
+            use gtk::prelude::*;
+            let win = gtk::Window::new(gtk::WindowType::Toplevel);
+            let header = gtk::HeaderBar::new();
+            header.set_title(Some("BEFORE-CONF-TITLE"));
+            let event_box = gtk::EventBox::new();
+            event_box.add(&header);
+            win.set_titlebar(Some(&event_box));
+            // The tree tao produces: titlebar = EventBox { HeaderBar }
+            let titlebar = win.titlebar().expect("titlebar just set");
+            let found = find_headerbar(&titlebar).expect("HeaderBar must be found");
+            found.set_title(Some("BRAND-NEW-NAME"));
+            assert_eq!(
+                found.title().as_deref(),
+                Some("BRAND-NEW-NAME"),
+                "HeaderBar title must follow the branding name"
+            );
+            // Idempotent re-walk: a second branding load finds and sets again.
+            let titlebar2 = win.titlebar().expect("titlebar persists");
+            let found2 = find_headerbar(&titlebar2).expect("re-walk still finds it");
+            found2.set_title(Some("BRAND-AGAIN"));
+            assert_eq!(found2.title().as_deref(), Some("BRAND-AGAIN"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // The walk is Linux-only; nothing to pin on other hosts.
+        }
+    }
 
     fn db() -> Connection {
         let dir = tempfile::tempdir().unwrap();
