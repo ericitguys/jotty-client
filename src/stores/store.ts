@@ -28,6 +28,10 @@ interface AppState {
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
   createBoard: (title: string, category: string) => Promise<T.ChecklistDto>;
+  /** Delete a note (soft-delete local + outbox "delete" op → DELETE /api/notes/{id} on push). */
+  deleteNote: (id: string) => Promise<void>;
+  /** Delete a checklist or board (deleteList is type-agnostic server-side — boards route through the same DELETE /api/checklists/{id}). */
+  deleteChecklist: (id: string) => Promise<void>;
   saveVoiceNoteWithBoard: (input: VoiceBoardInput) => Promise<{ noteId: string; boardId: string }>;
 }
 
@@ -140,6 +144,19 @@ export const useStore = create<AppState>((set, get) => ({
     await get().refreshAll();
     set({ selectedChecklistId: board.id, selectedNoteId: null, listMode: 'checklists' });
     return board;
+  },
+  deleteNote: async (id) => {
+    await api.deleteNote(id);
+    await get().refreshAll();
+    // Deselect when the deleted note was open: clearing selection unmounts
+    // NoteEditor (App renders null without a selection) and drops the back
+    // button — same semantics as the back button's selectNote(null).
+    if (get().selectedNoteId === id) set({ selectedNoteId: null });
+  },
+  deleteChecklist: async (id) => {
+    await api.deleteChecklist(id);
+    await get().refreshAll();
+    if (get().selectedChecklistId === id) set({ selectedChecklistId: null });
   },
   saveVoiceNoteWithBoard: async (input) => {
     const boardTitle = input.title.trim() || 'Tasks from voice note';

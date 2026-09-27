@@ -45,3 +45,35 @@ describe('ChecklistList creation', () => {
     expect(within(rows[1]).queryByText('board')).not.toBeInTheDocument();
   });
 });
+
+describe('ChecklistList delete', () => {
+  it('board and checklist rows both get a delete button; clicking opens the portal-worded confirm', () => {
+    render(<ChecklistList checklists={[
+      { id: 'b1', title: 'Sprint', category: 'Work', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'kanban', items: [] },
+      { id: 'l1', title: 'Errands', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'simple', items: [] },
+    ]} />);
+    expect(screen.getByRole('button', { name: 'Delete Sprint' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete Errands' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Sprint' }));
+    expect(screen.getByText('Are you sure you want to delete "Sprint"?')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('delete_checklist', { id: 'b1' });
+  });
+
+  it('confirming invokes delete_checklist (works offline — outbox replays); Cancel does not', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'delete_checklist') return Promise.resolve();
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<ChecklistList checklists={[
+      { id: 'b1', title: 'Sprint', category: 'Work', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'kanban', items: [] },
+    ]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Sprint' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(invoke).not.toHaveBeenCalledWith('delete_checklist', { id: 'b1' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Sprint' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_checklist', { id: 'b1' }));
+  });
+});

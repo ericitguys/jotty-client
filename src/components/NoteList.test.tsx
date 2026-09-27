@@ -51,3 +51,39 @@ describe('NoteList creation', () => {
     expect(screen.getAllByTitle('Pending transcription — retries after sync')).toHaveLength(1);
   });
 });
+
+describe('NoteList delete', () => {
+  it('every row has a delete button; clicking it opens the confirm modal without selecting the row', () => {
+    const notes = [
+      { id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+      { id: 'n2', title: 'Ideas', content: 'x', category: 'Work', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+    ];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    const buttons = screen.getAllByRole('button', { name: 'Delete Groceries' });
+    expect(buttons).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Delete Ideas' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Groceries' }));
+    expect(screen.getByText('Are you sure you want to delete "Groceries"?')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('delete_note', { id: 'n1' }); // confirm not yet
+  });
+
+  it('confirming the modal invokes delete_note and closes it; Cancel does not', async () => {
+    const notes = [
+      { id: 'n1', title: 'Groceries', content: 'milk', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+    ];
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'delete_note') return Promise.resolve();
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Groceries' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('Are you sure you want to delete "Groceries"?')).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('delete_note', { id: 'n1' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Groceries' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_note', { id: 'n1' }));
+  });
+});

@@ -294,6 +294,21 @@ li.selected .count { color: rgba(255, 255, 255, 0.85); }
 }
 li.selected .chip { color: #fff; background: var(--accent-soft); }
 .board-chip { color: var(--accent-text); }
+/* per-row delete affordance (portal SidebarItem ⋯ opacity-40→hover pattern) */
+.row-del {
+  flex-shrink: 0;
+  opacity: 0.4;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+#notes li:hover .row-del, #checklists li:hover .row-del, .row-del:focus-visible { opacity: 1; }
+.row-del:hover { color: var(--danger); background: rgba(239, 68, 68, 0.12); }
 
 /* ---------- checklist view ---------- */
 #checklist-view { display: flex; flex-direction: column; gap: 8px; }
@@ -760,6 +775,8 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .modal-card p { margin: 0; color: var(--muted); font-size: 13px; }
 .modal-card input { width: 100%; }
 .prompt-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt-actions .danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.prompt-actions .danger:hover { filter: brightness(1.08); }
 .prompt-actions button { min-width: 84px; }
 /* TableInsertModal (P2 task 5): rows/cols grid inputs + the header-row
    toggle, same card family as PromptModal (.modal-card). Tokens only. */
