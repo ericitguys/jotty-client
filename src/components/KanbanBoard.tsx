@@ -3,6 +3,17 @@ import type { DragEvent, KeyboardEvent } from 'react';
 import * as api from '../api/client';
 import type { BoardStatusDto, ItemDto } from '../api/types';
 
+// Z-form/offset ISO -> local 'YYYY-MM-DDTHH:mm' for datetime-local prefill (T7.1):
+// datetime-local inputs SANITIZE TZ-suffixed values to empty, so raw stored reminders
+// must be converted to local wall time before prefilling. Round-trips: Save re-ISOs
+// the local value back to the exact same instant.
+const toLocalInput = (iso: string): string => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 export default function KanbanBoard({ checklistId, items, reload }: {
   checklistId: string; items: ItemDto[]; reload: () => Promise<void>;
 }) {
@@ -160,7 +171,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                           <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
                         ))}
                         <button onClick={() => { setDateVal(item.targetDate ?? ''); setDating(item.localId); }}>Set date</button>
-                        <button onClick={() => { setReminderVal(item.reminderDatetime ?? ''); setReminding(item.localId); }}>Set reminder</button>
+                        <button onClick={() => { setReminderVal(item.reminderDatetime ? toLocalInput(item.reminderDatetime) : ''); setReminding(item.localId); }}>Set reminder</button>
                         {item.reminderDatetime && <button onClick={() => clearReminder(item.localId)}>Clear reminder</button>}
                         <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
                         <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>

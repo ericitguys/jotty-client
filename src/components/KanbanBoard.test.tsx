@@ -244,17 +244,63 @@ describe('KanbanBoard', () => {
   it('empty_reminder_save_clears', async () => {
     reminderMock();
     const reload = vi.fn(async () => {});
-    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00', reminderNotified: null }];
+    // production fixture: Z-form ISO (upstream writes toISOString(); T7.1 reshape from the offset-less fixture)
+    const fixture = '2026-10-01T07:00:00.000Z';
+    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: fixture, reminderNotified: null }];
     const { container } = render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
     const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
-    expect(input.value).toBe('2026-10-01T09:00'); // prefilled from the existing reminder
+    // expected prefill computed in-test from the fixture (TZ-robust, same pattern as the set-flow fence)
+    const fd = new Date(fixture);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expectedLocal = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}T${pad(fd.getHours())}:${pad(fd.getMinutes())}`;
+    expect(input.value).toBe(expectedLocal); // prefilled with the LOCAL conversion of the Z-form reminder
     fireEvent.change(input, { target: { value: '' } });
     fireEvent.click(screen.getByText('Save'));
-    // empty value = clear -> null (DELETE server-side)
+    // empty value = clear -> null (DELETE server-side) — the explicit-clear path stays pinned
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: null }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('prefilled_unchanged_save_restores_same_instant', async () => {
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const fixture = '2026-10-01T07:00:00.000Z';
+    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: fixture, reminderNotified: null }];
+    const { container } = render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set reminder'));
+    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
+    // input shows the converted local value (TZ-robust: expected computed in-test)
+    const fd = new Date(fixture);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expectedLocal = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}T${pad(fd.getHours())}:${pad(fd.getMinutes())}`;
+    expect(input.value).toBe(expectedLocal);
+    fireEvent.click(screen.getByText('Save'));
+    // Save WITHOUT edits -> an ISO whose instant equals the fixture's instant (TZ-safe compare)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: expect.any(String) }));
+    const call = invoke.mock.calls.find((c) => c[0] === 'set_item_reminder');
+    const sent = (call![1] as { datetime: string }).datetime;
+    expect(new Date(sent).getTime()).toBe(new Date(fixture).getTime());
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('back_without_save_does_not_invoke', async () => {
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set reminder'));
+    expect(container.querySelector('.kanban-reminder-edit input')).not.toBeNull();
+    fireEvent.click(screen.getByText('Back'));
+    // Back never invokes: set_item_reminder NOT called
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_reminder')).toBe(false);
+    // menu rows visible again
+    expect(screen.getByText('Set reminder')).toBeInTheDocument();
+    expect(screen.getByText('Rename')).toBeInTheDocument();
   });
 });
