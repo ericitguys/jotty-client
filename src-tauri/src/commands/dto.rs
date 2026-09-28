@@ -227,6 +227,10 @@ pub struct SyncReportDto {
     pub pending: i64,
     pub conflicts: i64,
     pub last_sync_at: Option<String>,
+    // T3: per-board kanban reminder enrichment failures. The verbatim do_sync
+    // reports the real count via the "sync-updated" event; this command-payload
+    // mirror reports 0 (the outbox snapshot it reflects carries no pull stats).
+    pub enrichment_errors: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

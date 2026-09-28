@@ -290,6 +290,23 @@ impl JottyClient {
         Ok(())
     }
 
+    /// PATCH /api/checklists/{listId}/items/{indexPath} — startDate only.
+    /// Upstream route (items/[itemIndex]/route.ts, source-verified 2026-09-28,
+    /// same partial-update route as targetDate): startDate must be a string or
+    /// null; null clears. Body mirrors update_item_target_date's shape.
+    pub async fn update_item_start_date(&self, list_id: &str, path: &str, start_date: Option<&str>) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["startDate"] = match start_date {
+            Some(d) => serde_json::Value::String(d.to_string()),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
     /// Set/clear a kanban item reminder. Some(iso) → PUT body {"datetime": iso}
     /// (upstream PUT REQUIRES datetime — 400 without); None → DELETE (same URL,
     /// empty body — the upstream DELETE route appends reminder:"" = cleared).

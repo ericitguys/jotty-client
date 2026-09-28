@@ -200,6 +200,28 @@ pub fn set_target_date(conn: &Connection, local_id: &str, target_date: Option<St
     Ok(item)
 }
 
+/// Local reminder edit (T3 set_reminder op): write the reminder datetime and
+/// mark the row dirty=1 — the LOCAL edit owns the server write (the queued
+/// set_reminder op replays it via client.set_item_reminder).
+pub fn set_reminder_local(conn: &Connection, local_id: &str, datetime: Option<String>) -> AppResult<ItemRow> {
+    conn.execute(
+        "UPDATE checklist_items SET reminder_datetime=?2, dirty=1 WHERE local_id=?1",
+        rusqlite::params![local_id, datetime],
+    )?;
+    Ok(get(conn, local_id)?.ok_or_else(|| crate::error::AppError::Other("item not found".into()))?)
+}
+
+/// Enrichment mirror (T3): write/clear the reminder columns from SERVER truth
+/// WITHOUT touching `dirty` — the dirty flag is owned by local edits + ops,
+/// never by a pull-side mirror.
+pub fn set_reminder_from_server(conn: &Connection, local_id: &str, datetime: Option<String>, notified: Option<bool>) -> AppResult<()> {
+    conn.execute(
+        "UPDATE checklist_items SET reminder_datetime=?2, reminder_notified=?3 WHERE local_id=?1",
+        rusqlite::params![local_id, datetime, notified],
+    )?;
+    Ok(())
+}
+
 /// Mirrors upstream applyStatus (item-status-utils.ts, source-verified 2026-09-20):
 /// target autoComplete -> completed=1; status CHANGED on a completed row -> completed=0;
 /// same-status no-op -> completed untouched. Row always marked dirty=1.
@@ -475,5 +497,40 @@ mod tests {
         assert_eq!(after[0].server_path.as_deref(), Some("0"));
         assert_eq!(after[0].server_item_id.as_deref(), Some("srv-7"));
         assert_eq!(after[0].start_date.as_deref(), Some("2026-10-05"));
+    }
+
+    #[test]
+    fn set_reminder_local_writes_datetime_and_dirty() {
+        // T3: the LOCAL reminder edit owns the server write -> dirty=1.
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = insert_local(&conn, &NewItem { checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(), status: None, priority: None, target_date: None }).unwrap();
+        let r = set_reminder_local(&conn, &it.local_id, Some("2026-10-01T09:00:00Z".into())).unwrap();
+        assert_eq!(r.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00Z"));
+        assert!(r.dirty, "the queued set_reminder op owns the server write");
+        // clear: NULL, still dirty
+        let r = set_reminder_local(&conn, &it.local_id, None).unwrap();
+        assert_eq!(r.reminder_datetime, None);
+        assert!(r.dirty);
+    }
+
+    #[test]
+    fn set_reminder_from_server_writes_without_dirty() {
+        // T3: the enrichment mirror writes reminder columns WITHOUT dirty.
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = insert_local(&conn, &NewItem { checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(), status: None, priority: None, target_date: None }).unwrap();
+        conn.execute("UPDATE checklist_items SET dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        set_reminder_from_server(&conn, &it.local_id, Some("2026-10-01T09:00:00Z".into()), Some(true)).unwrap();
+        let r = get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00Z"));
+        assert_eq!(r.reminder_notified, Some(true));
+        assert!(!r.dirty, "server mirror must never dirty the row");
+        // server-without-reminder clears both columns, dirty still untouched
+        set_reminder_from_server(&conn, &it.local_id, None, None).unwrap();
+        let r = get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.reminder_datetime, None);
+        assert_eq!(r.reminder_notified, None);
+        assert!(!r.dirty);
     }
 }

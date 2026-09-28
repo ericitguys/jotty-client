@@ -32,6 +32,23 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
         for op in ops {
             let payload: serde_json::Value = serde_json::from_str(&op.payload)
                 .unwrap_or_else(|_| serde_json::json!({}));
+            // T3 replay-time reminder gate (defense; UI + set_item_reminder_inner gate
+            // too): a set_reminder op on a NON-kanban-family list conflicts BEFORE the
+            // item group even opens — zero server traffic (no group-close catalog
+            // fetch, no snapshot fetch, no reminder write). Missing/NULL list_type is
+            // treated as non-kanban. The "unresolved item op" prefix routes it to the
+            // existing conflict classification.
+            if op.entity == "checklist_item" && op.op_type == "set_reminder" {
+                let gate_list_id = payload["checklist_id"].as_str().unwrap_or(&op.entity_id).to_string();
+                let is_kanban = checklists::get_checklist(conn, &gate_list_id)?
+                    .map(|c| c.list_type == "kanban" || c.list_type == "task")
+                    .unwrap_or(false);
+                if !is_kanban {
+                    outbox::mark_conflict(conn, op.seq, "unresolved item op: reminders only work on kanban boards")?;
+                    stats.conflicts += 1;
+                    continue;
+                }
+            }
             let item_list_id: String = if op.entity == "checklist_item" {
                 let list_id = payload["checklist_id"].as_str().unwrap_or(&op.entity_id).to_string();
                 if group.as_deref() != Some(list_id.as_str()) {
@@ -176,14 +193,65 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                         // text-verified (check-op class): a mis-targeted date write
                         // stamps a date on the WRONG card — same hazard family as
                         // mis-targeted checks/status moves.
-                        Ok(path) => match client.update_item_target_date(
-                            &item_list_id, &path,
-                            // payload targetDate null/absent -> None -> PATCH null (clears)
-                            payload["targetDate"].as_str(),
-                        ).await {
-                            Ok(()) => Ok(()),
-                            Err(e) => Err(e),
-                        },
+                        Ok(path) => {
+                            // T3 startDate extension: the payload key's PRESENCE decides.
+                            // ABSENT (get() on a missing key) -> the existing single
+                            // targetDate PATCH, byte-identical legacy wire behavior
+                            // (pinned by item_set_date_ops_replay_as_target_date_patches).
+                            // PRESENT (string OR null -> clear) -> targetDate FIRST
+                            // (preserves the single-op semantics it extends), then
+                            // startDate — both PATCHes ride the ONE resolved path from
+                            // the ONE snapshot; either failing fails the op.
+                            match payload.get("startDate") {
+                                None => match client.update_item_target_date(
+                                    &item_list_id, &path,
+                                    // payload targetDate null/absent -> None -> PATCH null (clears)
+                                    payload["targetDate"].as_str(),
+                                ).await {
+                                    Ok(()) => Ok(()),
+                                    Err(e) => Err(e),
+                                },
+                                Some(_) => match client.update_item_target_date(
+                                    &item_list_id, &path, payload["targetDate"].as_str(),
+                                ).await {
+                                    Ok(()) => match client.update_item_start_date(
+                                        &item_list_id, &path, payload["startDate"].as_str(),
+                                    ).await {
+                                        Ok(()) => Ok(()),
+                                        Err(e) => Err(e),
+                                    },
+                                    Err(e) => Err(e),
+                                },
+                            }
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "set_reminder") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        Ok(path) => {
+                            // Stable id: the row's server_item_id FIRST; else the
+                            // snapshot item's id AT the resolved path (flatten DFS
+                            // order == resolve's paths). Neither -> sentinel conflict
+                            // (existing "unresolved item op" classification).
+                            let local_id = payload["item_local_id"].as_str().unwrap_or(&op.entity_id).to_string();
+                            let row_id = items::get(conn, &local_id)?.and_then(|r| r.server_item_id.clone());
+                            let snap_id = items::flatten(&snap.items).into_iter()
+                                .find(|f| f.path == path)
+                                .and_then(|f| f.id);
+                            match row_id.or(snap_id) {
+                                Some(id) => match client.set_item_reminder(
+                                    &item_list_id, &id,
+                                    // payload datetime null (clear) -> None -> DELETE
+                                    payload["datetime"].as_str(),
+                                ).await {
+                                    Ok(()) => Ok(()),
+                                    Err(e) => Err(e),
+                                },
+                                None => Err(AppError::Other("unresolved item op: server does not expose stable item ids".into())),
+                            }
+                        }
                         Err(e) => Err(e),
                     },
                     Err(e) => Err(e),
@@ -1222,5 +1290,298 @@ mod tests {
         assert!(with_status.contains("\"status\":\"in_progress\""), "kanban create body must carry the create-time status: {with_status}");
         assert!(with_status.contains("\"text\":\"card\""), "body: {with_status}");
         assert!(!plain.contains("\"status\""), "plain-list create body must stay status-free (Ruling D): {plain}");
+    }
+
+    // ------------------------------------------------------------------
+    // T3: set_date startDate extension + set_reminder op (fences). Every
+    // op-test mounts its OWN mocks (standing wiremock pitfall: unmatched
+    // requests get a default 404 → silently mapped conflicts).
+
+    #[tokio::test]
+    async fn set_date_with_start_date_patches_both_fields() {
+        // startDate-bearing payload: BOTH fields patch on the ONE resolved path,
+        // targetDate FIRST (existing single-op semantics preserved), then
+        // startDate — one snapshot fetch, one resolve, two PATCHes.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let start_hits = Arc::new(AtomicUsize::new(0));
+        let order: Arc<std::sync::Mutex<Vec<&'static str>>> = Default::default();
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let th = target_hits.clone();
+            let order = order.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"targetDate":"2026-10-05"})))
+                .respond_with(move |_: &_| {
+                    th.fetch_add(1, Ordering::SeqCst);
+                    order.lock().unwrap().push("targetDate");
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let sh = start_hits.clone();
+            let order = order.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"startDate":"2026-10-01"})))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    order.lock().unwrap().push("startDate");
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','task','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "targetDate": "2026-10-05", "startDate": "2026-10-01"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the startDate-bearing op must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 1, "targetDate must PATCH");
+        assert_eq!(start_hits.load(Ordering::SeqCst), 1, "startDate must PATCH");
+        assert_eq!(order.lock().unwrap().as_slice(), &["targetDate", "startDate"],
+            "targetDate must ride FIRST (preserves the single-op semantics it extends)");
+    }
+
+    #[tokio::test]
+    async fn set_reminder_op_uses_row_server_item_id() {
+        // Stable-id preference: the row's server_item_id wins even when the
+        // snapshot item at the resolved path carries a DIFFERENT id — the PUT
+        // must hit /api/kanban/l1/items/srv-1/reminder with {"datetime": iso}.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let put_hits = Arc::new(AtomicUsize::new(0));
+        let wrong_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"id":"snap-different","index":0,"text":"Dentist","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"datetime":"2026-10-01T09:00:00Z"})))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let wh = wrong_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-different/reminder"))
+                .respond_with(move |_: &_| {
+                    wh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, server_item_id)
+             VALUES ('it-1','l1',NULL,'Dentist',0,0,'0',0,'todo',NULL,NULL,'srv-1')", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "set_reminder must replay against the stable id");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "the row's server_item_id must route the PUT");
+        assert_eq!(wrong_hits.load(Ordering::SeqCst), 0, "the snapshot path id must not win over the row's stable id");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn set_reminder_op_falls_back_to_snapshot_item_id() {
+        // Row without a stable id -> the snapshot item AT the resolved path
+        // carries the id ("snap-9") and the PUT must target it.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let put_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"id":"snap-9","index":0,"text":"Dentist","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-9/reminder"))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1','l1',NULL,'Dentist',0,0,'0',0,'todo',NULL,NULL)", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the snapshot item's id must route the PUT");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "PUT must hit .../items/snap-9/reminder");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn set_reminder_without_any_stable_id_conflicts() {
+        // No stable id on the row NOR on the snapshot item -> sentinel conflict
+        // (existing "unresolved item op" classification), zero reminder writes.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let put_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"index":0,"text":"Dentist","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/0/reminder"))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1','l1',NULL,'Dentist',0,0,'0',0,'todo',NULL,NULL)", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1, "no stable id anywhere must conflict, not retry");
+        assert_eq!(stats.pushed, 0);
+        let state: String = conn.query_row(
+            "SELECT state FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "conflict", "the op must be marked conflict");
+        let err: Option<String> = conn.query_row(
+            "SELECT last_error FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| r.get(0)).unwrap();
+        assert!(err.as_deref().unwrap_or("").starts_with("unresolved item op"),
+            "the no-stable-id case must ride the unresolved-op classification, got: {err:?}");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 0, "no reminder write without a stable id");
+    }
+
+    #[tokio::test]
+    async fn set_reminder_clear_replays_as_delete() {
+        // payload datetime null -> client None -> DELETE on the reminder route.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let del_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"id":"srv-1","index":0,"text":"Dentist","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let dh = del_hits.clone();
+            Mock::given(method("DELETE")).and(path("/api/kanban/l1/items/srv-1/reminder"))
+                .respond_with(move |_: &_| {
+                    dh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, server_item_id)
+             VALUES ('it-1','l1',NULL,'Dentist',0,0,'0',0,'todo',NULL,NULL,'srv-1')", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the clear op must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(del_hits.load(Ordering::SeqCst), 1, "datetime null must replay as DELETE (binding ruling)");
+    }
+
+    #[tokio::test]
+    async fn set_reminder_on_non_kanban_conflicts_without_http() {
+        // Replay-time defense: a non-kanban owning list conflicts BEFORE any
+        // fetch — every mock counter stays at 0.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let get_hits = Arc::new(AtomicUsize::new(0));
+        let put_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        {
+            let gh = get_hits.clone();
+            Mock::given(method("GET")).and(path("/api/checklists"))
+                .respond_with(move |_: &_| {
+                    gh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "checklists": [{"id":"l1","title":"R","category":"Home","items":[
+                            {"id":"srv-1","index":0,"text":"plain","completed":false}
+                        ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+                    }))
+                })
+                .mount(&s).await;
+        }
+        {
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','R','Home','regular','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, server_item_id)
+             VALUES ('it-1','l1',NULL,'plain',0,0,'0',0,NULL,NULL,NULL,'srv-1')", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1, "a non-kanban set_reminder must conflict (unresolved-op classification)");
+        assert_eq!(stats.pushed, 0);
+        assert_eq!(get_hits.load(Ordering::SeqCst), 0, "the gate must fire BEFORE the snapshot fetch");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 0, "no reminder write off-family");
+        let state: String = conn.query_row(
+            "SELECT state FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "conflict");
+        let err: Option<String> = conn.query_row(
+            "SELECT last_error FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| r.get(0)).unwrap();
+        let err = err.as_deref().unwrap_or("");
+        assert!(err.starts_with("unresolved item op") && err.contains("reminders only work on kanban boards"),
+            "the gate must conflict via the unresolved-op sentinel with the gate message, got: {err:?}");
     }
 }

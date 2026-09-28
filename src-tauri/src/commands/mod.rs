@@ -296,17 +296,53 @@ pub(crate) fn set_item_status_inner(
 /// Kanban card date (appointments): set/clear target_date + enqueue the
 /// "set_date" op. One tx (invariant 1). Payload carries camelCase targetDate —
 /// the shape push.rs replays against PATCH /api/checklists/{id}/items/{path}
-/// (string = set, null = clear).
+/// (string = set, null = clear). T3: `start_date` rides the SAME op — the
+/// "startDate" key appears ONLY when Some (legacy payloads stay byte-identical:
+/// no startDate key); the push arm then issues a second startDate PATCH after
+/// the targetDate PATCH. The row's start_date column itself is backfilled by
+/// reconcile at group close (the server is the source of truth for it).
 pub(crate) fn set_item_target_date_inner(
     conn: &mut Connection,
     checklist_id: &str,
     item_local_id: &str,
     target_date: Option<String>,
+    start_date: Option<String>,
 ) -> AppResult<()> {
     let tx = conn.transaction()?;
     items::set_target_date(&tx, item_local_id, target_date.clone())?;
-    outbox::enqueue(&tx, "set_date", "checklist_item", item_local_id, &serde_json::json!({
+    let mut payload = serde_json::json!({
         "checklist_id": checklist_id, "item_local_id": item_local_id, "targetDate": target_date
+    });
+    if let Some(s) = &start_date {
+        payload["startDate"] = serde_json::json!(s);
+    }
+    outbox::enqueue(&tx, "set_date", "checklist_item", item_local_id, &payload)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Kanban card reminder (appointments T3): set/clear reminder_datetime + enqueue
+/// the "set_reminder" op. One tx (invariant 1). Payload shape
+/// {checklist_id, item_local_id, datetime} — datetime null = clear (the replay
+/// arm maps null -> client None -> DELETE). Defense gate BEFORE any write: only
+/// kanban-family boards take reminders (the UI gates too; upstream would
+/// 404/400 the write anyway). Missing/NULL list_type -> treated as non-kanban.
+pub(crate) fn set_item_reminder_inner(
+    conn: &mut Connection,
+    checklist_id: &str,
+    item_local_id: &str,
+    datetime: Option<String>,
+) -> AppResult<()> {
+    let list_type = checklists::get_checklist(conn, checklist_id)?
+        .map(|c| c.list_type)
+        .unwrap_or_default();
+    if list_type != "kanban" && list_type != "task" {
+        return Err(AppError::Other("reminders only work on kanban boards".into()));
+    }
+    let tx = conn.transaction()?;
+    items::set_reminder_local(&tx, item_local_id, datetime.clone())?;
+    outbox::enqueue(&tx, "set_reminder", "checklist_item", item_local_id, &serde_json::json!({
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "datetime": datetime
     }))?;
     tx.commit()?;
     Ok(())
@@ -605,7 +641,7 @@ pub(crate) async fn inner_trigger_sync(
     let last_sync_at: Option<String> = conn
         .query_row("SELECT value FROM sync_state WHERE key='last_sync_at'", [], |r| r.get(0))
         .optional()?;
-    Ok(SyncReportDto { pending, conflicts, last_sync_at })
+    Ok(SyncReportDto { pending, conflicts, last_sync_at, enrichment_errors: 0 })
 }
 
 pub(crate) fn sync_status_inner(conn: &Connection, syncing: bool) -> AppResult<SyncStatusDto> {
@@ -794,9 +830,25 @@ pub async fn set_item_target_date(
     checklist_id: String,
     item_local_id: String,
     target_date: Option<String>,
+    start_date: Option<String>,
 ) -> Result<(), String> {
     let mut conn = state.db.lock().await;
-    set_item_target_date_inner(&mut conn, &checklist_id, &item_local_id, target_date).map_err(|e| e.to_string())
+    set_item_target_date_inner(&mut conn, &checklist_id, &item_local_id, target_date, start_date).map_err(|e| e.to_string())
+}
+
+/// Set/clear a kanban card's reminder (appointments T3): the local row's
+/// reminder_datetime + dirty=1, then the set_reminder op replays via
+/// client.set_item_reminder (Some -> PUT, None/null -> DELETE). Kanban-family
+/// gate inside (inner).
+#[tauri::command]
+pub async fn set_item_reminder(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    datetime: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    set_item_reminder_inner(&mut conn, &checklist_id, &item_local_id, datetime).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2445,7 +2497,7 @@ mod tests {
         }).unwrap();
 
         // set: row target_date updated + dirty, ONE set_date op (R1: entity_id = local_id)
-        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, Some("2026-10-05".into())).unwrap();
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, Some("2026-10-05".into()), None).unwrap();
         let r = items::get(&conn, &it.local_id).unwrap().unwrap();
         assert_eq!(r.target_date.as_deref(), Some("2026-10-05"));
         assert!(r.dirty);
@@ -2461,13 +2513,61 @@ mod tests {
 
         // clear (None): row NULLs the date, second op payload carries null
         // (upstream PATCH semantics: targetDate null -> cleared server-side)
-        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, None).unwrap();
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, None, None).unwrap();
         let r = items::get(&conn, &it.local_id).unwrap().unwrap();
         assert!(r.target_date.is_none());
         assert_eq!(outbox::next_batch(&conn, 10).unwrap().len(), 2);
         let ops = outbox::next_batch(&conn, 10).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert!(payload["targetDate"].is_null());
+    }
+
+    #[tokio::test]
+    async fn set_item_reminder_inner_gates_non_kanban_and_enqueues() {
+        // T3: kanban-family boards take reminders (row reminder + dirty + ONE
+        // set_reminder op, payload datetime null on clear); non-kanban is
+        // refused BEFORE any write.
+        let mut conn = db();
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('b1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: "b1".into(), parent_local_id: None, text: "card".into(),
+            status: Some("todo".into()), priority: None, target_date: None,
+        }).unwrap();
+        set_item_reminder_inner(&mut conn, "b1", &it.local_id, Some("2026-10-01T09:00:00Z".into())).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00Z"));
+        assert!(r.dirty, "the local edit owns the server write");
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "set_reminder");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, it.local_id);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["checklist_id"], "b1");
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+        assert_eq!(payload["datetime"], "2026-10-01T09:00:00Z");
+
+        // clear: second op, payload datetime null (replay maps null -> DELETE)
+        set_item_reminder_inner(&mut conn, "b1", &it.local_id, None).unwrap();
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert!(payload["datetime"].is_null());
+
+        // non-kanban gate: Err BEFORE any write (row + outbox untouched)
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('r1','R','Home','regular','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it2 = items::insert_local(&conn, &items::NewItem {
+            checklist_id: "r1".into(), parent_local_id: None, text: "plain".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+        let before = outbox::next_batch(&conn, 10).unwrap().len();
+        let err = set_item_reminder_inner(&mut conn, "r1", &it2.local_id, Some("2026-10-01T09:00:00Z".into())).unwrap_err();
+        assert_eq!(err.to_string(), "reminders only work on kanban boards");
+        assert_eq!(outbox::next_batch(&conn, 10).unwrap().len(), before, "the gated op must not enqueue");
+        let r2 = items::get(&conn, &it2.local_id).unwrap().unwrap();
+        assert!(r2.reminder_datetime.is_none(), "the gated write must not touch the row");
     }
 
     #[tokio::test]
