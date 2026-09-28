@@ -243,7 +243,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                             match row_id.or(snap_id) {
                                 Some(id) => match client.set_item_reminder(
                                     &item_list_id, &id,
-                                    // payload datetime null (clear) -> None -> DELETE
+                                    // payload datetime null (clear) -> None -> null-reminder PUT
                                     payload["datetime"].as_str(),
                                 ).await {
                                     Ok(()) => Ok(()),
@@ -1362,7 +1362,9 @@ mod tests {
     async fn set_reminder_op_uses_row_server_item_id() {
         // Stable-id preference: the row's server_item_id wins even when the
         // snapshot item at the resolved path carries a DIFFERENT id — the PUT
-        // must hit /api/kanban/l1/items/srv-1/reminder with {"datetime": iso}.
+        // must hit /api/kanban/l1/items/srv-1 with {"reminder":{"datetime": iso}}
+        // (item-level partial update; the /reminder sub-route is auth-dead for
+        // API-key clients).
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let put_hits = Arc::new(AtomicUsize::new(0));
@@ -1377,8 +1379,10 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
-                .and(wiremock::matchers::body_json(serde_json::json!({"datetime":"2026-10-01T09:00:00Z"})))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
+                .and(wiremock::matchers::body_json(serde_json::json!(
+                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                )))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1387,7 +1391,7 @@ mod tests {
         }
         {
             let wh = wrong_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-different/reminder"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-different"))
                 .respond_with(move |_: &_| {
                     wh.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1427,7 +1431,7 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-9/reminder"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-9"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1445,7 +1449,7 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 1, "the snapshot item's id must route the PUT");
         assert_eq!(stats.conflicts, 0);
-        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "PUT must hit .../items/snap-9/reminder");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "PUT must hit .../items/snap-9 (item-level route)");
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
@@ -1466,7 +1470,7 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/0/reminder"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/0"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1495,11 +1499,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_reminder_clear_replays_as_delete() {
-        // payload datetime null -> client None -> DELETE on the reminder route.
+    async fn set_reminder_clear_replays_as_null_reminder_put() {
+        // payload datetime null -> client None -> PUT {"reminder":null} on the
+        // item-level route (the /reminder sub-route is auth-dead for API-key
+        // clients — no DELETE anymore).
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let del_hits = Arc::new(AtomicUsize::new(0));
+        let put_hits = Arc::new(AtomicUsize::new(0));
         let s = MockServer::start().await;
         Mock::given(method("GET")).and(path("/api/checklists"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1509,10 +1515,11 @@ mod tests {
             })))
             .mount(&s).await;
         {
-            let dh = del_hits.clone();
-            Mock::given(method("DELETE")).and(path("/api/kanban/l1/items/srv-1/reminder"))
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"reminder":null})))
                 .respond_with(move |_: &_| {
-                    dh.fetch_add(1, Ordering::SeqCst);
+                    ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
                 })
                 .mount(&s).await;
@@ -1528,7 +1535,7 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 1, "the clear op must replay");
         assert_eq!(stats.conflicts, 0);
-        assert_eq!(del_hits.load(Ordering::SeqCst), 1, "datetime null must replay as DELETE (binding ruling)");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "datetime null must replay as a null-reminder PUT on the item-level route (sub-route auth-dead for API-key clients)");
     }
 
     #[tokio::test]
@@ -1555,7 +1562,7 @@ mod tests {
         }
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))

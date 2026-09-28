@@ -307,26 +307,29 @@ impl JottyClient {
         Ok(())
     }
 
-    /// Set/clear a kanban item reminder. Some(iso) → PUT body {"datetime": iso}
-    /// (upstream PUT REQUIRES datetime — 400 without); None → DELETE (same URL,
-    /// empty body — the upstream DELETE route appends reminder:"" = cleared).
+    /// Set/clear a kanban item reminder via the ITEM-LEVEL PUT partial update:
+    /// Some(iso) → PUT /api/kanban/{board_id}/items/{item_id} with
+    /// {"reminder":{"datetime":iso}}; None → the same PUT with {"reminder":null}.
+    ///
+    /// The dedicated sub-route PUT/DELETE /api/kanban/{board}/items/{item}/reminder
+    /// is AUTH-DEAD for API-key clients: it returns 400 "Not authenticated"
+    /// (PUT and DELETE — the action calls setKanbanItemReminder(formData) with
+    /// no user and checks session-cookie getCurrentUser; routes byte-identical
+    /// at v1.26.1 == v1.27.0). The item-level PUT is the API-key-viable path:
+    /// it forwards user.username into updateItem (partial update — only
+    /// `reminder` is touched; text/status/dates/history untouched), parses the
+    /// body's reminder via JSON.parse guarded by truthiness, and null clears.
+    /// Undocumented in howto/API.md as of v1.27.0.
     pub async fn set_item_reminder(&self, board_id: &str, item_id: &str, datetime: Option<&str>) -> AppResult<()> {
-        match datetime {
-            Some(iso) => {
-                self.api_send::<serde_json::Value>(
-                    reqwest::Method::PUT,
-                    &format!("/api/kanban/{board_id}/items/{item_id}/reminder"),
-                    serde_json::json!({ "datetime": iso }),
-                ).await?;
-            }
-            None => {
-                self.api_send::<serde_json::Value>(
-                    reqwest::Method::DELETE,
-                    &format!("/api/kanban/{board_id}/items/{item_id}/reminder"),
-                    serde_json::json!({}),
-                ).await?;
-            }
-        }
+        let reminder = match datetime {
+            Some(iso) => serde_json::json!({ "datetime": iso }),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT,
+            &format!("/api/kanban/{board_id}/items/{item_id}"),
+            serde_json::json!({ "reminder": reminder }),
+        ).await?;
         Ok(())
     }
 
@@ -835,11 +838,13 @@ mod tests {
 
     #[tokio::test]
     async fn set_item_reminder_put_carries_datetime_body() {
-        // upstream PUT REQUIRES datetime (400 without) — body must carry {"datetime": iso}
+        // item-level PUT partial update: body must carry {"reminder":{"datetime": iso}}
+        // — the mock pins the ITEM-LEVEL path (no /reminder suffix; the sub-route
+        // would not match and hits would stay 0).
         let s = server().await;
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
-        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1/reminder"))
+        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1"))
             .respond_with(move |_: &wiremock::Request| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
@@ -847,20 +852,22 @@ mod tests {
             .mount(&s).await;
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         c.set_item_reminder("b1", "srv-1", Some("2026-10-01T09:00:00Z")).await.unwrap();
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "PUT must hit the reminder endpoint exactly once");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "PUT must hit the item-level endpoint exactly once");
         let reqs = s.received_requests().await.unwrap();
         let body = String::from_utf8_lossy(&reqs[0].body).to_string();
+        assert!(body.contains("\"reminder\""), "body: {body}");
         assert!(body.contains("\"datetime\""), "body: {body}");
         assert!(body.contains("2026-10-01T09:00:00Z"), "body: {body}");
     }
 
     #[tokio::test]
-    async fn set_item_reminder_none_sends_delete() {
-        // clearing = DELETE on the same URL, empty body (upstream appends reminder:"")
+    async fn set_item_reminder_none_sends_null_reminder_put() {
+        // clearing = PUT {"reminder":null} on the item-level route (the reminder
+        // sub-route is auth-dead for API-key clients — no DELETE anymore).
         let s = server().await;
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
-        Mock::given(method("DELETE")).and(path("/api/kanban/b1/items/srv-1/reminder"))
+        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1"))
             .respond_with(move |_: &wiremock::Request| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
@@ -868,15 +875,18 @@ mod tests {
             .mount(&s).await;
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         c.set_item_reminder("b1", "srv-1", None).await.unwrap();
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "None must DELETE the reminder endpoint exactly once");
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "None must PUT the item-level endpoint exactly once");
+        let reqs = s.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&reqs[0].body).to_string();
+        assert!(body.contains("\"reminder\":null"), "body: {body}");
     }
 
     #[tokio::test]
     async fn set_item_reminder_4xx_maps_to_api_error() {
-        // upstream PUT refuses a body without datetime: 400 {"error": "..."} shape
+        // a 4xx on the item-level PUT maps to AppError::Api (route-agnostic mapping)
         let s = server().await;
-        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1/reminder"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"Datetime is required"})))
+        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"Not authenticated"})))
             .mount(&s).await;
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         let err = c.set_item_reminder("b1", "srv-1", Some("2026-10-01T09:00:00Z")).await.unwrap_err();

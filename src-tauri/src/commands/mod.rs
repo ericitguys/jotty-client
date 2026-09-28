@@ -362,7 +362,9 @@ pub(crate) fn set_item_target_date_inner(
 /// Kanban card reminder (appointments T3): set/clear reminder_datetime + enqueue
 /// the "set_reminder" op. One tx (invariant 1). Payload shape
 /// {checklist_id, item_local_id, datetime} — datetime null = clear (the replay
-/// arm maps null -> client None -> DELETE). Defense gate BEFORE any write: only
+/// arm maps null -> client None -> a null-reminder PUT on the item-level route;
+/// the /reminder sub-route is auth-dead for API-key clients). Defense gate
+/// BEFORE any write: only
 /// kanban-family boards take reminders (the UI gates too; upstream would
 /// 404/400 the write anyway). Missing/NULL list_type -> treated as non-kanban.
 pub(crate) fn set_item_reminder_inner(
@@ -885,7 +887,8 @@ pub async fn set_item_target_date(
 
 /// Set/clear a kanban card's reminder (appointments T3): the local row's
 /// reminder_datetime + dirty=1, then the set_reminder op replays via
-/// client.set_item_reminder (Some -> PUT, None/null -> DELETE). Kanban-family
+/// client.set_item_reminder (Some -> PUT {"reminder":{"datetime":…}},
+/// None/null -> PUT {"reminder":null}; both on the item-level route). Kanban-family
 /// gate inside (inner).
 #[tauri::command]
 pub async fn set_item_reminder(
