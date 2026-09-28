@@ -9,8 +9,8 @@ use crate::error::{AppError, AppResult};
 use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
-    AgendaEntryDto, AiSettingsDto, BoardDto, BoardStatusDto, CategoriesDto, ChecklistDto,
-    ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
+    AgendaEntryDto, AiSettingsDto, AppointmentDraftDto, BoardDto, BoardStatusDto, CategoriesDto,
+    ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
     SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
 };
 use rusqlite::Connection;
@@ -1492,6 +1492,39 @@ pub async fn voice_extract_tasks(
     Ok(tasks)
 }
 
+/// Voice → appointment extraction (appointments Task 8): one LLM pass over
+/// the transcript; None when the model reports there is no appointment.
+/// Writes no table — the lock is dropped before the await and the effective
+/// suffix from the returned pair is persisted under a fresh scoped lock
+/// afterwards (voice_extract_tasks shape).
+pub(crate) async fn voice_extract_appointment_inner(
+    ai: &crate::voice_ai::VoiceAiClient,
+    model: &str,
+    text: &str,
+) -> AppResult<(Option<crate::voice_ai::AppointmentDraft>, crate::voice_ai::Suffix)> {
+    if model.trim().is_empty() {
+        return Err(crate::error::AppError::Other(
+            "AI model not configured — pick one in Settings".into(),
+        ));
+    }
+    ai.extract_appointment(model, text).await
+}
+
+#[tauri::command]
+pub async fn voice_extract_appointment(
+    state: tauri::State<'_, AppState>,
+    text: String,
+) -> Result<Option<AppointmentDraftDto>, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let model = { let conn = state.db.lock().await; ai_model(&conn).map_err(|e| e.to_string())? };
+    let (draft, sfx) = voice_extract_appointment_inner(&ai, &model, &text).await.map_err(|e| e.to_string())?;
+    {
+        let conn = state.db.lock().await;
+        persist_ai_suffix(&conn, sfx).map_err(|e| e.to_string())?;
+    }
+    Ok(draft.map(AppointmentDraftDto::from))
+}
+
 fn voice_list_unsaved_inner(conn: &Connection) -> AppResult<Vec<VoiceRecordingDto>> {
     Ok(crate::db::voice::list_unsaved(conn)?.into_iter().map(Into::into).collect())
 }
@@ -2301,6 +2334,16 @@ mod tests {
     async fn extract_requires_a_model() {
         let ai = ai_mock_ok_text();
         let err = voice_extract_tasks_inner(&ai, "", "memo").await.unwrap_err();
+        assert!(
+            err.to_string().contains("AI model not configured"),
+            "expected the Settings-configured error, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_appointment_requires_a_model() {
+        let ai = ai_mock_ok_text();
+        let err = voice_extract_appointment_inner(&ai, "", "memo").await.unwrap_err();
         assert!(
             err.to_string().contains("AI model not configured"),
             "expected the Settings-configured error, got {err}"

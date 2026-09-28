@@ -52,6 +52,9 @@ export interface VoiceBoardInput {
   tasks: string[];
   noteSavedId?: string | null; // set on retry after a board-stage failure
   targetBoardId?: string | null; // set = add cards to an EXISTING board instead of creating a new one
+  /** Voice → appointment (appointments Task 8): replaces the tasks loop — ONE
+   * card on the chosen board + target date + optional reminder. */
+  appointment?: { title: string; targetDate: string; reminderDatetime: string | null; boardId: string } | null;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -171,7 +174,21 @@ export const useStore = create<AppState>((set, get) => ({
     }
     try {
       let boardId: string;
-      if (input.targetBoardId) {
+      if (input.appointment) {
+        // Voice → appointment (appointments Task 8): ONE card on the chosen
+        // board, then the date, then the optional reminder. add_item returns
+        // ItemDto (commands add_item → Result<ItemDto, String>), so the localId
+        // chains directly from the return — no read-back needed.
+        boardId = input.appointment.boardId;
+        const item = await api.addItem(boardId, input.appointment.title, null, null);
+        await api.setItemTargetDate(boardId, item.localId, input.appointment.targetDate);
+        if (input.appointment.reminderDatetime) {
+          await api.setItemReminder(boardId, item.localId, input.appointment.reminderDatetime);
+        }
+        // Open the board AFTER the adds so the freshly mounted view fetches them.
+        get().selectChecklist(boardId);
+        await get().refreshAll();
+      } else if (input.targetBoardId) {
         // Existing board: cards land locally (offline-safe, outbox-replayed) — no live create needed.
         boardId = input.targetBoardId;
         for (const raw of input.tasks) {

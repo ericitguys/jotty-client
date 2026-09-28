@@ -510,3 +510,159 @@ describe('VoiceNoteReview board flow', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
+  const boardRow = { id: 'b9', title: 'Appointments', category: 'Life', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, completed: false, listType: 'kanban', items: [] };
+  // The mount chain + panel + save: EVERY command the flow touches gets a mock
+  // (an override that only mocks the new command would let the rest fall
+  // through to null and break the start-chain — the v0.14.2 lesson).
+  const apptMocks = (over: Record<string, unknown> = {}) => (cmd: string) => {
+    const defaults: Record<string, () => unknown> = {
+      // fresh createdAt: the component derives the re-attach timer from it
+      voice_start_recording: () => ({ ...recordedRow, createdAt: new Date().toISOString() }),
+      voice_stop_recording: () => recordedRow,
+      voice_transcribe: () => ({ ...recordedRow, state: 'transcribed', rawTranscript: 'Hello world. Second sentence.', lastError: null }),
+      voice_extract_appointment: () => ({ title: 'Dentist', date: '2026-10-01', time: '09:00' }),
+      voice_save_note: () => ({ id: 'n9', title: 'Hello world.', content: 'x', category: 'Uncategorized', audioPath: '/data/voice/r1.wav', audioDurationSecs: 4.2, createdAt: null, updatedAt: null, deletedAt: null, dirty: true }),
+      // add_item returns ItemDto — the branch chains its localId
+      add_item: () => ({ localId: 'i1', checklistId: 'b9', text: 'Dentist', completed: false, position: 0, dirty: true, children: [] }),
+      set_item_target_date: () => null,
+      set_item_reminder: () => null,
+      // refreshAll rides the same invoke mock
+      get_connection: () => ({ instanceUrl: 'http://x', version: null }),
+      list_notes: () => [],
+      list_checklists: () => [],
+      list_categories: () => null,
+      sync_status: () => null,
+      get_prefs: () => null,
+      get_branding: () => null,
+    };
+    const f = cmd in over ? over[cmd] : defaults[cmd];
+    if (!f) return Promise.resolve(null);
+    const v = typeof f === 'function' ? (f as () => unknown)() : f;
+    return Promise.resolve(v);
+  };
+
+  it('appointment button: gated like the board button; opens the panel as an in-modal section', async () => {
+    invoke.mockImplementation(apptMocks());
+    useStore.setState({ connection: { url: 'x' } as never });
+    const connected = render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    const btn = await screen.findByRole('button', { name: 'Save as appointment' });
+    expect(btn).toBeEnabled();
+    expect(btn).toHaveClass('primary');
+    // empty transcript → disabled
+    fireEvent.change(screen.getByPlaceholderText('Transcript'), { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: 'Save as appointment' })).toBeDisabled();
+    connected.unmount();
+    // offline → disabled with a connect hint
+    useStore.setState({ connection: null });
+    const offlineRender = render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    const offline = await screen.findByRole('button', { name: 'Save as appointment' });
+    expect(offline).toBeDisabled();
+    expect(offline).toHaveAttribute('title', 'Connect to save appointments');
+    offlineRender.unmount();
+    // connected again: the button opens the in-modal panel (editor hidden)
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
+    expect(await screen.findByText('Appointment')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Transcript')).not.toBeInTheDocument();
+  });
+
+  it('extraction prefills the panel from the draft (once per panel entry)', async () => {
+    invoke.mockImplementation(apptMocks());
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
+    expect(await screen.findByDisplayValue('Dentist')).toBeInTheDocument();
+    expect(screen.getByLabelText('Date')).toHaveValue('2026-10-01');
+    expect(screen.getByLabelText('Time')).toHaveValue('09:00');
+    // ruled reminder display: time known → the appointment datetime, read-only
+    expect(screen.getByText(/reminder at 2026-10-01T09:00/)).toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_extract_appointment', { text: 'Hello world. Second sentence.' }));
+    // re-renders (e.g. a later field edit) never re-fire the extraction
+    fireEvent.change(screen.getByPlaceholderText('Appointment title'), { target: { value: 'Root canal' } });
+    const extractCalls = invoke.mock.calls.filter((c) => c[0] === 'voice_extract_appointment').length;
+    expect(extractCalls).toBe(1);
+  });
+
+  it('panel fields are editable over the prefilled draft', async () => {
+    invoke.mockImplementation(apptMocks());
+    useStore.setState({ connection: { url: 'x' } as never });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
+    const titleInput = await screen.findByPlaceholderText('Appointment title');
+    await waitFor(() => expect(titleInput).toHaveValue('Dentist'));
+    fireEvent.change(titleInput, { target: { value: 'Root canal' } });
+    expect(screen.getByPlaceholderText('Appointment title')).toHaveValue('Root canal');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-03' } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '14:30' } });
+    expect(screen.getByText(/reminder at 2026-10-03T14:30/)).toBeInTheDocument();
+    // cancel returns to review with the shared edits intact
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toBeInTheDocument());
+    expect(screen.queryByText('Appointment')).not.toBeInTheDocument();
+  });
+
+  it('save dispatches note save → add_item → set_item_target_date → set_item_reminder in order, then closes', async () => {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    invoke.mockImplementation(apptMocks());
+    useStore.setState({ connection: { url: 'x' } as never, checklists: [boardRow] });
+    render(<VoiceNoteReview mode="new" onClose={onClose} onSaved={onSaved} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Appointment board' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Appointments' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save appointment' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onSaved).not.toHaveBeenCalled(); // board wins, like the board flow
+    const order = invoke.mock.calls.map((c) => c[0]);
+    expect(order.indexOf('voice_save_note')).toBeLessThan(order.indexOf('add_item'));
+    expect(order.indexOf('add_item')).toBeLessThan(order.indexOf('set_item_target_date'));
+    expect(order.indexOf('set_item_target_date')).toBeLessThan(order.indexOf('set_item_reminder'));
+    // time known → targetDate/reminder = `${date}T${time}:00`, chained on the
+    // localId add_item returned
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Dentist', parentLocalId: null, status: null });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01T09:00:00' });
+    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: '2026-10-01T09:00:00' });
+    expect(useStore.getState().selectedChecklistId).toBe('b9');
+  });
+
+  it('no-LLM path: null draft leaves fields empty; empty date blocks save ("Date required"); manual date-only entry saves without a reminder', async () => {
+    const onClose = vi.fn();
+    invoke.mockImplementation(apptMocks({ voice_extract_appointment: null }));
+    useStore.setState({ connection: { url: 'x' } as never, checklists: [boardRow] });
+    render(<VoiceNoteReview mode="new" onClose={onClose} />);
+    fireEvent.click(screen.getByText('Stop'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
+    const titleInput = await screen.findByPlaceholderText('Appointment title');
+    await waitFor(() => expect(screen.queryByText(/Extracting/)).not.toBeInTheDocument());
+    // null draft → fields start empty, manual note shown — never a guessed value
+    expect(titleInput).toHaveValue('');
+    expect(screen.getByLabelText('Date')).toHaveValue('');
+    expect(screen.getByText(/No appointment found/)).toBeInTheDocument();
+    // board chosen, date empty: save is BLOCKED with the ruled validation line
+    fireEvent.click(await screen.findByRole('button', { name: 'Appointment board' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Appointments' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save appointment' }));
+    expect(await screen.findByText('Date required')).toBeInTheDocument();
+    expect(invoke.mock.calls.filter((c) => c[0] === 'add_item')).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+    // manual entry, date only → reminderDatetime null → NO set_item_reminder
+    fireEvent.change(screen.getByPlaceholderText('Appointment title'), { target: { value: 'Checkup' } });
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-02' } });
+    expect(screen.getByText(/no reminder/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save appointment' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Checkup', parentLocalId: null, status: null });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-02' });
+    expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_reminder')).toHaveLength(0);
+    expect(useStore.getState().selectedChecklistId).toBe('b9');
+  });
+});

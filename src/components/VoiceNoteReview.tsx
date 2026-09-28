@@ -44,6 +44,18 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
   const [boardNotice, setBoardNotice] = useState<string | null>(null);
   const [targetBoardId, setTargetBoardId] = useState(''); // '' = new board named after the note
+  // Voice → appointment panel (appointments Task 8): a third in-review target.
+  // Extraction rides panel entry (a ref guard keeps re-renders from re-firing;
+  // the session counter discards a stale reply after cancel + re-open).
+  const [appt, setAppt] = useState(false);
+  const [apptTitle, setApptTitle] = useState('');
+  const [apptDate, setApptDate] = useState('');
+  const [apptTime, setApptTime] = useState('');
+  const [apptBoardId, setApptBoardId] = useState('');
+  const [apptNotice, setApptNotice] = useState<string | null>(null);
+  const [apptError, setApptError] = useState<string | null>(null);
+  const apptExtractedRef = useRef(false);
+  const apptSessionRef = useRef(0);
   const mounted = useRef(true);
   const stoppedRef = useRef(false); // Stop pressed before the start-chain finished (permission prompt window)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -267,6 +279,84 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
     }
   };
 
+  // Voice → appointment (appointments Task 8): open the panel, then extract
+  // the appointment ONCE per panel session from the CURRENT editor text.
+  // Guarded by a ref (re-renders never re-fire) + a session counter (a stale
+  // reply from a cancelled session must not fill the new panel). On error or a
+  // null draft the fields start EMPTY — never a guessed value (spec §5.6).
+  const startAppointmentFlow = () => {
+    apptSessionRef.current += 1;
+    setAppt(true);
+    setApptTitle(''); setApptDate(''); setApptTime(''); setApptBoardId('');
+    setApptNotice(null); setApptError(null); setNotice(null); setBoardNotice(null);
+  };
+
+  useEffect(() => {
+    if (!appt) { apptExtractedRef.current = false; return; }
+    if (apptExtractedRef.current) return;
+    apptExtractedRef.current = true;
+    const session = apptSessionRef.current;
+    const text = currentText();
+    setExtracting(true);
+    (async () => {
+      try {
+        const draft = await api.voiceExtractAppointment(text);
+        if (!mounted.current || session !== apptSessionRef.current) return;
+        if (draft) {
+          setApptTitle(draft.title ?? '');
+          setApptDate(draft.date ?? '');
+          setApptTime(draft.time ?? '');
+        } else {
+          setApptNotice('No appointment found in the transcript — fill in the fields manually.');
+        }
+      } catch {
+        if (mounted.current && session === apptSessionRef.current) setApptError('extraction unavailable — fill manually');
+      } finally {
+        if (mounted.current && session === apptSessionRef.current) setExtracting(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appt]);
+
+  // Save = note → create card on the chosen board → set its target date → set
+  // its reminder. Ruled defaults: time known → targetDate/reminder are
+  // `${date}T${time}:00` (local, no TZ suffix — upstream's scanner parses the
+  // string with `new Date()`); date-only → plain date string, NO reminder.
+  // Date empty → BLOCK with the ruled validation line (never a guessed value).
+  const saveAppointment = async () => {
+    if (!apptDate) { setApptError('Date required'); return; }
+    if (!apptTitle.trim()) { setApptError('Title required'); return; }
+    const targetDate = apptTime ? `${apptDate}T${apptTime}:00` : apptDate;
+    const reminderDatetime = apptTime ? `${apptDate}T${apptTime}:00` : null;
+    setBusy(true); setError(null); setApptError(null);
+    try {
+      await saveVoiceNoteWithBoard({
+        recordingId: mode === 'retranscribe' ? null : rec?.id ?? null,
+        noteId: mode === 'retranscribe' ? noteId ?? null : null,
+        title, category,
+        useTidied: view === 'tidied' && tidiedText != null,
+        text: currentText(),
+        tasks: [],
+        noteSavedId: savedNoteId,
+        targetBoardId: null, // the appointment carries its own board
+        appointment: { title: apptTitle.trim(), targetDate, reminderDatetime, boardId: apptBoardId },
+      });
+      if (!mounted.current) return;
+      onClose(); // board is selected by the store; NOT onSaved (board wins)
+    } catch (e) {
+      if (!mounted.current) return;
+      const err = e as Error & { boardStage?: boolean; noteId?: string };
+      if (err.boardStage) {
+        setSavedNoteId(err.noteId ?? null);
+        setBoardNotice(`Note saved — adding the appointment card failed: ${fmt(e)} Adjust the fields and try again.`);
+      } else {
+        setApptError(fmt(e));
+      }
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
   const failed = rec?.state === 'transcription_failed' || rec?.state === 'transcription_failed_auth';
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const boardEnabled = !!connection && !!currentText().trim() && !busy && !extracting && phase === 'review';
@@ -308,7 +398,39 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
             )}
             {notice && <p className="voice-hint">{notice}</p>}
             {error && <p className="error">{error}</p>}
-            {preview ? (
+            {appt ? (
+              <div className="appt-panel">
+                <h3>Appointment</h3>
+                {(() => {
+                  // same kanban/task filter as the board picker above
+                  const boards = (checklists ?? []).filter((c) => c.listType === 'kanban' || c.listType === 'task');
+                  return boards.length === 0
+                    ? <p className="voice-hint">Create a board first</p>
+                    : (
+                      <Dropdown
+                        value={apptBoardId}
+                        options={boards.map((b) => ({ id: b.id, name: b.title }))}
+                        onChange={setApptBoardId}
+                        placeholder="Choose a board"
+                        ariaLabel="Appointment board"
+                      />
+                    );
+                })()}
+                {extracting && <p className="voice-hint">Extracting…</p>}
+                {apptNotice && <p className="voice-hint">{apptNotice}</p>}
+                <input placeholder="Appointment title" value={apptTitle} onChange={(e) => setApptTitle(e.target.value)} />
+                <input type="date" aria-label="Date" value={apptDate} onChange={(e) => setApptDate(e.target.value)} />
+                <input type="time" aria-label="Time" value={apptTime} onChange={(e) => setApptTime(e.target.value)} />
+                <p className="voice-hint">{apptTime ? `🔔 reminder at ${apptDate}T${apptTime}` : 'No reminder — date-only appointment.'}</p>
+                {apptError && <p className="error">{apptError}</p>}
+                <div className="voice-actions">
+                  <button className="primary" disabled={busy || !apptBoardId}
+                          onClick={() => void saveAppointment()}>Save appointment</button>
+                  <button onClick={() => setAppt(false)}>Cancel</button>
+                </div>
+                {boardNotice && <p className="voice-hint">{boardNotice}</p>}
+              </div>
+            ) : preview ? (
               <div className="board-preview">
                 <h3>Board tasks</h3>
                 {(() => {
@@ -370,6 +492,12 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
                           title={connection ? 'Extract tasks with AI and create a board' : 'Connect to create boards'}
                           onClick={() => void startBoardFlow()}>
                     {extracting ? 'Extracting…' : 'Save + kanban board'}
+                  </button>
+                  {/* Same gate as the board button: connected + transcript + review phase (appointments Task 8). */}
+                  <button className="primary" disabled={!boardEnabled}
+                          title={connection ? 'Extract the appointment details with AI' : 'Connect to save appointments'}
+                          onClick={() => void startAppointmentFlow()}>
+                    Save as appointment
                   </button>
                   {mode !== 'retranscribe' && <button onClick={deleteRecording}>Delete</button>}
                   {failed && <button onClick={retryTranscribe}>Retry transcription</button>}

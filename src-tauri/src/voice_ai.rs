@@ -2,6 +2,7 @@
 //! jotty-client skill reference openwebui-api.md — re-verify live via the
 //! env-gated integration test (src-tauri/tests/voice_live.rs); never fabricate.
 use crate::error::{AppError, AppResult};
+use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -34,6 +35,20 @@ const LONG_TIMEOUT: Duration = Duration::from_secs(180);
 pub const TIDY_SYSTEM_PROMPT: &str = "You tidy voice-memo transcripts. Fix punctuation, capitalization and paragraph breaks. Remove filler words and false starts. Fix obvious transcription slips only when the context makes them unambiguous. Structure the text with short headings or bullet points when the content warrants it. Never invent facts or add commentary. Reply with ONLY the cleaned text — no preamble, no quotes.";
 
 pub const EXTRACT_SYSTEM_PROMPT: &str = "You extract actionable tasks from a voice-memo transcript. Reply with ONLY a JSON array of strings — no prose, no Markdown, no code fences. Each element is one short imperative task title in the transcript's language. Merge duplicates and drop pure small talk. Never invent facts that are not in the transcript. If the transcript contains no tasks, reply with [].";
+
+pub const APPT_EXTRACT_SYSTEM_PROMPT: &str = "You extract ONE appointment from a voice-memo transcript. Reply with ONLY a JSON object — no prose, no Markdown, no code fences: {\"title\": string or null, \"date\": \"YYYY-MM-DD\" or null, \"time\": \"HH:MM\" or null}. date/time null when the transcript does not name them. Never invent facts. If no appointment exists, reply with {\"title\": null}.";
+
+/// One LLM-extracted appointment draft (voice → appointment, spec §5.5):
+/// nullable fields — a null title is the model's "no appointment" reply.
+/// NO reminder flag here: the reminder default is RULED client-side
+/// (time known → reminder at that datetime; date-only → none).
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppointmentDraft {
+    pub title: Option<String>,
+    pub date: Option<String>,
+    pub time: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct VoiceAiClient {
@@ -200,6 +215,29 @@ impl VoiceAiClient {
             Err(e) => Err(e),
         }
     }
+
+    /// Voice → appointment (spec §5.5): ONE appointment from the transcript,
+    /// or None when the model reports there is none. Mirrors extract_tasks:
+    /// system+user chat body, LONG_TIMEOUT, 404 → other-suffix retry — the
+    /// caller persists the effective suffix.
+    pub async fn extract_appointment(&self, model: &str, text: &str) -> AppResult<(Option<AppointmentDraft>, Suffix)> {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": APPT_EXTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ]
+        });
+        match self.chat_once(self.suffix, &body).await {
+            Ok(v) => Ok((parse_appointment(&parse_choice(&v)?)?, self.suffix)),
+            Err(AppError::Api { status: 404, .. }) => {
+                let other = self.other();
+                let v = self.chat_once(other, &body).await?;
+                Ok((parse_appointment(&parse_choice(&v)?)?, other))
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 fn parse_text(v: &Value) -> AppResult<String> {
@@ -261,6 +299,39 @@ fn parse_tasks(content: &str) -> AppResult<Vec<String>> {
             _ => Err(AppError::Other("extraction reply contains a non-string task".into())),
         })
         .collect()
+}
+
+/// Tolerant appointment-object parse (beside parse_tasks, spec §5.5): trim,
+/// strip code fences, take the first `{` to the last `}`, then read the
+/// nullable string fields. A null/absent title is the model's "no appointment"
+/// reply → Ok(None). Malformed JSON (no brace pair, parse error) → Err — never
+/// a fabricated draft.
+fn parse_appointment(content: &str) -> AppResult<Option<AppointmentDraft>> {
+    let trimmed = content.trim();
+    let stripped = if trimmed.starts_with("```") {
+        let inner = trimmed.trim_start_matches("```").trim_start_matches("json").trim();
+        inner.trim_end_matches("```").trim()
+    } else {
+        trimmed
+    };
+    let start = stripped.find('{').ok_or_else(|| AppError::Other("appointment reply contains no JSON object".into()))?;
+    let end = stripped.rfind('}').ok_or_else(|| AppError::Other("appointment reply has no closing brace".into()))?;
+    if end < start {
+        return Err(AppError::Other("appointment reply has malformed object".into()));
+    }
+    let v = serde_json::from_str::<serde_json::Value>(&stripped[start..=end])
+        .map_err(|e| AppError::Other(format!("appointment reply is not a JSON object: {e}")))?;
+    // .as_str() on Null/missing/non-string keys is None already — tolerant by
+    // construction (the TIDY/EXTRACT parser precedent).
+    let title = v.get("title").and_then(Value::as_str).map(String::from);
+    if title.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(AppointmentDraft {
+        title,
+        date: v.get("date").and_then(Value::as_str).map(String::from),
+        time: v.get("time").and_then(Value::as_str).map(String::from),
+    }))
 }
 
 #[derive(Debug, Default, Clone)]
@@ -625,6 +696,66 @@ mod tests {
         assert_eq!(parse_tasks("[]").unwrap(), Vec::<String>::new());
         assert!(parse_tasks("no array here").is_err());
         assert!(parse_tasks("[{\"a\":1}]").is_err());
+    }
+
+    #[tokio::test]
+    async fn extract_appointment_sends_prompt_and_parses_object() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "model": "llama3",
+                "messages": [
+                    {"role": "system", "content": APPT_EXTRACT_SYSTEM_PROMPT},
+                    {"role": "user", "content": "memo text"}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "{\"title\": \"Dentist\", \"date\": \"2026-10-01\", \"time\": \"09:00\"}"}}]
+            })))
+            .mount(&s).await;
+        let (draft, sfx) = client(&s.uri()).extract_appointment("llama3", "memo text").await.unwrap();
+        let d = draft.expect("a draft when the model names an appointment");
+        assert_eq!(d.title.as_deref(), Some("Dentist"));
+        assert_eq!(d.date.as_deref(), Some("2026-10-01"));
+        assert_eq!(d.time.as_deref(), Some("09:00"));
+        assert_eq!(sfx, Suffix::V1);
+    }
+
+    #[test]
+    fn parse_appointment_strips_fences_and_tolerates_prose() {
+        let d = parse_appointment("{\"title\":\"Dentist\",\"date\":\"2026-10-01\",\"time\":\"09:00\"}").unwrap().unwrap();
+        assert_eq!(d.title.as_deref(), Some("Dentist"));
+        assert_eq!(d.date.as_deref(), Some("2026-10-01"));
+        assert_eq!(d.time.as_deref(), Some("09:00"));
+        // fenced JSON
+        let d = parse_appointment("```json\n{\"title\":\"Dentist\"}\n```").unwrap().unwrap();
+        assert_eq!(d.title.as_deref(), Some("Dentist"));
+        assert!(d.date.is_none() && d.time.is_none());
+        // fenced with prose around it (first `{` to last `}` still finds the object)
+        let d = parse_appointment("Sure! ```json\n{\"title\":\"Dentist\",\"date\":\"2026-10-01\"}\n``` hope this helps").unwrap().unwrap();
+        assert_eq!(d.title.as_deref(), Some("Dentist"));
+        assert_eq!(d.date.as_deref(), Some("2026-10-01"));
+        assert!(d.time.is_none());
+    }
+
+    #[test]
+    fn parse_appointment_title_null_means_no_appointment() {
+        assert_eq!(parse_appointment("{\"title\": null}").unwrap(), None);
+        // every-null / missing-key replies are the same "no appointment" answer
+        assert_eq!(parse_appointment("{\"title\":null,\"date\":null,\"time\":null}").unwrap(), None);
+        assert_eq!(parse_appointment("{}").unwrap(), None);
+        // a title without a time still parses (date-only appointment)
+        let d = parse_appointment("{\"title\":\"Dentist\",\"date\":\"2026-10-01\"}").unwrap().unwrap();
+        assert_eq!(d.date.as_deref(), Some("2026-10-01"));
+        assert!(d.time.is_none());
+    }
+
+    #[test]
+    fn parse_appointment_garbage_is_err_never_fabricated() {
+        assert!(parse_appointment("no object here").is_err());
+        assert!(parse_appointment("{not json}").is_err());
+        assert!(parse_appointment("{\"title\": \"Dentist\"").is_err(), "no closing brace");
+        assert!(parse_appointment("} reversed {").is_err(), "end before start");
     }
 
     #[tokio::test]

@@ -78,6 +78,10 @@ export const voiceDeleteRecording = (recordingId: string) => invoke<void>('voice
 export const voiceSaveNote = (recordingId: string, title: string, category: string, useTidied: boolean, contentOverride: string | null) =>
   invoke<T.NoteDto>('voice_save_note', { recordingId, title, category, useTidied, contentOverride });
 export const voiceExtractTasks = (text: string) => invoke<string[]>('voice_extract_tasks', { text });
+// Voice → appointment (appointments Task 8): ONE draft or null when the model
+// reports no appointment in the transcript.
+export const voiceExtractAppointment = (text: string) =>
+  invoke<T.AppointmentDraftDto | null>('voice_extract_appointment', { text });
 export const voiceListUnsaved = () => invoke<T.VoiceRecordingDto[]>('voice_list_unsaved');
 export const voiceTranscribeNote = (noteId: string) => invoke<{ text: string }>('voice_transcribe_note', { noteId });
 export const voiceDeleteNoteAudio = (noteId: string) => invoke<T.NoteDto>('voice_delete_note_audio', { noteId });

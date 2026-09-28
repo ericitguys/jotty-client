@@ -139,4 +139,46 @@ describe('store.saveVoiceNoteWithBoard', () => {
     expect(invoke).toHaveBeenCalledWith('create_task_board', { title: 'Tasks from voice note', category: 'Home' });
     expect(calls.filter(isFlowCmd).length).toBe(3); // save + board + ONE add_item
   });
+
+  it('appointment branch: one card + target date + reminder on the chosen board, no board create (appointments Task 8)', async () => {
+    const calls: string[] = [];
+    invoke.mockImplementation((cmd: string) => {
+      calls.push(cmd);
+      if (cmd === 'voice_save_note') return Promise.resolve(noteRow);
+      // add_item returns ItemDto (commands add_item -> Result<ItemDto, String>):
+      // the branch chains the returned localId directly — no store read-back.
+      if (cmd === 'add_item') return Promise.resolve({ localId: 'i1', checklistId: 'b9', text: 'Dentist', completed: false, position: 0, dirty: true, children: [] });
+      return Promise.resolve(null);
+    });
+    // WITH a time: create → set_item_target_date → set_item_reminder, all on i1.
+    await useStore.getState().saveVoiceNoteWithBoard({
+      ...input, tasks: [], targetBoardId: null,
+      appointment: { title: 'Dentist', targetDate: '2026-10-01T09:00:00', reminderDatetime: '2026-10-01T09:00:00', boardId: 'b9' },
+    });
+    expect(calls).not.toContain('create_task_board');
+    expect(useStore.getState().selectedChecklistId).toBe('b9');
+    expect(useStore.getState().listMode).toBe('checklists');
+    // addItem passes the title verbatim (the panel validates non-empty) with no
+    // targetDate — the date rides the separate set_item_target_date op.
+    expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Dentist', parentLocalId: null, status: null });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01T09:00:00' });
+    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: '2026-10-01T09:00:00' });
+    const flow = calls.filter((c) => c !== 'get_connection' && c !== 'list_notes' && c !== 'list_checklists'
+      && c !== 'list_categories' && c !== 'sync_status' && c !== 'get_prefs' && c !== 'get_branding');
+    expect(flow).toEqual(['voice_save_note', 'add_item', 'set_item_target_date', 'set_item_reminder']);
+    // date-only (no time): reminderDatetime null → NO set_item_reminder call.
+    invoke.mockReset();
+    invoke.mockImplementation((cmd: string) => {
+      calls.push(`2:${cmd}`);
+      if (cmd === 'voice_save_note') return Promise.resolve(noteRow);
+      if (cmd === 'add_item') return Promise.resolve({ localId: 'i2', checklistId: 'b9', text: 'Checkup', completed: false, position: 0, dirty: true, children: [] });
+      return Promise.resolve(null);
+    });
+    await useStore.getState().saveVoiceNoteWithBoard({
+      ...input, tasks: [], targetBoardId: null,
+      appointment: { title: 'Checkup', targetDate: '2026-10-02', reminderDatetime: null, boardId: 'b9' },
+    });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i2', targetDate: '2026-10-02' });
+    expect(calls.filter((c) => c.startsWith('2:')).filter((c) => c === '2:set_item_reminder')).toHaveLength(0);
+  });
 });

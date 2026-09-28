@@ -325,6 +325,23 @@ pub struct AiSettingsDto {
     pub has_key: bool,
 }
 
+/// One LLM-extracted appointment draft (voice → appointment, Task 8): nullable
+/// fields — a null title means "no appointment in the transcript". Mirrors
+/// voice_ai::AppointmentDraft; the TS contract lives in src/api/types.ts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppointmentDraftDto {
+    pub title: Option<String>,
+    pub date: Option<String>,
+    pub time: Option<String>,
+}
+
+impl From<crate::voice_ai::AppointmentDraft> for AppointmentDraftDto {
+    fn from(d: crate::voice_ai::AppointmentDraft) -> Self {
+        AppointmentDraftDto { title: d.title, date: d.date, time: d.time }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

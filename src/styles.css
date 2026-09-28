@@ -857,6 +857,11 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .board-task-row { display: flex; gap: 6px; align-items: center; }
 .board-task-row input { flex: 1 1 auto; min-width: 0; }
 .board-task-row button { flex: 0 0 auto; }
+/* voice note → appointment panel (appointments Task 8; additive, mirrors .board-preview) */
+.appt-panel { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; }
+.appt-panel h3 { margin: 0; font-size: 1em; }
+.appt-panel input[type='date'],
+.appt-panel input[type='time'] { flex: 0 0 auto; width: auto; }
 
 /* ---------- kanban board ---------- */
 .kanban-board { display: flex; gap: 10px; align-items: flex-start; padding-bottom: 8px; position: relative; min-height: 200px; }

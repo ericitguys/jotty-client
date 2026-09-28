@@ -71,3 +71,9 @@ export interface VoiceRecordingDto {
 export interface AiSettingsDto {
   baseUrl: string; model: string; languageHint: string; apiPathSuffix: string; hasKey: boolean;
 }
+/** One LLM-extracted appointment draft (Rust AppointmentDraftDto,
+ * commands/dto.rs — serde camelCase): all fields nullable; a null title means
+ * "no appointment in the transcript" (the command returns null then). */
+export interface AppointmentDraftDto {
+  title: string | null; date: string | null; time: string | null;
+}
