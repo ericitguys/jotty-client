@@ -14,6 +14,17 @@ const toLocalInput = (iso: string): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+// 🔔 chip time (R6): local HH:MM of the reminder — toLocaleTimeString with
+// 2-digit hour/minute in the default locale; empty/null/invalid (NaN instant)
+// → '' so a malformed stored value never renders "Invalid Date" in the chip.
+// Exported: AgendaView's bell chip shares this exact formatting.
+export const formatReminderTime = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
 export default function KanbanBoard({ checklistId, items, reload }: {
   checklistId: string; items: ItemDto[]; reload: () => Promise<void>;
 }) {
@@ -141,8 +152,9 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                   {item.priority && <span className="kanban-badge">{item.priority}</span>}
                   {item.targetDate && <span className="kanban-badge">{item.targetDate}</span>}
                   {item.reminderDatetime && (
-                    <span className={`kanban-badge kanban-reminder${item.reminderNotified ? ' notified' : ''}`}>
-                      🔔 {item.reminderDatetime}
+                    <span className={`kanban-badge kanban-reminder${item.reminderNotified ? ' notified' : ''}`}
+                          title={new Date(item.reminderDatetime).toLocaleString()}>
+                      🔔 {formatReminderTime(item.reminderDatetime)}
                     </span>
                   )}
                   {item.children.length > 0 && <span className="kanban-badge">{item.children.length} subtask{item.children.length === 1 ? '' : 's'}</span>}

@@ -199,15 +199,53 @@ describe('KanbanBoard', () => {
     ];
     render(<KanbanBoard checklistId="b1" items={withReminders} reload={async () => {}} />);
     await waitFor(() => expect(screen.getByText('reminded')).toBeInTheDocument());
-    // raw ISO in the chip (v1-raw, TZ-independent substring asserts), 🔔 prefix
+    // RESHAPED (R6/T7-N5): the chip renders FORMATTED local time, so the v1-raw
+    // substring assert (`toContain('2026-10-01T09:00:00+02:00')`) is replaced by
+    // the TZ-robust formatted-not-raw check — the raw offset-form text would
+    // carry 'T'; clock digits asserted without exact digits. 🔔 prefix + dim
+    // classes unchanged.
     const chipPlain = (screen.getByText('reminded').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
     expect(chipPlain).not.toBeNull();
     expect(chipPlain.textContent).toContain('🔔');
-    expect(chipPlain.textContent).toContain('2026-10-01T09:00:00+02:00');
+    expect(chipPlain.textContent).toMatch(/\d{1,2}:\d{2}/);
+    expect(chipPlain.textContent).not.toContain('T');
+    expect(chipPlain.textContent).not.toContain('Z');
     expect(chipPlain.className).not.toContain('notified');
     const chipNotified = (screen.getByText('pinged').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
     expect(chipNotified).not.toBeNull();
+    expect(chipNotified.textContent).toMatch(/\d{1,2}:\d{2}/);
     expect(chipNotified.className).toContain('notified');
+  });
+
+  it('kanban_reminder_chip_shows_formatted_local_time_with_full_tooltip', async () => {
+    const withReminders = [
+      { ...items[0], localId: 'r9', text: 'formatted', position: 0, priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00:00.000Z', reminderNotified: false },
+      { ...items[0], localId: 'r10', text: 'formatted-notified', position: 1, priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-02T10:00:00.000Z', reminderNotified: true },
+    ];
+    render(<KanbanBoard checklistId="b1" items={withReminders} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('formatted')).toBeInTheDocument());
+    // R6 (T7-N5): the Z-form fixture proves formatted-not-raw — the raw stored
+    // ISO would carry 'T' and 'Z'; clock digits asserted TZ-robustly (never
+    // exact clock digits — the local rendering is TZ-dependent)
+    const chipPlain = (screen.getByText('formatted').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
+    expect(chipPlain).not.toBeNull();
+    expect(chipPlain.textContent).toContain('🔔');
+    expect(chipPlain.textContent).toMatch(/\d{1,2}:\d{2}/);
+    expect(chipPlain.textContent).not.toContain('T');
+    expect(chipPlain.textContent).not.toContain('Z');
+    // class names unchanged + notified dim still keyed on reminderNotified
+    expect(chipPlain.className).toContain('kanban-reminder');
+    expect(chipPlain.className).not.toContain('notified');
+    // tooltip = full local datetime on the SAME span: non-empty, ≠ raw stored ISO
+    const title = chipPlain.getAttribute('title');
+    expect(title).toBeTruthy();
+    expect(title).not.toBe('2026-10-01T09:00:00.000Z');
+    const chipNotified = (screen.getByText('formatted-notified').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
+    expect(chipNotified).not.toBeNull();
+    expect(chipNotified.textContent).toMatch(/\d{1,2}:\d{2}/);
+    expect(chipNotified.className).toContain('kanban-reminder');
+    expect(chipNotified.className).toContain('notified');
+    expect(chipNotified.getAttribute('title')).toBeTruthy();
   });
 
   it('set_reminder_flow_dispatches_set_item_reminder', async () => {

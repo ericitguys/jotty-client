@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import type { AgendaEntry } from '../api/types';
+import { formatReminderTime } from './KanbanBoard';
 import { useStore } from '../stores/store';
 
 /** Local-time date key ('YYYY-MM-DD') of an ISO string. Date-only strings
@@ -109,7 +110,10 @@ export default function AgendaView() {
                 <span className="agenda-list">{entry.checklistTitle}</span>
                 {time && <span className="agenda-time">{time}</span>}
                 {entry.reminderDatetime && (
-                  <span className={`agenda-bell${entry.reminderNotified ? ' notified' : ''}`}>🔔</span>
+                  <span className={`agenda-bell${entry.reminderNotified ? ' notified' : ''}`}
+                        title={new Date(entry.reminderDatetime).toLocaleString()}>
+                    🔔 {formatReminderTime(entry.reminderDatetime)}
+                  </span>
                 )}
               </div>
             );

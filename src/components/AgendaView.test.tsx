@@ -23,6 +23,17 @@ const dated = (offsetDays: number): string => {
   return d.toISOString();
 };
 
+// Next-7 boundary fixtures (C1): live-offset like `dated` above (semantic
+// dates — hardcoded calendar days drift out of their bucket), then anchored
+// at LOCAL NOON via setHours so the local date key is immune to midnight-edge
+// /DST drift, and emitted as a full ISO string (standing TZ rule).
+const datedAtNoon = (offsetDays: number): string => {
+  const d = new Date(Date.now());
+  d.setDate(d.getDate() + offsetDays);
+  d.setHours(12, 0, 0, 0);
+  return d.toISOString();
+};
+
 beforeEach(() => {
   invoke.mockReset();
   // the store is a module singleton — reset ALL ui state between tests
@@ -70,6 +81,49 @@ describe('AgendaView', () => {
     expect(bells).toHaveLength(2); // the row without reminderDatetime renders no bell
     expect(bells[0]).not.toHaveClass('notified');
     expect(bells[1]).toHaveClass('notified');
+  });
+
+  it('reminder chip shows 🔔 + formatted local time, never the raw ISO, with a full-datetime tooltip', async () => {
+    const rows = [
+      entry({ itemLocalId: 'i1', text: 'chip time', targetDate: dated(0), reminderDatetime: '2026-10-01T09:00:00.000Z', reminderNotified: false }),
+    ];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('chip time')).toBeInTheDocument());
+    // R6 (T6-N4): the Z-form fixture proves formatted-not-raw — the raw stored
+    // ISO would carry 'T' and 'Z'; clock digits asserted TZ-robustly (never
+    // exact clock digits — the local rendering is TZ-dependent)
+    const chip = document.querySelector('.agenda-bell') as HTMLElement;
+    expect(chip.textContent).toContain('🔔');
+    expect(chip.textContent).toMatch(/\d{1,2}:\d{2}/);
+    expect(chip.textContent).not.toContain('T');
+    expect(chip.textContent).not.toContain('Z');
+    // tooltip = full local datetime on the SAME span: non-empty, ≠ raw stored ISO
+    const title = chip.getAttribute('title');
+    expect(title).toBeTruthy();
+    expect(title).not.toBe('2026-10-01T09:00:00.000Z');
+  });
+
+  it('Next-7 boundary: now+7d lands in "Next 7 days" (inclusive upper bound)', async () => {
+    const rows = [entry({ itemLocalId: 'i-p7', text: 'plus seven', targetDate: datedAtNoon(7) })];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('plus seven')).toBeInTheDocument());
+    const groupOf = (t: string) =>
+      screen.getByText(t).closest('.agenda-group')?.querySelector('h3')?.textContent;
+    // weekKey = today+7 is INCLUSIVE: the +7d boundary belongs to Next 7 days
+    expect(groupOf('plus seven')).toBe('Next 7 days');
+  });
+
+  it('Next-7 boundary: now+8d lands in "Later"', async () => {
+    const rows = [entry({ itemLocalId: 'i-p8', text: 'plus eight', targetDate: datedAtNoon(8) })];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('plus eight')).toBeInTheDocument());
+    const groupOf = (t: string) =>
+      screen.getByText(t).closest('.agenda-group')?.querySelector('h3')?.textContent;
+    // one day past the inclusive bound tips into Later
+    expect(groupOf('plus eight')).toBe('Later');
   });
 
   it('click-through selects the owning checklist and best-effort scrolls to the row', async () => {
