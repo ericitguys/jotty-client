@@ -86,6 +86,33 @@ pub fn creation_board_statuses() -> Vec<ServerStatus> {
     render_default_statuses().into_iter().filter(|s| s.id != "paused").collect()
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerKanbanItem {
+    #[serde(default)] pub id: Option<String>,
+    #[serde(default)] pub index: i64,
+    #[serde(default)] pub text: String,
+    #[serde(default)] pub status: Option<String>,
+    #[serde(default)] pub completed: Option<bool>,
+    #[serde(default)] pub priority: Option<String>,
+    #[serde(default)] pub score: Option<f64>,
+    #[serde(default)] pub assignee: Option<String>,
+    #[serde(default)] pub reminder: Option<ServerReminder>,
+    #[serde(default)] pub children: Vec<ServerKanbanItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KanbanBoard {
+    pub id: String,
+    #[serde(default)] pub title: Option<String>,
+    #[serde(default)] pub category: Option<String>,
+    #[serde(default)] pub statuses: Option<Vec<ServerStatus>>,
+    #[serde(default)] pub items: Vec<ServerKanbanItem>,
+    #[serde(default)] pub created_at: Option<String>,
+    #[serde(default)] pub updated_at: Option<String>,
+}
+
 /// Reminder on the wire (kanban GET, spec §3): a PARSED object — not the
 /// file's JSON-string form. Parsed by ServerItem but not yet persisted
 /// (consumed by the kanban-enrichment/reminder tasks).

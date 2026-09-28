@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::jotty::models::{Categories, Created, Health, ServerChecklist, ServerNote, ServerStatus, UserPrefs, WebManifest};
+use crate::jotty::models::{Categories, Created, Health, KanbanBoard, ServerChecklist, ServerNote, ServerStatus, UserPrefs, WebManifest};
 use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone)]
@@ -210,6 +210,18 @@ impl JottyClient {
             .map_err(|e| AppError::Other(format!("parse /api/tasks/{{id}}: {e}")))
     }
 
+    /// GET /api/kanban/{boardId} — the ONLY board endpoint whose item payloads carry
+    /// `reminder` (upstream transformBoard/transformItem; the /api/tasks/{id} GET maps
+    /// items via toApiItem which DROPS reminder — source-verified @ b5458a2). Envelope:
+    /// a top-level "board" key wraps the board — a bare parse would rely on
+    /// serde(default) and silently produce empties (get_categories lesson).
+    pub async fn get_kanban_board(&self, board_id: &str) -> AppResult<KanbanBoard> {
+        let v = self.api_get::<serde_json::Value>(&format!("/api/kanban/{board_id}")).await?;
+        let board = v.get("board").ok_or_else(|| AppError::Other("get_kanban_board: missing board envelope".into()))?;
+        serde_json::from_value(board.clone())
+            .map_err(|e| AppError::Other(format!("parse /api/kanban/{{id}}: {e}")))
+    }
+
     /// POST /api/tasks — create a kanban board with its column set.
     pub async fn create_task(&self, title: &str, category: &str, statuses: &[ServerStatus]) -> AppResult<ServerChecklist> {
         let created: Created<ServerChecklist> = self.api_send(
@@ -278,6 +290,29 @@ impl JottyClient {
         Ok(())
     }
 
+    /// Set/clear a kanban item reminder. Some(iso) → PUT body {"datetime": iso}
+    /// (upstream PUT REQUIRES datetime — 400 without); None → DELETE (same URL,
+    /// empty body — the upstream DELETE route appends reminder:"" = cleared).
+    pub async fn set_item_reminder(&self, board_id: &str, item_id: &str, datetime: Option<&str>) -> AppResult<()> {
+        match datetime {
+            Some(iso) => {
+                self.api_send::<serde_json::Value>(
+                    reqwest::Method::PUT,
+                    &format!("/api/kanban/{board_id}/items/{item_id}/reminder"),
+                    serde_json::json!({ "datetime": iso }),
+                ).await?;
+            }
+            None => {
+                self.api_send::<serde_json::Value>(
+                    reqwest::Method::DELETE,
+                    &format!("/api/kanban/{board_id}/items/{item_id}/reminder"),
+                    serde_json::json!({}),
+                ).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn check_item(&self, list_id: &str, path: &str, checked: bool) -> AppResult<()> {
         let suffix = if checked { "check" } else { "uncheck" };
         self.api_send::<serde_json::Value>(
@@ -306,6 +341,8 @@ async fn finish<T: DeserializeOwned>(resp: reqwest::Response) -> AppResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -689,5 +726,143 @@ mod tests {
         c.update_item_status("b-uuid", "0", "in_progress").await.unwrap();
         let reqs = s.received_requests().await.unwrap();
         assert!(String::from_utf8_lossy(&reqs[0].body).contains("\"status\":\"in_progress\""));
+    }
+
+    // ---- kanban board GET + item reminders (appointments phase 2, spec §3) --
+
+    #[tokio::test]
+    async fn get_kanban_board_unwraps_board_envelope_and_parses_reminder() {
+        // REAL wire shape (upstream GET /api/kanban/{boardId} → { "board": {...} }).
+        // Items are transformItem-shaped — the ONLY board GET whose item payloads
+        // carry `reminder` (the /api/tasks/{id} GET maps via toApiItem, which drops it).
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/kanban/b1"))
+            .and(header("x-api-key", "ck"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "board": {
+                    "id": "b1", "title": "Appointments", "category": "Life",
+                    "statuses": [ { "id": "todo", "name": "To Do", "order": 0 } ],
+                    "items": [
+                        { "id": "srv-1", "index": 0, "text": "Dentist", "status": "todo",
+                          "completed": false,
+                          "reminder": { "datetime": "2026-10-01T09:00:00.000Z", "notified": false } }
+                    ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z"
+                }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let board = c.get_kanban_board("b1").await.unwrap();
+        assert_eq!(board.id, "b1");
+        assert_eq!(board.title.as_deref(), Some("Appointments"));
+        assert_eq!(board.category.as_deref(), Some("Life"));
+        assert_eq!(board.statuses.as_ref().unwrap().len(), 1);
+        assert_eq!(board.items.len(), 1);
+        // ServerReminder has no PartialEq (T1 byte-exact derive) — assert via fields
+        let rem = board.items[0].reminder.as_ref().expect("reminder must parse");
+        assert_eq!(rem.datetime, "2026-10-01T09:00:00.000Z");
+        assert_eq!(rem.notified, Some(false));
+    }
+
+    #[tokio::test]
+    async fn get_kanban_board_without_reminder_parses_none() {
+        // reminder key absent on the item → None (serde default, not an error).
+        // Carry-forward (T1 review Minor-4): a reminder object WITHOUT "datetime"
+        // must FAIL the whole board parse (ServerReminder.datetime is required) —
+        // per spec §5.3 it becomes a non-fatal enrichment error in T3, but it may
+        // never surface as a silently-emptied board.
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/kanban/b1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "board": {
+                    "id": "b1", "title": "Appointments", "category": "Life",
+                    "statuses": [ { "id": "todo", "name": "To Do", "order": 0 } ],
+                    "items": [
+                        { "id": "srv-1", "index": 0, "text": "Dentist", "status": "todo",
+                          "completed": false }
+                    ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z"
+                }
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let board = c.get_kanban_board("b1").await.unwrap();
+        assert!(board.items[0].reminder.is_none(), "absent reminder key must parse as None");
+
+        // characterization: reminder present but datetime missing → Err, not empty
+        Mock::given(method("GET")).and(path("/api/kanban/b2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "board": {
+                    "id": "b2",
+                    "items": [ { "id": "srv-2", "index": 0, "text": "Card",
+                                 "reminder": { "notified": false } } ]
+                }
+            })))
+            .mount(&s).await;
+        let err = c.get_kanban_board("b2").await.unwrap_err();
+        assert!(err.to_string().contains("missing field `datetime`"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn get_kanban_board_malformed_body_is_err_not_silent_empty() {
+        // envelope lesson (get_categories): a missing envelope key must NOT fall
+        // through serde(default) into a silently-empty board.
+        let s = server().await;
+        Mock::given(method("GET")).and(path("/api/kanban/b1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "wrong": 1 })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let err = c.get_kanban_board("b1").await.unwrap_err();
+        assert!(err.to_string().contains("missing board envelope"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn set_item_reminder_put_carries_datetime_body() {
+        // upstream PUT REQUIRES datetime (400 without) — body must carry {"datetime": iso}
+        let s = server().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1/reminder"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.set_item_reminder("b1", "srv-1", Some("2026-10-01T09:00:00Z")).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "PUT must hit the reminder endpoint exactly once");
+        let reqs = s.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&reqs[0].body).to_string();
+        assert!(body.contains("\"datetime\""), "body: {body}");
+        assert!(body.contains("2026-10-01T09:00:00Z"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn set_item_reminder_none_sends_delete() {
+        // clearing = DELETE on the same URL, empty body (upstream appends reminder:"")
+        let s = server().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        Mock::given(method("DELETE")).and(path("/api/kanban/b1/items/srv-1/reminder"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.set_item_reminder("b1", "srv-1", None).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "None must DELETE the reminder endpoint exactly once");
+    }
+
+    #[tokio::test]
+    async fn set_item_reminder_4xx_maps_to_api_error() {
+        // upstream PUT refuses a body without datetime: 400 {"error": "..."} shape
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/kanban/b1/items/srv-1/reminder"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"Datetime is required"})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let err = c.set_item_reminder("b1", "srv-1", Some("2026-10-01T09:00:00Z")).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 400, .. }));
     }
 }
