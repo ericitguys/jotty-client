@@ -54,6 +54,7 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::list_checklists,
+            commands::list_agenda,
             commands::get_checklist,
             commands::create_checklist,
             commands::update_checklist,

@@ -93,6 +93,25 @@ impl From<items::ItemRow> for ItemDto {
     }
 }
 
+/// One agenda row (appointments Task 4): a dated item joined with its list —
+/// the flat cross-list feed AgendaView groups into Overdue/Today/Tomorrow/
+/// Next 7d/Later. camelCase for the frontend (mirrors ItemDto's field casing).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgendaEntryDto {
+    pub checklist_id: String,
+    pub checklist_title: String,
+    pub item_local_id: String,
+    pub text: String,
+    pub completed: bool,
+    pub start_date: Option<String>,
+    pub target_date: Option<String>,
+    pub reminder_datetime: Option<String>,
+    pub reminder_notified: Option<bool>,
+    pub status: Option<String>,
+    pub position: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecklistDto {

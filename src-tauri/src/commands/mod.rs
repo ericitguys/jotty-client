@@ -9,9 +9,9 @@ use crate::error::{AppError, AppResult};
 use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
-    AiSettingsDto, BoardDto, BoardStatusDto, CategoriesDto, ChecklistDto, ConflictDto, ConnectInfo,
-    ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto, SearchResultsDto, SettingsDto,
-    SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
+    AgendaEntryDto, AiSettingsDto, BoardDto, BoardStatusDto, CategoriesDto, ChecklistDto,
+    ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
+    SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -165,6 +165,44 @@ pub(crate) fn list_checklists_inner(conn: &Connection) -> AppResult<Vec<Checklis
         d.completed = total > 0 && open == 0;
     }
     Ok(dtos)
+}
+
+/// Appointments agenda (Task 4): the flat cross-list feed of DATED items
+/// joined with their list, ascending by target_date then position. ONE SQL,
+/// pure local read — NO network (ruling P precedent: "no network in a
+/// getter"). Filters: checklist-level deleted_at + dirty=0 stay (a never-
+/// synced local list and a tombstone have no server dates to show); the
+/// item-level `i.deleted_at` line from the plan is DROPPED — the v1 schema
+/// gives checklist_items no tombstone column (verified via migrations.rs +
+/// PRAGMA: deletes are physical row removes).
+pub(crate) fn list_agenda_inner(conn: &Connection) -> AppResult<Vec<AgendaEntryDto>> {
+    let sql = "SELECT i.local_id, i.text, i.completed, i.start_date, i.target_date,
+       i.reminder_datetime, i.reminder_notified, i.status, i.position,
+       c.id, c.title
+FROM checklist_items i
+JOIN checklists c ON c.id = i.checklist_id
+WHERE c.deleted_at IS NULL AND c.dirty = 0
+  AND i.target_date IS NOT NULL
+ORDER BY i.target_date ASC, i.position ASC";
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok(AgendaEntryDto {
+            item_local_id: r.get(0)?,
+            text: r.get(1)?,
+            completed: r.get::<_, i64>(2)? != 0,
+            start_date: r.get(3)?,
+            target_date: r.get(4)?,
+            reminder_datetime: r.get(5)?,
+            // T1 row() precedent: INTEGER -> Option<i64> -> Option<bool>.
+            reminder_notified: r.get::<_, Option<i64>>(6)?.map(|v| v != 0),
+            status: r.get(7)?,
+            position: r.get(8)?,
+            checklist_id: r.get(9)?,
+            checklist_title: r.get(10)?,
+        })
+    })?
+    .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 // Ruling I: get_checklist nests ItemDto from list_for_checklist's flat rows
@@ -743,6 +781,15 @@ pub async fn delete_note(state: tauri::State<'_, AppState>, id: String) -> Resul
 pub async fn list_checklists(state: tauri::State<'_, AppState>) -> Result<Vec<ChecklistDto>, String> {
     let conn = state.db.lock().await;
     list_checklists_inner(&conn).map_err(|e| e.to_string())
+}
+
+/// Appointments agenda (Task 4): flat dated-item feed across synced lists,
+/// grouped client-side into Overdue/Today/Tomorrow/Next 7d/Later. Pure local
+/// read (no network in a getter).
+#[tauri::command]
+pub async fn list_agenda(state: tauri::State<'_, AppState>) -> Result<Vec<AgendaEntryDto>, String> {
+    let conn = state.db.lock().await;
+    list_agenda_inner(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2753,5 +2800,120 @@ mod tests {
         let body = String::from_utf8_lossy(&reqs[0].body).to_string();
         assert!(body.contains("\"autoComplete\":true"));
         assert!(!body.contains("paused"), "creation set must not include paused: {body}");
+    }
+
+    // ---- Appointments Task 4: list_agenda (flat dated-item feed) ----
+
+    // Two lists, three items: dated 2026-10-02 (A), dated 2026-10-01 (B),
+    // undated (B) -> only the dated pair survives, ascending by target_date
+    // ACROSS lists (the agenda is one cross-list feed, not a per-list view).
+    #[tokio::test]
+    async fn list_agenda_spans_lists_sorted_by_target_date() {
+        let mut conn = db();
+        let a = create_checklist_inner(&mut conn, "A", "Home").unwrap();
+        let b = create_checklist_inner(&mut conn, "B", "Home").unwrap();
+        let later = add_item_inner(&mut conn, &a.id, "later", None, None, Some("2026-10-02".into())).unwrap();
+        let earlier = add_item_inner(&mut conn, &b.id, "earlier", None, None, Some("2026-10-01".into())).unwrap();
+        add_item_inner(&mut conn, &b.id, "undated", None, None, None).unwrap();
+        // create_checklist_inner leaves rows dirty (local edits pending); the
+        // agenda shows SYNCED lists only.
+        checklists::mark_list_synced(&conn, &a.id, "2026-01-01T00:00:00.000Z").unwrap();
+        checklists::mark_list_synced(&conn, &b.id, "2026-01-01T00:00:00.000Z").unwrap();
+        let entries = list_agenda_inner(&conn).unwrap();
+        assert_eq!(entries.len(), 2, "undated item excluded, both lists spanned");
+        assert_eq!(entries[0].item_local_id, earlier.local_id, "2026-10-01 sorts first");
+        assert_eq!(entries[0].checklist_title, "B");
+        assert_eq!(entries[0].target_date.as_deref(), Some("2026-10-01"));
+        assert_eq!(entries[1].item_local_id, later.local_id);
+        assert_eq!(entries[1].checklist_title, "A");
+        assert_eq!(entries[1].target_date.as_deref(), Some("2026-10-02"));
+    }
+
+    #[tokio::test]
+    async fn list_agenda_excludes_deleted_lists_and_dirty_lists() {
+        // The two filters must be pinned INDEPENDENTLY: `gone` is tombstoned
+        // with dirty=0 (excluded ONLY by deleted_at — sync-pull tombstone
+        // semantics); `pending` has deleted_at NULL and dirty=1 (excluded ONLY
+        // by the dirty=0 filter — created locally, never synced).
+        let mut conn = db();
+        let clean = create_checklist_inner(&mut conn, "Clean", "Home").unwrap();
+        let gone = create_checklist_inner(&mut conn, "Gone", "Home").unwrap();
+        let pending = create_checklist_inner(&mut conn, "Pending", "Home").unwrap();
+        for l in [&clean.id, &gone.id, &pending.id] {
+            add_item_inner(&mut conn, l, "appt", None, None, Some("2026-10-05".into())).unwrap();
+        }
+        checklists::mark_list_synced(&conn, &clean.id, "2026-01-01T00:00:00.000Z").unwrap();
+        checklists::mark_list_synced(&conn, &gone.id, "2026-01-01T00:00:00.000Z").unwrap();
+        checklists::tombstone(&conn, &gone.id).unwrap(); // deleted_at set, dirty untouched
+        let entries = list_agenda_inner(&conn).unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.checklist_id.as_str()).collect();
+        assert_eq!(ids, vec![clean.id.as_str()]);
+    }
+
+    #[tokio::test]
+    async fn list_agenda_passes_reminder_fields_through() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('b1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: "b1".into(), parent_local_id: None, text: "card".into(),
+            status: Some("todo".into()), priority: None, target_date: Some("2026-10-01".into()),
+        }).unwrap();
+        // T3 enrichment mirror: datetime + notified=1 land on the row without
+        // dirtying it (exactly the post-pull state the agenda must surface).
+        items::set_reminder_from_server(&conn, &it.local_id, Some("2026-10-01T09:00:00.000Z".into()), Some(true)).unwrap();
+        let entries = list_agenda_inner(&conn).unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.item_local_id, it.local_id);
+        assert_eq!(e.checklist_id, "b1");
+        assert_eq!(e.checklist_title, "B");
+        assert_eq!(e.status.as_deref(), Some("todo"));
+        assert_eq!(e.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00.000Z"));
+        assert_eq!(e.reminder_notified, Some(true));
+    }
+
+    #[tokio::test]
+    async fn list_agenda_includes_children_with_dates() {
+        // The agenda reads the FLAT items table: a child row (parent_id set)
+        // with a target_date is an agenda entry in its own right, while its
+        // undated parent stays out.
+        let mut conn = db();
+        let list = create_checklist_inner(&mut conn, "Trip", "Home").unwrap();
+        let parent = add_item_inner(&mut conn, &list.id, "pack", None, None, None).unwrap();
+        let child = add_item_inner(&mut conn, &list.id, "visa appointment", Some(parent.local_id.clone()), None, Some("2026-10-03".into())).unwrap();
+        checklists::mark_list_synced(&conn, &list.id, "2026-01-01T00:00:00.000Z").unwrap();
+        let entries = list_agenda_inner(&conn).unwrap();
+        assert_eq!(entries.len(), 1, "dated child in, undated parent out");
+        assert_eq!(entries[0].item_local_id, child.local_id);
+        assert_eq!(entries[0].text, "visa appointment");
+        assert_eq!(entries[0].checklist_title, "Trip");
+        assert_eq!(entries[0].target_date.as_deref(), Some("2026-10-03"));
+    }
+
+    #[tokio::test]
+    async fn list_agenda_wire_shape_is_camel_case() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('b1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: "b1".into(), parent_local_id: None, text: "dentist".into(),
+            status: Some("todo".into()), priority: None, target_date: Some("2026-10-01".into()),
+        }).unwrap();
+        // start_date is server-authored (reconcile backfills it; the local
+        // set_date op only carries it in the payload) — mirror the reconcile
+        // write directly.
+        conn.execute("UPDATE checklist_items SET start_date='2026-10-01' WHERE local_id=?1", rusqlite::params![it.local_id]).unwrap();
+        items::set_reminder_from_server(&conn, &it.local_id, Some("2026-10-01T09:00:00.000Z".into()), Some(true)).unwrap();
+        let entries = list_agenda_inner(&conn).unwrap();
+        assert_eq!(entries.len(), 1);
+        let v = serde_json::to_value(&entries[0]).unwrap();
+        assert_eq!(v["checklistId"], "b1");
+        assert_eq!(v["checklistTitle"], "B");
+        assert_eq!(v["itemLocalId"], it.local_id.as_str());
+        assert_eq!(v["startDate"], "2026-10-01");
+        assert_eq!(v["targetDate"], "2026-10-01");
+        assert_eq!(v["reminderDatetime"], "2026-10-01T09:00:00.000Z");
+        assert_eq!(v["reminderNotified"], true);
     }
 }
