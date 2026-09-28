@@ -170,18 +170,22 @@ pub(crate) fn list_checklists_inner(conn: &Connection) -> AppResult<Vec<Checklis
 /// Appointments agenda (Task 4): the flat cross-list feed of DATED items
 /// joined with their list, ascending by target_date then position. ONE SQL,
 /// pure local read — NO network (ruling P precedent: "no network in a
-/// getter"). Filters: checklist-level deleted_at + dirty=0 stay (a never-
-/// synced local list and a tombstone have no server dates to show); the
-/// item-level `i.deleted_at` line from the plan is DROPPED — the v1 schema
-/// gives checklist_items no tombstone column (verified via migrations.rs +
-/// PRAGMA: deletes are physical row removes).
+/// getter"). Filters: checklist-level deleted_at stays (a tombstone has no
+/// server dates to show); the dirty=0 filter is DROPPED in v0.21
+/// (final-review T4-N1 promoted to v0.21 per user directive) —
+/// target_date/reminder are client-authorable local columns, so a never-
+/// synced local list's dated items carry local truth the agenda must show,
+/// while pull-time enrichment keeps healing server-set values on clean
+/// rows; the item-level `i.deleted_at` line from the plan is DROPPED — the
+/// v1 schema gives checklist_items no tombstone column (verified via
+/// migrations.rs + PRAGMA: deletes are physical row removes).
 pub(crate) fn list_agenda_inner(conn: &Connection) -> AppResult<Vec<AgendaEntryDto>> {
     let sql = "SELECT i.local_id, i.text, i.completed, i.start_date, i.target_date,
        i.reminder_datetime, i.reminder_notified, i.status, i.position,
        c.id, c.title
 FROM checklist_items i
 JOIN checklists c ON c.id = i.checklist_id
-WHERE c.deleted_at IS NULL AND c.dirty = 0
+WHERE c.deleted_at IS NULL
   AND i.target_date IS NOT NULL
 ORDER BY i.target_date ASC, i.position ASC";
     let mut stmt = conn.prepare(sql)?;
@@ -2876,11 +2880,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_agenda_excludes_deleted_lists_and_dirty_lists() {
-        // The two filters must be pinned INDEPENDENTLY: `gone` is tombstoned
-        // with dirty=0 (excluded ONLY by deleted_at — sync-pull tombstone
-        // semantics); `pending` has deleted_at NULL and dirty=1 (excluded ONLY
-        // by the dirty=0 filter — created locally, never synced).
+    async fn list_agenda_excludes_deleted_lists() {
+        // Deleted-exclusion pinned INDEPENDENTLY: `gone` is tombstoned with
+        // dirty=0 (excluded ONLY by deleted_at — sync-pull tombstone
+        // semantics). Since v0.21 (T4-N1) the dirty=0 filter is GONE from the
+        // agenda SQL, so `pending` (deleted_at NULL, dirty=1 — created
+        // locally, never synced) now asserts INCLUSION here; the
+        // order-sensitive dirty-list pin is
+        // list_agenda_includes_dirty_and_never_synced_lists below.
         let mut conn = db();
         let clean = create_checklist_inner(&mut conn, "Clean", "Home").unwrap();
         let gone = create_checklist_inner(&mut conn, "Gone", "Home").unwrap();
@@ -2892,8 +2899,46 @@ mod tests {
         checklists::mark_list_synced(&conn, &gone.id, "2026-01-01T00:00:00.000Z").unwrap();
         checklists::tombstone(&conn, &gone.id).unwrap(); // deleted_at set, dirty untouched
         let entries = list_agenda_inner(&conn).unwrap();
-        let ids: Vec<&str> = entries.iter().map(|e| e.checklist_id.as_str()).collect();
-        assert_eq!(ids, vec![clean.id.as_str()]);
+        let mut ids: Vec<&str> = entries.iter().map(|e| e.checklist_id.as_str()).collect();
+        ids.sort_unstable(); // same-dated items: the tie order is unspecified
+        let mut expected = vec![clean.id.as_str(), pending.id.as_str()];
+        expected.sort_unstable();
+        assert_eq!(
+            ids,
+            expected,
+            "tombstoned `gone` out; clean + never-synced `pending` in",
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agenda_includes_dirty_and_never_synced_lists() {
+        // v0.21 (T4-N1): the dirty=0 filter is gone — a never-synced local
+        // list's dated item is agenda-visible NEXT TO clean lists' items, in
+        // target_date order (target_date/reminder are client-authorable local
+        // columns; dirty rows carry local truth; pull-time enrichment keeps
+        // healing server-set values on clean rows).
+        let mut conn = db();
+        let clean = create_checklist_inner(&mut conn, "Clean", "Home").unwrap();
+        let dirty_list = create_checklist_inner(&mut conn, "Dirty", "Home").unwrap();
+        let clean_item = add_item_inner(&mut conn, &clean.id, "clean appt", None, None, Some("2026-10-03".into())).unwrap();
+        let dirty_item = add_item_inner(&mut conn, &dirty_list.id, "dirty appt", None, None, Some("2026-10-01".into())).unwrap();
+        checklists::mark_list_synced(&conn, &clean.id, "2026-01-01T00:00:00.000Z").unwrap();
+        // fixture pin: `dirty_list` really is the never-synced class (dirty=1,
+        // deleted_at NULL — adding an item never un-dirties the list).
+        let dirty_flag: i64 = conn.query_row(
+            "SELECT dirty FROM checklists WHERE id = ?1",
+            [&dirty_list.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(dirty_flag, 1, "fixture must be a dirty (never-synced) list");
+        let entries = list_agenda_inner(&conn).unwrap();
+        assert_eq!(entries.len(), 2, "dirty list's dated item in, clean list's too");
+        assert_eq!(entries[0].item_local_id, dirty_item.local_id, "2026-10-01 sorts first");
+        assert_eq!(entries[0].checklist_id, dirty_list.id);
+        assert_eq!(entries[0].target_date.as_deref(), Some("2026-10-01"));
+        assert_eq!(entries[1].item_local_id, clean_item.local_id);
+        assert_eq!(entries[1].checklist_id, clean.id);
+        assert_eq!(entries[1].target_date.as_deref(), Some("2026-10-03"));
     }
 
     #[tokio::test]
