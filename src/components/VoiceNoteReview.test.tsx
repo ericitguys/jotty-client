@@ -626,11 +626,16 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     expect(order.indexOf('voice_save_note')).toBeLessThan(order.indexOf('add_item'));
     expect(order.indexOf('add_item')).toBeLessThan(order.indexOf('set_item_target_date'));
     expect(order.indexOf('set_item_target_date')).toBeLessThan(order.indexOf('set_item_reminder'));
-    // time known → targetDate/reminder = `${date}T${time}:00`, chained on the
-    // localId add_item returned
+    // time known → targetDate stays the date-only field value (the desktop
+    // Set-date editor prefills it raw into <input type="date">, which would
+    // sanitize a T-containing value to ''); the reminder is the absolute
+    // instant of the composed local datetime (toISOString — scanner-exact in
+    // every server TZ, matching upstream authoring and the kanban modal), the
+    // expected instant computed in-test for TZ-robustness. Chained on the
+    // localId add_item returned.
     expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Dentist', parentLocalId: null, status: null });
-    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01T09:00:00' });
-    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: '2026-10-01T09:00:00' });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01' });
+    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: new Date('2026-10-01T09:00:00').toISOString() });
     expect(useStore.getState().selectedChecklistId).toBe('b9');
   });
 

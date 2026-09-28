@@ -153,7 +153,9 @@ describe('store.saveVoiceNoteWithBoard', () => {
     // WITH a time: create → set_item_target_date → set_item_reminder, all on i1.
     await useStore.getState().saveVoiceNoteWithBoard({
       ...input, tasks: [], targetBoardId: null,
-      appointment: { title: 'Dentist', targetDate: '2026-10-01T09:00:00', reminderDatetime: '2026-10-01T09:00:00', boardId: 'b9' },
+      // panel shape: targetDate date-only, reminder = the composed local
+      // datetime as an absolute instant (toISOString) — passed verbatim
+      appointment: { title: 'Dentist', targetDate: '2026-10-01', reminderDatetime: new Date('2026-10-01T09:00:00').toISOString(), boardId: 'b9' },
     });
     expect(calls).not.toContain('create_task_board');
     expect(useStore.getState().selectedChecklistId).toBe('b9');
@@ -161,8 +163,8 @@ describe('store.saveVoiceNoteWithBoard', () => {
     // addItem passes the title verbatim (the panel validates non-empty) with no
     // targetDate — the date rides the separate set_item_target_date op.
     expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b9', text: 'Dentist', parentLocalId: null, status: null });
-    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01T09:00:00' });
-    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: '2026-10-01T09:00:00' });
+    expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b9', itemLocalId: 'i1', targetDate: '2026-10-01' });
+    expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b9', itemLocalId: 'i1', datetime: new Date('2026-10-01T09:00:00').toISOString() });
     const flow = calls.filter((c) => c !== 'get_connection' && c !== 'list_notes' && c !== 'list_checklists'
       && c !== 'list_categories' && c !== 'sync_status' && c !== 'get_prefs' && c !== 'get_branding');
     expect(flow).toEqual(['voice_save_note', 'add_item', 'set_item_target_date', 'set_item_reminder']);

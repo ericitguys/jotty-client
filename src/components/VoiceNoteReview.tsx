@@ -319,15 +319,19 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   }, [appt]);
 
   // Save = note → create card on the chosen board → set its target date → set
-  // its reminder. Ruled defaults: time known → targetDate/reminder are
-  // `${date}T${time}:00` (local, no TZ suffix — upstream's scanner parses the
-  // string with `new Date()`); date-only → plain date string, NO reminder.
-  // Date empty → BLOCK with the ruled validation line (never a guessed value).
+  // its reminder. Ruled defaults: targetDate is the DATE-ONLY field value (the
+  // desktop Set-date editor prefills it raw into <input type="date">, which
+  // sanitizes a T-containing value to '' — a stray Save would clear the date);
+  // time known → the reminder is the ABSOLUTE INSTANT of the composed local
+  // datetime (toISOString — the server-side scanner compares instants, exact
+  // in every server TZ; matches upstream authoring and the kanban modal);
+  // date-only → NO reminder. Date empty → BLOCK with the ruled validation
+  // line (never a guessed value).
   const saveAppointment = async () => {
     if (!apptDate) { setApptError('Date required'); return; }
     if (!apptTitle.trim()) { setApptError('Title required'); return; }
-    const targetDate = apptTime ? `${apptDate}T${apptTime}:00` : apptDate;
-    const reminderDatetime = apptTime ? `${apptDate}T${apptTime}:00` : null;
+    const targetDate = apptDate;
+    const reminderDatetime = apptTime ? new Date(`${apptDate}T${apptTime}:00`).toISOString() : null;
     setBusy(true); setError(null); setApptError(null);
     try {
       await saveVoiceNoteWithBoard({
