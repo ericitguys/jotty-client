@@ -7,7 +7,22 @@ export interface ItemDto {
   localId: string; checklistId: string; parentLocalId: string | null;
   text: string; completed: boolean; position: number; dirty: boolean;
   status: string | null; priority: string | null; targetDate: string | null;
+  // Appointments wire fields (ItemDto, commands/dto.rs): nullable like every
+  // serde Option; optional in TS so pre-appointments mocks keep compiling.
+  startDate?: string | null; serverItemId?: string | null;
+  reminderDatetime?: string | null; reminderNotified?: boolean | null;
   children: ItemDto[];
+}
+/** Appointments agenda row (Rust AgendaEntryDto, commands/dto.rs — serde
+ * camelCase): one dated item across synced, non-deleted lists, pre-sorted by
+ * targetDate. Field order mirrors the struct; required fields are the
+ * non-Option ones. */
+export interface AgendaEntry {
+  checklistId: string; checklistTitle: string; itemLocalId: string;
+  text: string; completed: boolean;
+  startDate?: string | null; targetDate?: string | null;
+  reminderDatetime?: string | null; reminderNotified?: boolean | null;
+  status?: string | null; position: number;
 }
 export interface BoardStatusDto { id: string; label: string; color: string | null; order: number; autoComplete: boolean; }
 export interface BoardDto { checklistId: string; statuses: BoardStatusDto[]; }
@@ -26,6 +41,15 @@ export interface SearchResultsDto {
   checklists: { id: string; title: string; itemText: string }[];
 }
 export interface SyncStatusDto { pending: number; lastSyncAt: string | null; syncing: boolean; lastError: string | null; }
+/** trigger_sync's report (Rust SyncReportDto, commands/dto.rs — serde
+ * camelCase). NOT the "sync-updated" event payload: that serializes
+ * sync::PullStats SNAKE_CASE (enrichment_errors/notes_applied/lists_applied/
+ * tombstones) and is ignored by the UI today. enrichmentErrors is optional so
+ * older mocks without it keep compiling. */
+export interface SyncReport {
+  pending: number; conflicts: number; lastSyncAt: string | null;
+  enrichmentErrors?: number;
+}
 export interface ConflictDto { seq: number; entity: string; entityId: string; opType: string; lastError: string | null; label: string | null; }
 export interface ConnectInfo { instanceUrl: string; version: string | null; }
 export interface UpdateInfo { current: string; latest: string; available: boolean; downloadUrl: string | null; }

@@ -23,7 +23,23 @@ export const setItemText = (checklistId: string, itemLocalId: string, text: stri
 export const setItemChecked = (checklistId: string, itemLocalId: string, checked: boolean) => invoke<void>('set_item_checked', { checklistId, itemLocalId, checked });
 export const setItemStatus = (checklistId: string, itemLocalId: string, status: string) => invoke<void>('set_item_status', { checklistId, itemLocalId, status });
 // Set/clear a kanban card's target date (appointments): null clears server-side.
-export const setItemTargetDate = (checklistId: string, itemLocalId: string, targetDate: string | null) => invoke<void>('set_item_target_date', { checklistId, itemLocalId, targetDate });
+// Optional startDate follows addItem's targetDate precedent (client.ts add_item):
+// the key is added ONLY when provided (`!== undefined`, so an explicit null IS
+// forwarded — the command layer's Option<String> collapses absent vs null; only
+// the replayed op payload distinguishes them). 3-arg call sites keep the exact
+// 3-key invoke shape (KanbanBoard fences assert it with deep equality).
+export const setItemTargetDate = (checklistId: string, itemLocalId: string, targetDate: string | null, startDate?: string | null) => {
+  const args: Record<string, unknown> = { checklistId, itemLocalId, targetDate };
+  if (startDate !== undefined) args.startDate = startDate;
+  return invoke<void>('set_item_target_date', args);
+};
+// Set/clear a kanban card's reminder (appointments T3): datetime null clears
+// server-side. Invoke keys mirror the Rust command params exactly
+// (checklist_id/item_local_id/datetime -> camelCase; NOT reminderDatetime).
+export const setItemReminder = (checklistId: string, itemLocalId: string, datetime: string | null) => invoke<void>('set_item_reminder', { checklistId, itemLocalId, datetime });
+// Appointments agenda: one entry per dated item across synced lists (pure
+// local read; the UI groups by date).
+export const listAgenda = () => invoke<T.AgendaEntry[]>('list_agenda');
 export const getBoardColumns = (checklistId: string) => invoke<T.BoardDto>('get_board_columns', { checklistId });
 export const fetchTaskBoard = (checklistId: string) => invoke<T.BoardDto>('fetch_task_board', { checklistId });
 export const createBoard = (title: string, category: string) => invoke<T.ChecklistDto>('create_task_board', { title, category });
