@@ -231,25 +231,60 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                 ("checklist_item", "set_reminder") => match fetch_list_snapshot(client, &item_list_id).await {
                     Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => {
-                            // Stable id: the row's server_item_id FIRST; else the
-                            // snapshot item's id AT the resolved path (flatten DFS
-                            // order == resolve's paths). Neither -> sentinel conflict
-                            // (existing "unresolved item op" classification).
+                            // Stable id: the row's server_item_id FIRST — but only after the
+                            // T3-I1 row-text cross-check. reconcile stamps server_item_id via
+                            // its TEXT-AGNOSTIC path-match (its UPDATE never rewrites text), so
+                            // a crossed server-side reorder can leave the row carrying the
+                            // OTHER item's id while keeping its text. Trust the id only when
+                            // the item now at the row's STAMPED server_path still has the row's
+                            // text (the review's drift signature: row.text !=
+                            // snapshot[server_path].text); on mismatch resolve by EXACT text
+                            // scan over the snapshot items — unique match -> that item's id,
+                            // zero or ambiguous -> sentinel conflict (existing "unresolved
+                            // item op" classification). The snapshot-id fallback (row id
+                            // ABSENT) stays ungated: it is the resolved path's own item
+                            // (base-engine, invariant-7-sanctioned).
                             let local_id = payload["item_local_id"].as_str().unwrap_or(&op.entity_id).to_string();
-                            let row_id = items::get(conn, &local_id)?.and_then(|r| r.server_item_id.clone());
-                            let snap_id = items::flatten(&snap.items).into_iter()
-                                .find(|f| f.path == path)
-                                .and_then(|f| f.id);
-                            match row_id.or(snap_id) {
-                                Some(id) => match client.set_item_reminder(
-                                    &item_list_id, &id,
-                                    // payload datetime null (clear) -> None -> null-reminder PUT
-                                    payload["datetime"].as_str(),
-                                ).await {
-                                    Ok(()) => Ok(()),
-                                    Err(e) => Err(e),
+                            let flat = items::flatten(&snap.items);
+                            let snap_id = flat.iter().find(|f| f.path == path).and_then(|f| f.id.clone());
+                            let crossed: AppResult<Option<String>> = match items::get(conn, &local_id)? {
+                                Some(row) => match row.server_item_id.clone() {
+                                    None => Ok(None),
+                                    Some(id) => {
+                                        let stamped_ok = row.server_path.as_deref()
+                                            .and_then(|p| flat.iter().find(|f| f.path == p))
+                                            .is_some_and(|f| f.text == row.text);
+                                        if stamped_ok {
+                                            Ok(Some(id))
+                                        } else {
+                                            let text_hits: Vec<&items::ServerItemFlat> = flat.iter()
+                                                .filter(|f| f.text == row.text)
+                                                .collect();
+                                            match text_hits.len() {
+                                                1 => Ok(text_hits[0].id.clone()),
+                                                _ => Err(AppError::Other(format!(
+                                                    "unresolved item op {local_id}: reminder row-id {id} failed the row-text cross-check ({} snapshot items match the row text)",
+                                                    text_hits.len(),
+                                                ))),
+                                            }
+                                        }
+                                    }
                                 },
-                                None => Err(AppError::Other("unresolved item op: server does not expose stable item ids".into())),
+                                None => Ok(None),
+                            };
+                            match crossed {
+                                Ok(row_id) => match row_id.or(snap_id) {
+                                    Some(id) => match client.set_item_reminder(
+                                        &item_list_id, &id,
+                                        // payload datetime null (clear) -> None -> null-reminder PUT
+                                        payload["datetime"].as_str(),
+                                    ).await {
+                                        Ok(()) => Ok(()),
+                                        Err(e) => Err(e),
+                                    },
+                                    None => Err(AppError::Other("unresolved item op: server does not expose stable item ids".into())),
+                                },
+                                Err(e) => Err(e),
                             }
                         }
                         Err(e) => Err(e),
@@ -1496,6 +1531,136 @@ mod tests {
         assert!(err.as_deref().unwrap_or("").starts_with("unresolved item op"),
             "the no-stable-id case must ride the unresolved-op classification, got: {err:?}");
         assert_eq!(put_hits.load(Ordering::SeqCst), 0, "no reminder write without a stable id");
+    }
+
+    #[tokio::test]
+    async fn set_reminder_cross_drift_resolves_by_text() {
+        // T3-I1 (R1): reconcile's TEXT-AGNOSTIC path-match stamps server_item_id
+        // without rewriting text, so a crossed server-side reorder can leave the row
+        // carrying the OTHER item's id while keeping its text (the crossed binding).
+        // The arm must NOT trust the row's server_item_id until the item now at the
+        // row's stamped server_path still has the row's text: here "b" (srv-b) sits
+        // at the stamped path "0" but the row says "a" — so the exact text scan must
+        // resolve "a" to its own item (srv-a at path "1") and the PUT must hit srv-a
+        // ONCE and srv-b ZERO (per-endpoint hit counters: the mis-target pin).
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let a_hits = Arc::new(AtomicUsize::new(0));
+        let b_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"id":"srv-b","index":0,"text":"b","completed":false,"status":"todo"},
+                    {"id":"srv-a","index":1,"text":"a","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let ah = a_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a"))
+                .and(wiremock::matchers::body_json(serde_json::json!(
+                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                )))
+                .respond_with(move |_: &_| {
+                    ah.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let bh = b_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-b"))
+                .respond_with(move |_: &_| {
+                    bh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        // Poisoned row: the crossed binding — reconcile stamped srv-b (the item at
+        // the row's stored path "0") while the row kept its text "a".
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, server_item_id)
+             VALUES ('it-1','l1',NULL,'a',0,0,'0',0,'todo',NULL,NULL,'srv-b')", []).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the cross-drift reminder must replay on the text-resolved id");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(a_hits.load(Ordering::SeqCst), 1, "the PUT must hit the text-resolved item srv-a exactly once");
+        assert_eq!(b_hits.load(Ordering::SeqCst), 0, "the poisoned crossed id srv-b must NEVER receive the reminder (silent mis-target)");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        let state: String = conn.query_row(
+            "SELECT state FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| r.get(0)).unwrap();
+        assert_eq!(state, "done", "the cross-drift op must complete, not conflict");
+    }
+
+    #[tokio::test]
+    async fn set_reminder_text_mismatch_unresolvable_conflicts() {
+        // T3-I1 (R1, the disclosed cost, fenced): a set_reminder replaying behind the
+        // row's own text edit — the edit op replays FIRST (FIFO), its PATCH is refused
+        // (409) so the row text "a-edited" is on NO snapshot item, and the edit is
+        // still unpushed when the reminder replays. The own-claim memo still resolves
+        // the stored path, and the row carries its (locally-correct) id: the pre-impl
+        // arm would silently PUT it (200). The row-text cross-check must refuse and
+        // the exact text scan (zero matches) must sentinel-conflict — NEVER a silent
+        // write while the row text is unverified. NOTE: the ahead-of-it refused edit
+        // op is REQUIRED for RED (a single-op run already conflicts pre-impl via the
+        // text fallback before the stable-id block — indistinguishable), so the run
+        // carries 2 conflicts (edit + reminder).
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let put_hits = Arc::new(AtomicUsize::new(0));
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"B","category":"Home","type":"kanban","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false,"status":"todo"}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        // the row's text edit is refused — "a-edited" never reaches the server
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(409).set_body_string("conflict"))
+            .mount(&s).await;
+        {
+            let ph = put_hits.clone();
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a"))
+                .and(wiremock::matchers::body_json(serde_json::json!(
+                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                )))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','B','Home','kanban','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, server_item_id)
+             VALUES ('it-1','l1',NULL,'a-edited',0,0,'0',0,'todo',NULL,NULL,'srv-a')", []).unwrap();
+        outbox::enqueue(&conn, "update", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "text": "a-edited"})).unwrap();
+        outbox::enqueue(&conn, "set_reminder", "checklist_item", "it-1",
+            &serde_json::json!({"item_local_id": "it-1", "checklist_id": "l1", "datetime": "2026-10-01T09:00:00Z"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 0, "nothing may push: the edit is refused and the reminder must conflict");
+        assert_eq!(stats.conflicts, 2, "the refused edit AND the reminder both land conflict (FIFO continues past the 409)");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 0, "NEVER a silent reminder write while the row text is unresolvable");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        let (state, err): (String, Option<String>) = conn.query_row(
+            "SELECT state, last_error FROM outbox WHERE entity='checklist_item' AND op_type='set_reminder'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(state, "conflict", "the reminder op must land conflict");
+        assert!(err.as_deref().unwrap_or("").starts_with("unresolved item op"),
+            "the reminder must conflict via the unresolved-op sentinel, got: {err:?}");
+        let ustate: String = conn.query_row(
+            "SELECT state FROM outbox WHERE entity='checklist_item' AND op_type='update'", [], |r| r.get(0)).unwrap();
+        assert_eq!(ustate, "conflict", "the refused text edit must be a mapped conflict (FIFO continues)");
     }
 
     #[tokio::test]
