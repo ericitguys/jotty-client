@@ -180,4 +180,81 @@ describe('KanbanBoard', () => {
     fireEvent.click(screen.getByText('Cancel'));
     expect(invoke).not.toHaveBeenCalledWith('add_item', expect.anything());
   });
+
+  // ---- Appointments T7: reminder chip + set/clear inline editor ----
+
+  const reminderMock = () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'set_item_reminder') return Promise.resolve({});
+      return Promise.resolve({});
+    });
+  };
+
+  it('kanban_card_shows_reminder_chip_when_set', async () => {
+    const withReminders = [
+      { ...items[0], localId: 'r1', text: 'reminded', position: 0, priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00:00+02:00', reminderNotified: false },
+      { ...items[0], localId: 'r2', text: 'pinged', position: 1, priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-02T10:00:00+02:00', reminderNotified: true },
+    ];
+    render(<KanbanBoard checklistId="b1" items={withReminders} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('reminded')).toBeInTheDocument());
+    // raw ISO in the chip (v1-raw, TZ-independent substring asserts), 🔔 prefix
+    const chipPlain = (screen.getByText('reminded').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
+    expect(chipPlain).not.toBeNull();
+    expect(chipPlain.textContent).toContain('🔔');
+    expect(chipPlain.textContent).toContain('2026-10-01T09:00:00+02:00');
+    expect(chipPlain.className).not.toContain('notified');
+    const chipNotified = (screen.getByText('pinged').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
+    expect(chipNotified).not.toBeNull();
+    expect(chipNotified.className).toContain('notified');
+  });
+
+  it('set_reminder_flow_dispatches_set_item_reminder', async () => {
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set reminder'));
+    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
+    expect(input.type).toBe('datetime-local');
+    expect(input.value).toBe(''); // no existing reminder -> empty prefill
+    const typed = '2026-10-05T09:30';
+    fireEvent.change(input, { target: { value: typed } });
+    fireEvent.click(screen.getByText('Save'));
+    // datetime-local = local wall time -> ISO carries the offset; computed in-test, TZ-robust
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: new Date(typed).toISOString() }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('clear_reminder_flow_passes_null', async () => {
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00', reminderNotified: null }];
+    render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    expect(screen.getByText('Clear reminder')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Clear reminder'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: null }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('empty_reminder_save_clears', async () => {
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00', reminderNotified: null }];
+    const { container } = render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set reminder'));
+    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
+    expect(input.value).toBe('2026-10-01T09:00'); // prefilled from the existing reminder
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    // empty value = clear -> null (DELETE server-side)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: null }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
 });

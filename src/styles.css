@@ -884,6 +884,13 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .kanban-date-edit input[type="date"] { width: 100%; padding: 6px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13.5px; }
 .kanban-date-edit button { background: transparent; border: none; text-align: left; padding: 7px 4px; border-radius: 0; font-size: 13.5px; }
 .kanban-date-edit button:hover { background: var(--row-hover); }
+/* Appointments T7: reminder chip dims once notified; inline editor mirrors
+   kanban-date-edit. */
+.kanban-reminder.notified { opacity: .5; }
+.kanban-reminder-edit { display: flex; flex-direction: column; gap: 6px; padding: 6px 10px; }
+.kanban-reminder-edit input[type="datetime-local"] { width: 100%; padding: 6px 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-size: 13.5px; }
+.kanban-reminder-edit button { background: transparent; border: none; text-align: left; padding: 7px 4px; border-radius: 0; font-size: 13.5px; }
+.kanban-reminder-edit button:hover { background: var(--row-hover); }
 .kanban-backdrop { position: fixed; inset: 0; z-index: 55; background: transparent; }
 
 /* ---------- mobile (phones, e.g. Pixel 9: 412×916 CSS px) ---------- */

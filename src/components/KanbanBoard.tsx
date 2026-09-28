@@ -17,6 +17,9 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   // date editor (appointments): which card's date is being edited + the picker value
   const [dating, setDating] = useState<string | null>(null);
   const [dateVal, setDateVal] = useState('');
+  // reminder editor (appointments T7): mirrors the date editor above
+  const [reminding, setReminding] = useState<string | null>(null);
+  const [reminderVal, setReminderVal] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -73,10 +76,24 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     await api.setItemTargetDate(checklistId, localId, dateVal || null);
     await reload();
   };
+  const saveReminder = async (localId: string) => {
+    setReminding(null);
+    setMenuFor(null);
+    // datetime-local gives local wall time; ISO carries the offset (matches the
+    // enrichment format). Empty picker = clear (null clears server-side).
+    await api.setItemReminder(checklistId, localId, reminderVal ? new Date(reminderVal).toISOString() : null);
+    await reload();
+  };
+  const clearReminder = async (localId: string) => {
+    setReminding(null);
+    setMenuFor(null);
+    await api.setItemReminder(checklistId, localId, null);
+    await reload();
+  };
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); closeAddForm(); }} />}
+      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); closeAddForm(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -97,7 +114,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                      if (renaming) return;
                      setMenuFor((m) => {
                        const next = m === item.localId ? null : item.localId;
-                       if (next !== item.localId) setDating(null);
+                       if (next !== item.localId) { setDating(null); setReminding(null); }
                        return next;
                      });
                    }}>
@@ -112,6 +129,11 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                 <span className="kanban-badges">
                   {item.priority && <span className="kanban-badge">{item.priority}</span>}
                   {item.targetDate && <span className="kanban-badge">{item.targetDate}</span>}
+                  {item.reminderDatetime && (
+                    <span className={`kanban-badge kanban-reminder${item.reminderNotified ? ' notified' : ''}`}>
+                      🔔 {item.reminderDatetime}
+                    </span>
+                  )}
                   {item.children.length > 0 && <span className="kanban-badge">{item.children.length} subtask{item.children.length === 1 ? '' : 's'}</span>}
                 </span>
                 {menuFor === item.localId && (
@@ -124,12 +146,22 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                         <button onClick={() => saveDate(item.localId)}>Save date</button>
                         <button onClick={() => setDating(null)}>Back</button>
                       </div>
+                    ) : reminding === item.localId ? (
+                      <div className="kanban-reminder-edit">
+                        <input type="datetime-local" value={reminderVal} autoFocus
+                               onChange={(e) => setReminderVal(e.target.value)}
+                               onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && saveReminder(item.localId)} />
+                        <button onClick={() => saveReminder(item.localId)}>Save</button>
+                        <button onClick={() => setReminding(null)}>Back</button>
+                      </div>
                     ) : (
                       <>
                         {cols.filter((c) => c.id !== col.id).map((c) => (
                           <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
                         ))}
                         <button onClick={() => { setDateVal(item.targetDate ?? ''); setDating(item.localId); }}>Set date</button>
+                        <button onClick={() => { setReminderVal(item.reminderDatetime ?? ''); setReminding(item.localId); }}>Set reminder</button>
+                        {item.reminderDatetime && <button onClick={() => clearReminder(item.localId)}>Clear reminder</button>}
                         <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
                         <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>
                       </>
