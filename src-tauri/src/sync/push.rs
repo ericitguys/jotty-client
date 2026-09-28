@@ -276,7 +276,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                                 Ok(row_id) => match row_id.or(snap_id) {
                                     Some(id) => match client.set_item_reminder(
                                         &item_list_id, &id,
-                                        // payload datetime null (clear) -> None -> null-reminder PUT
+                                        // payload datetime null (clear) -> None -> DELETE
                                         payload["datetime"].as_str(),
                                     ).await {
                                         Ok(()) => Ok(()),
@@ -1397,9 +1397,9 @@ mod tests {
     async fn set_reminder_op_uses_row_server_item_id() {
         // Stable-id preference: the row's server_item_id wins even when the
         // snapshot item at the resolved path carries a DIFFERENT id — the PUT
-        // must hit /api/kanban/l1/items/srv-1 with {"reminder":{"datetime": iso}}
-        // (item-level partial update; the /reminder sub-route is auth-dead for
-        // API-key clients).
+        // must hit /api/kanban/l1/items/srv-1/reminder with {"datetime": iso}
+        // (dedicated sub-route — API-key-viable again upstream since 1.28.0,
+        // fccview/jotty#617).
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let put_hits = Arc::new(AtomicUsize::new(0));
@@ -1414,9 +1414,9 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
                 .and(wiremock::matchers::body_json(serde_json::json!(
-                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                    {"datetime":"2026-10-01T09:00:00Z"}
                 )))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
@@ -1426,7 +1426,7 @@ mod tests {
         }
         {
             let wh = wrong_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-different"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-different/reminder"))
                 .respond_with(move |_: &_| {
                     wh.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1466,7 +1466,7 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-9"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/snap-9/reminder"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1484,7 +1484,7 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 1, "the snapshot item's id must route the PUT");
         assert_eq!(stats.conflicts, 0);
-        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "PUT must hit .../items/snap-9 (item-level route)");
+        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "PUT must hit .../items/snap-9/reminder");
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
     }
 
@@ -1505,7 +1505,7 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/0"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/0/reminder"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1558,9 +1558,9 @@ mod tests {
             .mount(&s).await;
         {
             let ah = a_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a/reminder"))
                 .and(wiremock::matchers::body_json(serde_json::json!(
-                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                    {"datetime":"2026-10-01T09:00:00Z"}
                 )))
                 .respond_with(move |_: &_| {
                     ah.fetch_add(1, Ordering::SeqCst);
@@ -1570,7 +1570,7 @@ mod tests {
         }
         {
             let bh = b_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-b"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-b/reminder"))
                 .respond_with(move |_: &_| {
                     bh.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
@@ -1628,9 +1628,9 @@ mod tests {
             .mount(&s).await;
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-a/reminder"))
                 .and(wiremock::matchers::body_json(serde_json::json!(
-                    {"reminder":{"datetime":"2026-10-01T09:00:00Z"}}
+                    {"datetime":"2026-10-01T09:00:00Z"}
                 )))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
@@ -1664,13 +1664,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_reminder_clear_replays_as_null_reminder_put() {
-        // payload datetime null -> client None -> PUT {"reminder":null} on the
-        // item-level route (the /reminder sub-route is auth-dead for API-key
-        // clients — no DELETE anymore).
+    async fn set_reminder_clear_replays_as_delete() {
+        // payload datetime null -> client None -> DELETE on the reminder route.
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let put_hits = Arc::new(AtomicUsize::new(0));
+        let del_hits = Arc::new(AtomicUsize::new(0));
         let s = MockServer::start().await;
         Mock::given(method("GET")).and(path("/api/checklists"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1680,11 +1678,10 @@ mod tests {
             })))
             .mount(&s).await;
         {
-            let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
-                .and(wiremock::matchers::body_json(serde_json::json!({"reminder":null})))
+            let dh = del_hits.clone();
+            Mock::given(method("DELETE")).and(path("/api/kanban/l1/items/srv-1/reminder"))
                 .respond_with(move |_: &_| {
-                    ph.fetch_add(1, Ordering::SeqCst);
+                    dh.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
                 })
                 .mount(&s).await;
@@ -1700,7 +1697,7 @@ mod tests {
         let stats = push_pending(&mut conn, &client).await.unwrap();
         assert_eq!(stats.pushed, 1, "the clear op must replay");
         assert_eq!(stats.conflicts, 0);
-        assert_eq!(put_hits.load(Ordering::SeqCst), 1, "datetime null must replay as a null-reminder PUT on the item-level route (sub-route auth-dead for API-key clients)");
+        assert_eq!(del_hits.load(Ordering::SeqCst), 1, "datetime null must replay as DELETE (binding ruling)");
     }
 
     #[tokio::test]
@@ -1727,7 +1724,7 @@ mod tests {
         }
         {
             let ph = put_hits.clone();
-            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1"))
+            Mock::given(method("PUT")).and(path("/api/kanban/l1/items/srv-1/reminder"))
                 .respond_with(move |_: &_| {
                     ph.fetch_add(1, Ordering::SeqCst);
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
