@@ -23,6 +23,24 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
       const list = await api.getChecklist(checklistId);
       if (cancelled) return;
       setItems(list.items ?? []);
+      // One-shot agenda click-through (T6-N1): after the items resolve, consume
+      // the pending highlight — the deferred path the agenda's immediate lookup
+      // can't cover on a fresh open. React commits the new rows in a following
+      // task, so wait one macrotask hop before the lookup (both jsdom and
+      // browsers schedule the commit before our setTimeout fires). Found →
+      // scroll (try/catch: jsdom lacks scrollIntoView); NOT found → the
+      // row-absent path (T6-I1): still clear, never throw. The consume is
+      // unconditional on the source checklist — a stale id for a DIFFERENT
+      // checklist clears here too without scrolling (one-shot).
+      const pending = useStore.getState().pendingHighlightId;
+      if (pending) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (cancelled) return;
+        try {
+          document.getElementById(`item-${pending}`)?.scrollIntoView({ block: 'center' });
+        } catch { /* no layout engine in tests */ }
+        useStore.getState().clearPendingHighlight();
+      }
       setTitle(list.title);
       setCategory(list.category);
       setListMeta(list);

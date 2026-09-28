@@ -13,6 +13,11 @@ interface AppState {
   selectedChecklistId: string | null;
   selectedCategory: CategoryFilter | null;
   listMode: ListMode;
+  /** One-shot agenda click-through request (v0.21 scroll-to-item): set by
+   * AgendaView BEFORE selectChecklist; consumed by ChecklistView (scroll +
+   * clear) once its items resolve — a fresh open's immediate lookup is a
+   * no-op because the rows are not mounted yet. */
+  pendingHighlightId: string | null;
   updateInfo: T.UpdateInfo | null;
   refreshUpdate: () => Promise<void>;
   prefs: T.UserPrefs | null;
@@ -25,6 +30,8 @@ interface AppState {
   selectChecklist: (id: string | null) => void;
   selectCategory: (c: CategoryFilter | null) => void;
   setListMode: (m: ListMode) => void;
+  setPendingHighlight: (id: string | null) => void;
+  clearPendingHighlight: () => void;
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
   createBoard: (title: string, category: string) => Promise<T.ChecklistDto>;
@@ -67,6 +74,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedChecklistId: null,
   selectedCategory: null,
   listMode: 'notes',
+  pendingHighlightId: null,
   updateInfo: null,
   prefs: null,
   branding: null,
@@ -129,6 +137,12 @@ export const useStore = create<AppState>((set, get) => ({
   setListMode: (m) => {
     // section header click = browse that section fresh: no filter, nothing open
     set({ listMode: m, selectedCategory: null, selectedNoteId: null, selectedChecklistId: null });
+  },
+  setPendingHighlight: (id) => {
+    set({ pendingHighlightId: id });
+  },
+  clearPendingHighlight: () => {
+    set({ pendingHighlightId: null });
   },
   createNote: async (title, category) => {
     const note = await api.createNote(title, category);

@@ -26,7 +26,7 @@ const dated = (offsetDays: number): string => {
 beforeEach(() => {
   invoke.mockReset();
   // the store is a module singleton — reset ALL ui state between tests
-  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'agenda' });
+  useStore.setState({ selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, listMode: 'agenda', pendingHighlightId: null });
 });
 
 describe('AgendaView', () => {
@@ -96,6 +96,19 @@ describe('AgendaView', () => {
       proto.scrollIntoView = original;
       document.getElementById('item-i9')?.remove();
     }
+  });
+
+  it('click-through stores the pending highlight id before selecting the checklist (deferred scroll)', async () => {
+    const rows = [entry({ checklistId: 'l9', itemLocalId: 'i9', text: 'clickable', targetDate: dated(0) })];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('clickable')).toBeInTheDocument());
+    expect(useStore.getState().pendingHighlightId).toBeNull(); // nothing pending before the click
+    fireEvent.click(screen.getByText('clickable'));
+    // the click REQUESTS a one-shot highlight: set BEFORE selectChecklist so a
+    // fresh open (rows not mounted yet) still scrolls after ChecklistView's
+    // items resolve. No row is mounted here — the immediate lookup is a no-op.
+    expect(useStore.getState().pendingHighlightId).toBe('i9');
   });
 
   it('empty, null or failed fetch renders the inline state line, never a crash', async () => {

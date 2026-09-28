@@ -5,6 +5,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import ChecklistView from './ChecklistView';
+import { useStore } from '../stores/store';
 
 const items = [
   { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
@@ -18,7 +19,29 @@ beforeEach(() => {
     if (cmd === 'set_item_checked' || cmd === 'reorder_items' || cmd === 'add_item' || cmd === 'delete_item') return Promise.resolve({});
     return Promise.resolve(null);
   });
+  // zustand module singleton: the one-shot pending highlight must not leak between tests
+  useStore.setState({ pendingHighlightId: null });
 });
+
+// jsdom has no Element.prototype.scrollIntoView: define it (so it can be
+// spied), spy on it recording the scroll target + arg, and restore the
+// original absent state afterwards.
+const spyScrollIntoView = () => {
+  const proto = Element.prototype as Element & { scrollIntoView?: (arg?: unknown) => void };
+  const original = proto.scrollIntoView;
+  if (!original) proto.scrollIntoView = () => {};
+  const calls: { el: Element; arg: unknown }[] = [];
+  const spy = vi.spyOn(proto, 'scrollIntoView').mockImplementation(function (this: Element, arg?: unknown) {
+    calls.push({ el: this, arg });
+  });
+  return {
+    calls,
+    restore: () => {
+      spy.mockRestore();
+      if (!original) delete (proto as { scrollIntoView?: (arg?: unknown) => void }).scrollIntoView;
+    },
+  };
+};
 
 describe('ChecklistView', () => {
   it('renders items and toggling a checkbox calls set_item_checked', async () => {
@@ -97,5 +120,35 @@ describe('ChecklistView', () => {
     expect(chips[1]).toHaveTextContent('2026-10-02');
     // the item text node is unchanged (the chip rides AFTER the text span)
     expect(screen.getByText('dated top')).toBeInTheDocument();
+  });
+
+  it('consumes the pending highlight after the load resolves: scrolls to the row and clears (one-shot)', async () => {
+    const scroll = spyScrollIntoView();
+    useStore.setState({ pendingHighlightId: 'i1' });
+    try {
+      render(<ChecklistView checklistId="l1" />);
+      await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument()); // items resolved, rows mounted
+      await waitFor(() => expect(useStore.getState().pendingHighlightId).toBeNull()); // one-shot: consumed
+      expect(scroll.calls).toHaveLength(1);
+      expect(scroll.calls[0].el).toBe(document.getElementById('item-i1')); // the pending row's element
+      expect(scroll.calls[0].arg).toEqual({ block: 'center' });
+    } finally {
+      scroll.restore();
+    }
+  });
+
+  it('pending id with no matching row after load: cleared silently, never scrolls (row-absent path)', async () => {
+    const scroll = spyScrollIntoView();
+    useStore.setState({ pendingHighlightId: 'i-missing' }); // belongs to no row of this (or any mounted) checklist
+    try {
+      render(<ChecklistView checklistId="l1" />);
+      // the consume must not throw and must not abort the rest of the load:
+      await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByDisplayValue('L')).toBeInTheDocument()); // meta still loads after the consume
+      await waitFor(() => expect(useStore.getState().pendingHighlightId).toBeNull()); // cleared regardless
+      expect(scroll.calls).toEqual([]); // never scrolled
+    } finally {
+      scroll.restore();
+    }
   });
 });

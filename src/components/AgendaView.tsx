@@ -20,6 +20,7 @@ const LATER = 4;
 
 export default function AgendaView() {
   const selectChecklist = useStore((s) => s.selectChecklist);
+  const setPendingHighlight = useStore((s) => s.setPendingHighlight);
   const [entries, setEntries] = useState<AgendaEntry[]>([]);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
 
@@ -65,6 +66,12 @@ export default function AgendaView() {
   }
 
   const open = (entry: AgendaEntry) => {
+    // Deferred highlight FIRST (T6-N1): on a fresh open, ChecklistView fetches
+    // its items async, so the immediate lookup below is usually a no-op — the
+    // view consumes pendingHighlightId (scroll + one-shot clear) once its
+    // items resolve. Set BEFORE selectChecklist so the request is queued for
+    // the view's first load, whichever list opens.
+    setPendingHighlight(entry.itemLocalId);
     selectChecklist(entry.checklistId); // flips listMode: the list + ChecklistView open
     // Best-effort highlight: ChecklistView rows carry id=item-<localId> (top-
     // level rows). The row is usually not mounted yet at this instant (the
