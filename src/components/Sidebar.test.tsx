@@ -77,6 +77,19 @@ describe('Sidebar section switching', () => {
     expect(screen.getByRole('button', { name: 'Notes' })).not.toHaveClass('selected');
   });
 
+  it('the Agenda tab renders third and switches to agenda mode', () => {
+    useStore.setState({ listMode: 'notes', selectedNoteId: 'n1' });
+    render(<Sidebar />);
+    const tabs = Array.from(document.querySelectorAll('.sec-tabs .sec-toggle')).map((b) => b.textContent);
+    expect(tabs).toEqual(['Notes', 'Checklists', 'Agenda']);
+    fireEvent.click(screen.getByRole('button', { name: 'Agenda' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('agenda');
+    expect(s.selectedNoteId).toBeNull(); // section switch closes open items
+    expect(s.selectedCategory).toBeNull();
+    expect(screen.getByRole('button', { name: 'Agenda' })).toHaveClass('selected');
+  });
+
   it('only the active section shows its categories', () => {
     render(<Sidebar />);
     expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // checklist cats hidden in notes mode

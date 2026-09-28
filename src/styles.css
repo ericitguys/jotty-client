@@ -1241,3 +1241,31 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .edt-fonts { overflow-y: auto; }
 .edt-font-row { font-size: 13px; padding: 7px 12px; }
 .edt-dd-empty { padding: 14px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+
+/* ---- Appointments agenda (Task 6): sidebar 3rd tab pane + entry rows ---- */
+.agenda-note, .agenda-empty { color: var(--muted); font-size: 13px; }
+.agenda-error { color: var(--danger); font-size: 13px; }
+.agenda-group { margin-bottom: 16px; }
+.agenda-group h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 0 0 6px; font-weight: 600;
+}
+.agenda-entry {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-radius: var(--radius); cursor: pointer; font-size: 14px;
+}
+.agenda-entry:hover { background: var(--row-hover); }
+.agenda-entry.completed { opacity: 0.55; }
+.agenda-text { font-weight: 600; overflow-wrap: anywhere; }
+.agenda-entry.completed .agenda-text { text-decoration: line-through; }
+.agenda-list { color: var(--muted); font-size: 12px; margin-left: auto; }
+.agenda-time { color: var(--muted); font-size: 12px; }
+.agenda-bell { font-size: 13px; flex: none; }
+.agenda-bell.notified { opacity: 0.4; }
+/* plain-list rows: the item's targetDate chip (kanban cards show dates in the
+   card UI instead) */
+.item-date-chip {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px; flex: none;
+  border: 1px solid var(--border-soft); color: var(--muted);
+  background: var(--bg); white-space: nowrap;
+}

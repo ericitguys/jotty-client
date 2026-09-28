@@ -1,6 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import Sidebar from './components/Sidebar';
+import AgendaView from './components/AgendaView';
 import NoteList from './components/NoteList';
 import ChecklistList from './components/ChecklistList';
 import ChecklistView from './components/ChecklistView';
@@ -182,9 +183,11 @@ export default function App() {
     {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
     <Sidebar onOpenSettings={() => { setDrawerOpen(false); setShowSettings(true); }} />
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
-      {listMode === 'notes'
-        ? <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
-        : <ChecklistList checklists={visibleChecklists} />}
+      {listMode === 'agenda'
+        ? <AgendaView />
+        : listMode === 'notes'
+          ? <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
+          : <ChecklistList checklists={visibleChecklists} />}
         {selectedNoteId ? <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
       </main>
       {(selectedNoteId || selectedChecklistId) && (

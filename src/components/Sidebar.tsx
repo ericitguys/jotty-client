@@ -24,6 +24,10 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => voi
           className={`sec-toggle${listMode === 'checklists' ? ' selected' : ''}`}
           onClick={() => setListMode('checklists')}
         >Checklists</button>
+        <button
+          className={`sec-toggle${listMode === 'agenda' ? ' selected' : ''}`}
+          onClick={() => setListMode('agenda')}
+        >Agenda</button>
       </div>
       {listMode === 'notes' ? (
         <ul>

@@ -73,4 +73,29 @@ describe('ChecklistView', () => {
     fireEvent.drop(screen.getAllByRole('listitem')[0], { dataTransfer: { getData: () => 'i2' } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('reorder_items', { checklistId: 'l1', orderedTopLevelIds: ['i2', 'i1'] }));
   });
+
+  it('rows with a targetDate render a date chip after the item text (top-level and children)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({
+        id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'dated top', completed: false, position: 0, dirty: false, targetDate: '2026-10-01',
+            children: [
+              { localId: 'c1', checklistId: 'l1', parentLocalId: 'i1', text: 'dated child', completed: false, position: 0, dirty: false, targetDate: '2026-10-02', children: [] },
+            ] },
+          { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'undated', completed: false, position: 1, dirty: false, children: [] },
+        ],
+      });
+      if (cmd === 'set_item_checked' || cmd === 'reorder_items' || cmd === 'add_item' || cmd === 'delete_item') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('dated top')).toBeInTheDocument());
+    const chips = document.querySelectorAll('.item-date-chip');
+    expect(chips).toHaveLength(2); // the undated row renders no chip
+    expect(chips[0]).toHaveTextContent('2026-10-01');
+    expect(chips[1]).toHaveTextContent('2026-10-02');
+    // the item text node is unchanged (the chip rides AFTER the text span)
+    expect(screen.getByText('dated top')).toBeInTheDocument();
+  });
 });

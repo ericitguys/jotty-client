@@ -128,6 +128,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
             <div className="row-line">
               <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
               <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
+              {item.targetDate && <span className="item-date-chip">{item.targetDate}</span>}
               <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
               <button onClick={() => remove(item)}>✕</button>
             </div>
@@ -137,6 +138,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
                   <div className="row-line">
                     <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
                     <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
+                    {c.targetDate && <span className="item-date-chip">{c.targetDate}</span>}
                     <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
                     <button onClick={() => remove(c)}>✕</button>
                   </div>

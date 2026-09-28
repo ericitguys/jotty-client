@@ -20,6 +20,7 @@ beforeEach(() => {
     if (cmd === 'list_categories') return Promise.resolve({ notes: [{ name: 'Home', path: 'Home', count: 1, level: 0 }], checklists: [] });
     if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: '2026-01-01T00:00:00.000Z', syncing: false });
     if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+    if (cmd === 'list_agenda') return Promise.resolve([]);
     if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
     if (cmd === 'ai_get_models') return Promise.resolve([]);
     return Promise.resolve(null);
@@ -528,5 +529,16 @@ describe('web preference mirroring', () => {
     // back from a checklist lands on the checklists list, not the notes list
     await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
     expect(screen.queryByText('Groceries')).not.toBeInTheDocument();
+  });
+
+  it('listMode agenda renders the AgendaView list pane and neither entity list', async () => {
+    useStore.setState({ listMode: 'agenda' });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('No dated items.')).toBeInTheDocument());
+    expect(screen.queryByText('Groceries')).not.toBeInTheDocument(); // notes list stays closed
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // checklists list stays closed
+    // the right pane stays empty until a click-through selects a checklist
+    expect(document.getElementById('note-editor')).toBeNull();
+    expect(document.getElementById('checklist-view')).toBeNull();
   });
 });

@@ -40,7 +40,7 @@ export interface CategoryFilter {
   path: string;
 }
 
-export type ListMode = 'notes' | 'checklists';
+export type ListMode = 'notes' | 'checklists' | 'agenda';
 
 export interface VoiceBoardInput {
   recordingId: string | null; // new/resume modes
