@@ -81,7 +81,9 @@ mod tests {
             assert!(cols.iter().any(|x| x == c), "missing checklist_items.{c}");
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 3);
+        // >= 3: later migrations (v4+) bump the version further; the exact pin
+        // lives in the latest migration's test (migration_v4...).
+        assert!(version >= 3);
         let bcols: Vec<String> = conn
             .prepare("PRAGMA table_info(board_statuses)").unwrap()
             .query_map([], |r| r.get::<_, String>(1)).unwrap()
@@ -89,6 +91,20 @@ mod tests {
         for c in ["checklist_id", "status_id", "label", "color", "sort_order", "auto_complete"] {
             assert!(bcols.iter().any(|x| x == c), "missing board_statuses.{c}");
         }
+    }
+
+    #[test]
+    fn migration_v4_adds_appointment_columns() {
+        let (_d, conn) = tmp_db();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(checklist_items)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .map(Result::unwrap).collect();
+        for c in ["start_date", "server_item_id", "reminder_datetime", "reminder_notified"] {
+            assert!(cols.iter().any(|x| x == c), "missing checklist_items.{c}");
+        }
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 4);
     }
 
     #[test]

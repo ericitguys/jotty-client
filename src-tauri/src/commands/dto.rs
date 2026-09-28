@@ -64,6 +64,10 @@ pub struct ItemDto {
     pub status: Option<String>,
     pub priority: Option<String>,
     pub target_date: Option<String>,
+    pub start_date: Option<String>,
+    pub server_item_id: Option<String>,
+    pub reminder_datetime: Option<String>,
+    pub reminder_notified: Option<bool>,
     pub children: Vec<ItemDto>,
 }
 
@@ -80,6 +84,10 @@ impl From<items::ItemRow> for ItemDto {
             status: r.status,
             priority: r.priority,
             target_date: r.target_date,
+            start_date: r.start_date,
+            server_item_id: r.server_item_id,
+            reminder_datetime: r.reminder_datetime,
+            reminder_notified: r.reminder_notified,
             children: Vec::new(),
         }
     }
@@ -292,5 +300,42 @@ pub struct AiSettingsDto {
     pub language_hint: String,
     pub api_path_suffix: String,
     pub has_key: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::items::ItemRow;
+
+    #[test]
+    fn item_dto_carries_appointment_fields() {
+        let row = ItemRow {
+            local_id: "l1".into(),
+            checklist_id: "c1".into(),
+            parent_id: None,
+            text: "Dentist".into(),
+            completed: false,
+            position: 0,
+            server_path: Some("0".into()),
+            dirty: false,
+            status: None,
+            priority: None,
+            target_date: Some("2026-10-01".into()),
+            start_date: Some("2026-10-01".into()),
+            server_item_id: Some("srv-1".into()),
+            reminder_datetime: Some("2026-10-01T09:00:00.000Z".into()),
+            reminder_notified: Some(true),
+        };
+        let dto = ItemDto::from(row);
+        assert_eq!(dto.start_date.as_deref(), Some("2026-10-01"));
+        assert_eq!(dto.server_item_id.as_deref(), Some("srv-1"));
+        assert_eq!(dto.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00.000Z"));
+        assert_eq!(dto.reminder_notified, Some(true));
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["startDate"], "2026-10-01");
+        assert_eq!(v["serverItemId"], "srv-1");
+        assert_eq!(v["reminderDatetime"], "2026-10-01T09:00:00.000Z");
+        assert_eq!(v["reminderNotified"], true);
+    }
 }
 

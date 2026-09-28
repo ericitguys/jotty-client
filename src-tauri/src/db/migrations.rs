@@ -88,6 +88,15 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_board_statuses ON board_statuses(checklist_id, sort_order);
     "#,
+    // v4 — appointments (2026-09-28): per-item start date, stable server item
+    // id, reminder columns. Additive; server-mirrored (dates, id) or
+    // kanban-enriched (reminder) — never client-invented (spec §5.1).
+    r#"
+    ALTER TABLE checklist_items ADD COLUMN start_date TEXT;
+    ALTER TABLE checklist_items ADD COLUMN server_item_id TEXT;
+    ALTER TABLE checklist_items ADD COLUMN reminder_datetime TEXT;
+    ALTER TABLE checklist_items ADD COLUMN reminder_notified INTEGER;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

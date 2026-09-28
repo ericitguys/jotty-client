@@ -86,6 +86,13 @@ pub fn creation_board_statuses() -> Vec<ServerStatus> {
     render_default_statuses().into_iter().filter(|s| s.id != "paused").collect()
 }
 
+/// Reminder on the wire (kanban GET, spec §3): a PARSED object — not the
+/// file's JSON-string form. Parsed by ServerItem but not yet persisted
+/// (consumed by the kanban-enrichment/reminder tasks).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerReminder { pub datetime: String, #[serde(default)] pub notified: Option<bool> }
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerItem {
@@ -113,6 +120,8 @@ pub struct ServerItem {
     pub target_date: Option<String>,
     #[serde(default)]
     pub estimated_time: Option<f64>,
+    #[serde(default)]
+    pub reminder: Option<crate::jotty::models::ServerReminder>,
 }
 
 impl ServerItem {
@@ -237,6 +246,21 @@ mod tests {
         let flat = flatten_items(&input);
         let paths: Vec<String> = flat.iter().map(|(p, _)| p.clone()).collect();
         assert_eq!(paths, vec!["0", "0.0", "0.1", "1"]);
+    }
+
+    #[test]
+    fn flatten_maps_start_date() {
+        let mut parent = ServerItem::simple("p");
+        parent.start_date = Some("2026-10-01".into());
+        parent.children = vec![
+            ServerItem { text: "c1".into(), start_date: Some("2026-10-02".into()), ..Default::default() },
+            ServerItem { text: "c2".into(), ..Default::default() },
+        ];
+        let flat = crate::db::items::flatten(&[parent]);
+        assert_eq!(flat.len(), 3, "DFS flatten: parent + 2 children");
+        assert_eq!(flat[0].start_date.as_deref(), Some("2026-10-01"), "parent keeps start_date");
+        assert_eq!(flat[1].start_date.as_deref(), Some("2026-10-02"), "nested child keeps start_date");
+        assert_eq!(flat[2].start_date, None, "child without start_date maps None");
     }
 
     #[test]

@@ -17,6 +17,10 @@ pub struct ItemRow {
     pub status: Option<String>,
     pub priority: Option<String>,
     pub target_date: Option<String>,
+    pub start_date: Option<String>,
+    pub server_item_id: Option<String>,
+    pub reminder_datetime: Option<String>,
+    pub reminder_notified: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +41,7 @@ pub struct ServerItemFlat {
     pub status: Option<String>,
     pub priority: Option<String>,
     pub target_date: Option<String>,
+    pub start_date: Option<String>,
 }
 
 pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
@@ -50,6 +55,7 @@ pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
             status: it.status.clone(),
             priority: it.priority.clone(),
             target_date: it.target_date.clone(),
+            start_date: it.start_date.clone(),
         })
         .collect()
 }
@@ -65,7 +71,7 @@ fn fts_refresh(conn: &Connection, list_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date";
+const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, reminder_datetime, reminder_notified";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
     Ok(ItemRow {
@@ -80,6 +86,10 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
         status: r.get(8)?,
         priority: r.get(9)?,
         target_date: r.get(10)?,
+        start_date: r.get(11)?,
+        server_item_id: r.get(12)?,
+        reminder_datetime: r.get(13)?,
+        reminder_notified: r.get::<_, Option<i64>>(14)?.map(|v| v != 0),
     })
 }
 
@@ -118,15 +128,15 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
             Some(l) => {
                 claimed.push(l.local_id.clone());
                 conn.execute(
-                    "UPDATE checklist_items SET position=?2, completed=?3, server_path=?4, status=?5, priority=?6, target_date=?7, dirty=0 WHERE local_id=?1",
-                    rusqlite::params![l.local_id, order as i64, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone()],
+                    "UPDATE checklist_items SET position=?2, completed=?3, server_path=?4, status=?5, priority=?6, target_date=?7, start_date=?8, server_item_id=?9, dirty=0 WHERE local_id=?1",
+                    rusqlite::params![l.local_id, order as i64, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
                 )?;
             }
             None => {
                 conn.execute(
-                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
-                     VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9)",
-                    rusqlite::params![uuid::Uuid::new_v4().to_string(), checklist_id, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone()],
+                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id)
+                     VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![uuid::Uuid::new_v4().to_string(), checklist_id, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
                 )?;
             }
         }
@@ -285,6 +295,7 @@ mod tests {
             start_date: None,
             target_date: None,
             estimated_time: None,
+            reminder: None,
         }
     }
 
@@ -413,5 +424,56 @@ mod tests {
         let c = rows.iter().find(|r| r.text == "c").unwrap();
         let p = rows.iter().find(|r| r.text == "p").unwrap();
         assert!(!g.completed && !c.completed && p.completed); // parent untouched
+    }
+
+    #[test]
+    fn reconcile_captures_server_item_id_and_start_date() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        let server = vec![
+            ServerItem { id: Some("srv-1".into()), text: "Dentist".into(), start_date: Some("2026-10-01".into()), target_date: Some("2026-10-01".into()), ..Default::default() },
+            ServerItem { text: "no-id item".into(), ..Default::default() },
+        ];
+        reconcile(&conn, &list.id, &flatten(&server)).unwrap();
+        let items = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(items.len(), 2);
+        let row1 = items.iter().find(|r| r.text == "Dentist").unwrap();
+        assert_eq!(row1.server_item_id.as_deref(), Some("srv-1"));
+        assert_eq!(row1.start_date.as_deref(), Some("2026-10-01"));
+        let row2 = items.iter().find(|r| r.text == "no-id item").unwrap();
+        assert_eq!(row2.server_item_id, None, "server row without id stores NULL server_item_id");
+        assert_eq!(row2.start_date, None, "server row without start_date stores NULL");
+    }
+
+    #[test]
+    fn reconcile_update_arm_updates_dates_by_path() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        let first = ServerItem { id: Some("srv-1".into()), text: "A".into(), start_date: Some("2026-01-01".into()), target_date: Some("2026-01-02".into()), ..Default::default() };
+        reconcile(&conn, &list.id, &flatten(&vec![first])).unwrap();
+        // same path "0": the matched-UPDATE arm must write the new server dates
+        let second = ServerItem { id: Some("srv-1".into()), text: "A".into(), start_date: Some("2026-02-01".into()), target_date: Some("2026-02-02".into()), ..Default::default() };
+        reconcile(&conn, &list.id, &flatten(&vec![second])).unwrap();
+        let items = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(items.len(), 1, "path match must update in place, not duplicate");
+        assert_eq!(items[0].server_path.as_deref(), Some("0"));
+        assert_eq!(items[0].start_date.as_deref(), Some("2026-02-01"));
+        assert_eq!(items[0].target_date.as_deref(), Some("2026-02-02"));
+        assert_eq!(items[0].server_item_id.as_deref(), Some("srv-1"));
+    }
+
+    #[test]
+    fn reconcile_text_adopt_carries_new_columns() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        let it = insert_local(&conn, &NewItem { checklist_id: list.id.clone(), parent_local_id: None, text: "Dentist".into(), status: None, priority: None, target_date: None }).unwrap();
+        let server = vec![ServerItem { id: Some("srv-7".into()), text: "Dentist".into(), start_date: Some("2026-10-05".into()), target_date: Some("2026-10-05".into()), ..Default::default() }];
+        reconcile(&conn, &list.id, &flatten(&server)).unwrap();
+        let after = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(after.len(), 1, "text adopt must not duplicate");
+        assert_eq!(after[0].local_id, it.local_id);
+        assert_eq!(after[0].server_path.as_deref(), Some("0"));
+        assert_eq!(after[0].server_item_id.as_deref(), Some("srv-7"));
+        assert_eq!(after[0].start_date.as_deref(), Some("2026-10-05"));
     }
 }
