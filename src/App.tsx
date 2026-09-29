@@ -250,7 +250,7 @@ export default function App() {
           SyncBadge so its fetch failures can never take the sync bar down —
           a SyncBadge child's own effect can only unmount itself, not the
           footer (root cause of the failed 1st implementation attempt). */}
-      <VoicePendingBadge />
+      <VoicePendingBadge onOpenDraft={(recording) => setVoice({ mode: 'resume', recording })} />
     </div>
   );
 }

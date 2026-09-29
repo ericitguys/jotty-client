@@ -11,10 +11,12 @@ const listen = vi.fn(async (..._a: readonly unknown[]) => async () => {});
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listen(...a) }));
 
 import VoicePendingBadge from './VoicePendingBadge';
+import { useStore } from '../stores/store';
 
 beforeEach(() => {
   invoke.mockReset();
   listen.mockClear();
+  useStore.setState({ notes: [], selectedNoteId: null, selectedChecklistId: null, listMode: 'notes' });
 });
 
 const handlers = () => listen.mock.calls.map((c) => c[1]) as Array<() => void>;
@@ -27,6 +29,51 @@ describe('VoicePendingBadge', () => {
     render(<VoicePendingBadge />);
     expect(invoke).toHaveBeenCalledWith('voice_get_pending_transcriptions');
     await waitFor(() => expect(screen.queryByTestId('voice-pending-chip')).not.toBeInTheDocument());
+  });
+
+  it('tap opens the waiting draft: newest-first list, oldest pending row wins', async () => {
+    useStore.setState({ notes: [{ id: 'n1', title: 'Memo', content: 'x', category: 'Home', audioPath: null, audioDurationSecs: null, createdAt: null, updatedAt: null, deletedAt: null, dirty: false }] });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_get_pending_transcriptions') return Promise.resolve(2);
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([
+        { id: 'r-old', path: '/v/old.wav', durationSecs: 3, rawTranscript: null, tidiedTranscript: null, state: 'transcription_failed', lastError: 'x', createdAt: '2026-09-30T10:00:00Z' },
+        { id: 'r-new', path: '/data/voice/r2.wav', durationSecs: 2, rawTranscript: null, tidiedTranscript: null, state: 'recorded', lastError: null, createdAt: '2026-09-30T11:00:00Z' },
+      ]);
+      return Promise.resolve(null);
+    });
+    const onOpenDraft = vi.fn();
+    render(<VoicePendingBadge onOpenDraft={onOpenDraft} />);
+    fireEvent.click(await screen.findByTestId('voice-pending-chip'));
+    await waitFor(() => expect(onOpenDraft).toHaveBeenCalledTimes(1));
+    expect(onOpenDraft.mock.calls[0][0].id).toBe('r-old');
+  });
+
+  it('with no drafts it opens the saved note whose transcript is still inbound', async () => {
+    useStore.setState({
+      notes: [{ id: 'n9', title: 'Memo', content: '', category: 'Home', audioPath: '/v/r1.wav', audioDurationSecs: 4, createdAt: null, updatedAt: null, deletedAt: null, dirty: true }],
+    });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_get_pending_transcriptions') return Promise.resolve(1);
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<VoicePendingBadge onOpenDraft={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('voice-pending-chip'));
+    await waitFor(() => expect(useStore.getState().selectedNoteId).toBe('n9'));
+  });
+
+  it('button semantics: role + keyboard operable', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_get_pending_transcriptions') return Promise.resolve(1);
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<VoicePendingBadge onOpenDraft={vi.fn()} />);
+    const chip = await screen.findByTestId('voice-pending-chip');
+    expect(chip).toHaveAttribute('role', 'button');
+    expect(chip).toHaveAttribute('tabindex', '0');
+    fireEvent.keyDown(chip, { key: 'Enter' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_list_unsaved'));
   });
 
   it('hides entirely while the count is unknown (command failed)', async () => {

@@ -712,7 +712,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: help;
+  cursor: pointer;
 }
 
 /* ---------- jotty-site-style dropdown (theme picker) ---------- */
