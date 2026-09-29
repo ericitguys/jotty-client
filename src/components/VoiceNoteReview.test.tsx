@@ -580,7 +580,7 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
     expect(await screen.findByDisplayValue('Dentist')).toBeInTheDocument();
     expect(screen.getByLabelText('Date')).toHaveValue('2026-10-01');
-    expect(screen.getByLabelText('Time')).toHaveValue('09:00');
+    expect(screen.getByRole('button', { name: 'Time' })).toHaveTextContent('09:00 AM');
     // ruled reminder display: time known → the appointment datetime, read-only
     expect(screen.getByText(/reminder at 2026-10-01T09:00/)).toBeInTheDocument();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_extract_appointment', { text: 'Hello world. Second sentence.' }));
@@ -601,7 +601,11 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     fireEvent.change(titleInput, { target: { value: 'Root canal' } });
     expect(screen.getByPlaceholderText('Appointment title')).toHaveValue('Root canal');
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-03' } });
-    fireEvent.change(screen.getByLabelText('Time'), { target: { value: '14:30' } });
+    // Time is the engine-proof custom Dropdown (WebKitGTK probe 2026-09-29:
+    // native <input type=time> renders typed segments but .value stays '' and
+    // NO change/input events ever fire — silent date-only saves)
+    fireEvent.click(screen.getByRole('button', { name: 'Time' }));
+    fireEvent.click(screen.getByRole('option', { name: '02:30 PM' }));
     expect(screen.getByText(/reminder at 2026-10-03T14:30/)).toBeInTheDocument();
     // cancel returns to review with the shared edits intact
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));

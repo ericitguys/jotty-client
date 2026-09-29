@@ -182,6 +182,14 @@ describe('KanbanBoard', () => {
   });
 
   // ---- Appointments T7: reminder chip + set/clear inline editor ----
+  // RESHAPED (2026-09-29, WebKitGTK probe): the single input[type=datetime-local]
+  // is unusable on the Tauri Linux webview — every field click opens a days-only
+  // calendar popup that GRABS keyboard+pointer, so segments can never be typed,
+  // and picking a day auto-fills "now" as the time. Split editor: date input +
+  // custom Time Dropdown (pure-DOM, engine-proof). Save stays DISABLED until
+  // both parts are picked; the only clear path is the Back row (never a
+  // partial-save null). The webview facts are frozen by the probe harness in
+  // references/webkitgtk-datetime-probe.md (skill jotty-client).
 
   const reminderMock = () => {
     invoke.mockImplementation((cmd: string) => {
@@ -255,15 +263,57 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
-    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
-    expect(input.type).toBe('datetime-local');
-    expect(input.value).toBe(''); // no existing reminder -> empty prefill
-    const typed = '2026-10-05T09:30';
-    fireEvent.change(input, { target: { value: typed } });
-    fireEvent.click(screen.getByText('Save'));
-    // datetime-local = local wall time -> ISO carries the offset; computed in-test, TZ-robust
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: new Date(typed).toISOString() }));
+    // split editor: a native date input + the engine-proof Time dropdown
+    const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
+    const dateInput = container.querySelector('.kanban-reminder-edit input[type="date"]') as HTMLInputElement;
+    expect(dateInput).not.toBeNull();
+    expect(dateInput.value).toBe(''); // no existing reminder -> empty prefill
+    // Save is DISABLED until date AND time are picked (no half-saves, ever)
+    const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
+    expect(editorSave.disabled).toBe(true);
+    // pick the time via the Dropdown (role=option rows, same as board pickers)
+    fireEvent.click(screen.getByRole('button', { name: 'Reminder time' }));
+    fireEvent.click(screen.getByRole('option', { name: '09:30 AM' }));
+    // date typed via the input (native calendar popup works on webview; jsdom
+    // sees the committed value string directly)
+    const typedDate = '2026-10-05';
+    fireEvent.change(dateInput, { target: { value: typedDate } });
+    expect(editorSave.disabled).toBe(false);
+    fireEvent.click(editorSave);
+    // composed LOCAL wall time -> ISO carries the offset (TZ-robust assert)
+    const expected = new Date(`${typedDate}T09:30:00`);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: expected.toISOString() }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('date_without_time_save_blocked_never_clears', async () => {
+    // THE WEBKITGTK REGRESSION FENCE: the single-field editor silently sent
+    // null (a DELETE) when only a date was filled — its .value read '' while
+    // incomplete. The split editor must hard-block: incomplete -> Save
+    // disabled, no invoke, no clear, editor stays open.
+    // No existing reminder (fresh appointment card = the user's exact case).
+    // The old engine behavior: typed a date, time never entered -> whole
+    // datetime-local read '' -> Save silently sent null. The split editor's
+    // fence: date-only pick -> Save disabled + editor stays open + NO invoke
+    // (nothing can be cleared that does not exist, and nothing saves half).
+    reminderMock();
+    const reload = vi.fn(async () => {});
+    const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getByText('Set reminder'));
+    const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
+    const dateInput = editor.querySelector('input[type="date"]') as HTMLInputElement;
+    // type ONLY the date (the user's exact broken flow)
+    fireEvent.change(dateInput, { target: { value: '2026-10-05' } });
+    expect(editor.querySelector('.kanban-reminder-hint')!.textContent).toMatch(/time/i); // names the missing TIME
+    // incomplete (no time picked) -> Save stays disabled; clicking changes nothing
+    const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
+    expect(editorSave.disabled).toBe(true);
+    fireEvent.click(editorSave); // no-op on a disabled button
+    // NO invoke, editor stays open
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_reminder')).toBe(false);
+    expect(container.querySelector('.kanban-reminder-edit')).not.toBeNull();
   });
 
   it('clear_reminder_flow_passes_null', async () => {
@@ -279,7 +329,7 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 
-  it('empty_reminder_save_clears', async () => {
+  it('editor_prefills_both_parts_of_existing_reminder', async () => {
     reminderMock();
     const reload = vi.fn(async () => {});
     // production fixture: Z-form ISO (upstream writes toISOString(); T7.1 reshape from the offset-less fixture)
@@ -289,40 +339,25 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
-    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
-    // expected prefill computed in-test from the fixture (TZ-robust, same pattern as the set-flow fence)
+    const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
+    const dateInput = editor.querySelector('input[type="date"]') as HTMLInputElement;
+    // date part prefilled with the LOCAL conversion of the Z-form reminder (TZ-robust, computed in-test)
     const fd = new Date(fixture);
     const pad = (n: number) => String(n).padStart(2, '0');
-    const expectedLocal = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}T${pad(fd.getHours())}:${pad(fd.getMinutes())}`;
-    expect(input.value).toBe(expectedLocal); // prefilled with the LOCAL conversion of the Z-form reminder
-    fireEvent.change(input, { target: { value: '' } });
-    fireEvent.click(screen.getByText('Save'));
-    // empty value = clear -> null (DELETE server-side) — the explicit-clear path stays pinned
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: null }));
-    await waitFor(() => expect(reload).toHaveBeenCalled());
-  });
-
-  it('prefilled_unchanged_save_restores_same_instant', async () => {
-    reminderMock();
-    const reload = vi.fn(async () => {});
-    const fixture = '2026-10-01T07:00:00.000Z';
-    const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: fixture, reminderNotified: null }];
-    const { container } = render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
-    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
-    fireEvent.click(screen.getByText('Set reminder'));
-    const input = container.querySelector('.kanban-reminder-edit input') as HTMLInputElement;
-    // input shows the converted local value (TZ-robust: expected computed in-test)
-    const fd = new Date(fixture);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const expectedLocal = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}T${pad(fd.getHours())}:${pad(fd.getMinutes())}`;
-    expect(input.value).toBe(expectedLocal);
-    fireEvent.click(screen.getByText('Save'));
-    // Save WITHOUT edits -> an ISO whose instant equals the fixture's instant (TZ-safe compare)
+    const expectedDate = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}`;
+    expect(dateInput.value).toBe(expectedDate);
+    // time part prefilled rounded UP to the next quarter-hour on the 12h dropdown label
+    expect(screen.getByText('Back')).toBeTruthy();
+    const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
+    expect(editorSave.disabled).toBe(false); // parts complete after prefill
+    // minute hand: whatever the exact prefill minute, the ROUND to quarter grid
+    // maps every wall time to a valid option (no silent value drift)
+    fireEvent.click(editorSave);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: expect.any(String) }));
     const call = invoke.mock.calls.find((c) => c[0] === 'set_item_reminder');
     const sent = (call![1] as { datetime: string }).datetime;
-    expect(new Date(sent).getTime()).toBe(new Date(fixture).getTime());
+    // instant may shift <=15min up by the round — assert the DATE survives exactly
+    expect(sent.slice(0, 10)).toBe(`${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}`);
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 

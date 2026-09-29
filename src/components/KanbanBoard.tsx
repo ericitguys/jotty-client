@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
 import * as api from '../api/client';
 import type { BoardStatusDto, ItemDto } from '../api/types';
+import Dropdown from './Dropdown';
+import { timeDropdownOptions, roundToQuarter } from './timeOptions';
 
 // Z-form/offset ISO -> local 'YYYY-MM-DDTHH:mm' for datetime-local prefill (T7.1):
 // datetime-local inputs SANITIZE TZ-suffixed values to empty, so raw stored reminders
@@ -39,9 +41,16 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   // date editor (appointments): which card's date is being edited + the picker value
   const [dating, setDating] = useState<string | null>(null);
   const [dateVal, setDateVal] = useState('');
-  // reminder editor (appointments T7): mirrors the date editor above
+  // reminder editor (appointments T7, split 2026-09-29): the single
+  // datetime-local input is unusable on the Tauri Linux webview (WebKitGTK:
+  // days-only grabbing popup; typed time segments never commit .value) —
+  // split into a native date input + the pure-DOM Time Dropdown, which work
+  // on every engine. Save stays disabled until both parts are picked; the
+  // ONLY clear path is the menu's Clear reminder row (never a half-save null).
   const [reminding, setReminding] = useState<string | null>(null);
-  const [reminderVal, setReminderVal] = useState('');
+  const [reminderDate, setReminderDate] = useState('');
+  const [reminderTime, setReminderTime] = useState('');
+  const TIME_OPTIONS = timeDropdownOptions();
 
   useEffect(() => {
     let cancelled = false;
@@ -99,11 +108,13 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     await reload();
   };
   const saveReminder = async (localId: string) => {
+    // both parts required; an incomplete editor NEVER saves (and therefore
+    // never null-clears an existing reminder — the WebKitGTK half-save trap)
+    if (!reminderDate || !reminderTime) return;
     setReminding(null);
     setMenuFor(null);
-    // datetime-local gives local wall time; ISO carries the offset (matches the
-    // enrichment format). Empty picker = clear (null clears server-side).
-    await api.setItemReminder(checklistId, localId, reminderVal ? new Date(reminderVal).toISOString() : null);
+    // local wall time -> ISO carries the offset (matches the enrichment format)
+    await api.setItemReminder(checklistId, localId, new Date(`${reminderDate}T${reminderTime}:00`).toISOString());
     await reload();
   };
   const clearReminder = async (localId: string) => {
@@ -115,7 +126,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); closeAddForm(); }} />}
+      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -171,10 +182,17 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                       </div>
                     ) : reminding === item.localId ? (
                       <div className="kanban-reminder-edit">
-                        <input type="datetime-local" value={reminderVal} autoFocus
-                               onChange={(e) => setReminderVal(e.target.value)}
+                        <input type="date" value={reminderDate} autoFocus
+                               onChange={(e) => setReminderDate(e.target.value)}
                                onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && saveReminder(item.localId)} />
-                        <button onClick={() => saveReminder(item.localId)}>Save</button>
+                        <Dropdown value={reminderTime} options={TIME_OPTIONS}
+                                  onChange={setReminderTime} ariaLabel="Reminder time"
+                                  placeholder="Pick a time" />
+                        {(!reminderDate || !reminderTime) && (
+                          <p className="kanban-reminder-hint">Pick a date and a time</p>
+                        )}
+                        <button disabled={!reminderDate || !reminderTime} aria-label="Save reminder"
+                                onClick={() => saveReminder(item.localId)}>Save</button>
                         <button onClick={() => setReminding(null)}>Back</button>
                       </div>
                     ) : (
@@ -183,7 +201,16 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                           <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
                         ))}
                         <button onClick={() => { setDateVal(item.targetDate ?? ''); setDating(item.localId); }}>Set date</button>
-                        <button onClick={() => { setReminderVal(item.reminderDatetime ? toLocalInput(item.reminderDatetime) : ''); setReminding(item.localId); }}>Set reminder</button>
+                        <button onClick={() => {
+                          if (item.reminderDatetime) {
+                            const local = toLocalInput(item.reminderDatetime); // 'YYYY-MM-DDTHH:mm'
+                            setReminderDate(local.slice(0, 10));
+                            setReminderTime(roundToQuarter(local.slice(11, 16)));
+                          } else {
+                            setReminderDate(''); setReminderTime('');
+                          }
+                          setReminding(item.localId);
+                        }}>Set reminder</button>
                         {item.reminderDatetime && <button onClick={() => clearReminder(item.localId)}>Clear reminder</button>}
                         <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
                         <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>

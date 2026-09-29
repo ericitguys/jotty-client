@@ -3,6 +3,7 @@ import * as api from '../api/client';
 import type { VoiceRecordingDto } from '../api/types';
 import { useStore } from '../stores/store';
 import Dropdown from './Dropdown';
+import { timeDropdownOptions, roundToQuarter } from './timeOptions';
 
 export const CAP_SECS = 480; // 8-minute cap, mirrors audio::MAX_SECS (spec §7)
 
@@ -52,6 +53,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
   const [apptDate, setApptDate] = useState('');
   const [apptTime, setApptTime] = useState('');
   const [apptBoardId, setApptBoardId] = useState('');
+  const TIME_OPTIONS = timeDropdownOptions();
   const [apptNotice, setApptNotice] = useState<string | null>(null);
   const [apptError, setApptError] = useState<string | null>(null);
   const apptExtractedRef = useRef(false);
@@ -305,7 +307,9 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
         if (draft) {
           setApptTitle(draft.title ?? '');
           setApptDate(draft.date ?? '');
-          setApptTime(draft.time ?? '');
+          // normalize to the quarter-hour option grid (LLM drafts may say
+          // 09:37; the Dropdown needs a valid 'HH:MM' value)
+          setApptTime(draft.time ? roundToQuarter(draft.time) : '');
         } else {
           setApptNotice('No appointment found in the transcript — fill in the fields manually.');
         }
@@ -424,7 +428,9 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
                 {apptNotice && <p className="voice-hint">{apptNotice}</p>}
                 <input placeholder="Appointment title" value={apptTitle} onChange={(e) => setApptTitle(e.target.value)} />
                 <input type="date" aria-label="Date" value={apptDate} onChange={(e) => setApptDate(e.target.value)} />
-                <input type="time" aria-label="Time" value={apptTime} onChange={(e) => setApptTime(e.target.value)} />
+                <Dropdown value={apptTime} options={TIME_OPTIONS}
+                          onChange={setApptTime} ariaLabel="Time"
+                          placeholder="Pick a time" />
                 <p className="voice-hint">{apptTime ? `🔔 reminder at ${apptDate}T${apptTime}` : 'No reminder — date-only appointment.'}</p>
                 {apptError && <p className="error">{apptError}</p>}
                 <div className="voice-actions">
