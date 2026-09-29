@@ -102,10 +102,20 @@ export const audioSrc = (path: string): string => {
 // MODIFY_AUDIO_SETTINGS dialog. So: a one-shot getUserMedia({audio:true}) fires
 // the system prompt (first run) and resolves once granted; tracks are stopped
 // immediately — nothing is captured here, this only unlocks the permission.
-// Desktop (Linux) ignores this: no getUserMedia prompt, resolves instantly.
+// ANDROID-ONLY (v0.21.4, Fedora field report): on desktop the webview's
+// getUserMedia is answered by WebKitGTK's portal path — when that denies (or
+// the portal is misconfigured), it throws NotAllowedError and we HARD-GATED
+// the native recorder behind an "allow mic in Android settings" message, even
+// though desktop recording never touches the webview at all (native cpal with
+// its own device errors). Desktop now skips the primer entirely and lets the
+// Rust recorder surface real device errors.
+const isAndroid = (): boolean =>
+  navigator.userAgent.includes('Android');
+
 export const ensureMicPermission = async (): Promise<void> => {
+  if (!isAndroid()) return;
   const md = navigator.mediaDevices as MediaDevices | undefined;
-  if (!md?.getUserMedia) return; // no mediaDevices (old webview / jsdom default): let the recorder surface any error
+  if (!md?.getUserMedia) return; // ancient webview: let the recorder surface any error
   let stream: MediaStream | null = null;
   try {
     stream = await md.getUserMedia({ audio: true });

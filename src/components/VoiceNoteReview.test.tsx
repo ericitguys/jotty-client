@@ -32,6 +32,9 @@ beforeEach(() => {
   const gm = vi.fn(async () => ({ getTracks: () => [] }) as unknown as MediaStream);
   Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: gm } });
   (globalThis as unknown as { __lastGum: unknown }).__lastGum = gm;
+  // reset any leaked userAgent spy from an earlier test (define a plain jsdom UA
+  // getter — vi.spyOn on this prop chains across tests otherwise):
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'jsdom' });
   invoke.mockImplementation((cmd: string) => {
     // fresh createdAt: the component derives the re-attach timer from it — a
     // stale fixture date would read as "recording for days" (cap auto-stop)
@@ -92,22 +95,45 @@ describe('VoiceNoteReview', () => {
     await waitFor(() => expect(screen.getByPlaceholderText('Transcript')).toHaveValue('now it works'));
   });
 
-  it('requests mic permission (getUserMedia) before starting the recorder', async () => {
+  it('ANDROID: requests mic permission (getUserMedia) before starting the recorder', async () => {
     const gm = (globalThis as unknown as { __lastGum: ReturnType<typeof vi.fn> }).__lastGum;
+    // Android-priming gate: only the Android UA runs getUserMedia (wry's
+    // WebChromeClient maps that onto the native RECORD_AUDIO dialog there)
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
     await waitFor(() => expect(gm).toHaveBeenCalledWith({ audio: true }));
     // the recorder must NOT start before the prompt resolves
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_start_recording'));
     await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
+    // restore desktop UA for tests below
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'jsdom' });
   });
 
-  it('mic denial shows an error and never starts the recorder', async () => {
+  it('ANDROID: mic denial shows an error and never starts the recorder', async () => {
     const gm = (globalThis as unknown as { __lastGum: ReturnType<typeof vi.fn> }).__lastGum;
     // real webviews reject with a DOMException whose .name is NotAllowedError
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36');
     gm.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'NotAllowedError' }));
     render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
     await waitFor(() => expect(screen.getByText(/Microphone access denied/)).toBeInTheDocument());
     expect(invoke).not.toHaveBeenCalledWith('voice_start_recording');
+    // restore desktop UA for tests below (redefine a plain jsdom UA getter —
+    // a spied-on-spy restore doesn't unwind previous spies on the same prop)
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'jsdom' });
+  });
+
+  it('DESKTOP: the webview primer is skipped — a denied getUserMedia never blocks the recorder', async () => {
+    // THE FEDORA FIELD REPORT (v0.21.4): WebKitGTK exposes mediaDevices and its
+    // portal path can reject with NotAllowedError; the primer then hard-gated
+    // the native cpal recorder behind an Android-settings message. Desktop now
+    // skips the primer entirely — jsdom's desktop UA must produce zero gum calls
+    // and reach the native recorder.
+    const gm = (globalThis as unknown as { __lastGum: ReturnType<typeof vi.fn> }).__lastGum;
+    gm.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'NotAllowedError' }));
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_start_recording'));
+    expect(gm).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
   });
 
   it('tidy stores both texts, switches to the tidied view, raw toggle returns', async () => {
