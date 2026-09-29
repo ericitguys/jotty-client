@@ -18,8 +18,14 @@ export default function ConflictDialog({ onClose }: { onClose: () => void }) {
           {conflicts.map((c) => (
             <li key={c.seq}>
               <strong>{c.label}</strong> — {c.opType} ({c.lastError ?? 'unresolved'})
-              <button onClick={() => resolve(c.seq, 'mine')}>keep mine</button>
-              <button onClick={() => resolve(c.seq, 'server')}>take server</button>
+              {c.opType === 'delete' && (c.lastError ?? '').includes('deleted or archived elsewhere') ? (
+                <button onClick={() => resolve(c.seq, 'mine')}>Got it — nothing to sync</button>
+              ) : (
+                <>
+                  <button onClick={() => resolve(c.seq, 'mine')}>keep mine</button>
+                  <button onClick={() => resolve(c.seq, 'server')}>take server</button>
+                </>
+              )}
             </li>
           ))}
         </ul>

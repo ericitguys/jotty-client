@@ -292,7 +292,7 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     Err(e) => Err(e),
                 }
                 ("checklist_item", "delete") => match fetch_list_snapshot(client, &item_list_id).await {
-                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                    Ok(snap) => match resolve_delete_target(conn, &snap.items, &payload, &mut claims) {
                         Ok(path) => match client.delete_item(&item_list_id, &path).await {
                             Ok(()) => {
                                 items::delete_local(conn, payload["item_local_id"].as_str().unwrap_or(&op.entity_id))?;
@@ -473,6 +473,70 @@ fn resolve_item_target(
     .ok_or_else(|| AppError::Other(format!("unresolved item op {item_local_id}")))
 }
 
+/// Delete-arm resolver, v0.21.3: the row is gone at replay time (delete_item_inner
+/// removed it when enqueueing), so the op's own snapshot is the authority:
+/// stored-path identity hit in the fresh snapshot first, then a UNIQUE text match.
+/// Both miss -> a conflict that names the card (not an internal id).
+fn resolve_delete_target(
+    conn: &Connection,
+    snap_items: &[ServerItem],
+    payload: &serde_json::Value,
+    claims: &mut Vec<(String, String, String)>,
+) -> AppResult<String> {
+    let item_local_id = payload["item_local_id"].as_str().unwrap_or("");
+    let snap_text = payload["snapshot"]["text"].as_str();
+    // row somehow still present (older enqueue path) -> the normal resolve
+    if let Ok(Some(row)) = items::get(conn, item_local_id) {
+        if let Some(p) = resolve_with_claims(
+            item_local_id,
+            row.server_path.as_deref(),
+            &row.text,
+            snap_items,
+            claims,
+            false,
+        ) {
+            return Ok(p);
+        }
+    }
+    if let Some(p) = payload["snapshot"]["server_path"].as_str() {
+        if !p.is_empty() {
+            // delete arm: a stored-path hit REQUIRES the item at that path to still
+            // carry the snapshot text — paths shift under peer edits (crossed-drift
+            // class), and a delete to the wrong card is not recoverable.
+            let at_path = items::flatten(snap_items).into_iter().find(|f| f.path == p);
+            if let Some(f) = at_path {
+                let drifted = snap_text.is_none_or(|t| t != f.text);
+                if drifted {
+                    return Err(AppError::Other(format!(
+                        "unresolved item op {item_local_id}: the card this delete was queued for has drifted on the server (path {p} now holds \"{}\"); take server to dismiss, keep the server copy", f.text
+                    )));
+                }
+                return Ok(p.to_string());
+            }
+        }
+    }
+    if let Some(t) = snap_text {
+        let flat = items::flatten(snap_items);
+        let text_hits: Vec<&crate::db::items::ServerItemFlat> =
+            flat.iter().filter(|f| f.text == t).collect();
+        if text_hits.len() == 1 {
+            return Ok(text_hits[0].path.clone());
+        }
+        if text_hits.is_empty() {
+            return Err(AppError::Other(format!(
+                "unresolved item op {item_local_id}: card \"{t}\" no longer exists on the server (deleted or archived elsewhere)"
+            )));
+        }
+        return Err(AppError::Other(format!(
+            "unresolved item op {item_local_id}: cannot locate \"{t}\" — {n} cards on the board now share that text; resolve manually on the server, then take server here",
+            n = text_hits.len()
+        )));
+    }
+    Err(AppError::Other(format!(
+        "unresolved item op {item_local_id}: no resolve snapshot on this delete op"
+    )))
+}
+
 fn resolve_parent_path(
     conn: &Connection,
     snap_items: &[ServerItem],
@@ -597,6 +661,7 @@ fn desired_dfs_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::{delete_item_inner, keep_mine_rowless_delete, list_conflicts_inner};
     use crate::db::{checklists, migrations, open};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1753,4 +1818,148 @@ mod tests {
         assert!(err.starts_with("unresolved item op") && err.contains("reminders only work on kanban boards"),
             "the gate must conflict via the unresolved-op sentinel with the gate message, got: {err:?}");
     }
+
+    // ---- 2026-09-29: delete replay without the local row (v0.21.3) ----
+    // delete_item_inner removes the row at enqueue time, but the delete arm's
+    // resolve read that row — every rowless delete replay was a guaranteed
+    // "unresolved item op <uid>" conflict with an EMPTY label in the dialog
+    // (user report: deleting an appointment produced exactly that). The op now
+    // carries a resolve snapshot (server_path + text) captured before the row
+    // goes, and conflicts speak human ("card ... no longer exists ...").
+    // Row-gone deletes resolved by keep-mine mark DONE (the end state the user
+    // asked for already exists) instead of requeueing into the same conflict.
+
+    #[tokio::test]
+    async fn item_delete_replays_via_payload_snapshot_after_row_deleted() {
+        let s = MockServer::start().await;
+        // snapshot fetch: same card the deletion targets, at path "0"
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "Appointments", "category": "Home", "type": "kanban",
+                    "items": [ { "id": "srv-1", "index": 0, "text": "Dentist checkup", "completed": false, "status": "todo" } ],
+                    "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let delete_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dh = delete_hits.clone();
+        Mock::given(method("DELETE")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(move |_: &wiremock::Request| {
+                dh.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true}))
+            })
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "Appointments".into(), category: "Home".into() }).unwrap();
+        conn.execute("UPDATE checklists SET id='l1', list_type='kanban', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1', 'l1', NULL, 'Dentist checkup', 0, 0, '0', 0, 'todo', NULL, NULL)",
+            [],
+        ).unwrap();
+        // the REAL delete flow: local row removed at enqueue time, op carries the snapshot
+        delete_item_inner(&mut conn, "l1", "it-1").unwrap();
+        let payload: String = conn.query_row(
+            "SELECT payload FROM outbox WHERE op_type='delete' AND entity='checklist_item'",
+            [], |r| r.get(0)).unwrap();
+        assert!(payload.contains(r#""snapshot""#), "delete op must carry a resolve snapshot");
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 0, "snapshot-guided delete must replay, not conflict");
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(delete_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_delete_conflict_names_card_when_target_vanished() {
+        let s = MockServer::start().await;
+        // the card vanished from the server snapshot (archived or deleted elsewhere):
+        // only "other" remains, so neither the stored path nor the text can resolve.
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "Appointments", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "other", "completed": false, "status": "todo" } ],
+                    "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "Appointments".into(), category: "Home".into() }).unwrap();
+        conn.execute("UPDATE checklists SET id='l1', list_type='kanban', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        delete_item_inner(&mut conn, "l1", "it-1").unwrap();
+        // delete_item_inner is a no-op (no row -> nothing to delete, no op) — seed the
+        // vanished-target case manually the way a real stale row + real delete produces it:
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date)
+             VALUES ('it-1', 'l1', NULL, 'Dentist checkup', 0, 0, '0', 0, 'todo', NULL, NULL)",
+            [],
+        ).unwrap();
+        delete_item_inner(&mut conn, "l1", "it-1").unwrap(); // row now gone, snapshot-bearing op queued
+        // make the target vanish from the SERVER snapshot too: override the catalog
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "Appointments", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "other", "completed": false, "status": "todo" } ],
+                    "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        let conflicts = list_conflicts_inner(&conn).unwrap();
+        assert_eq!(conflicts.len(), 1);
+        // human message: names the card, no bare internal id
+        let err = conflicts[0].last_error.clone().unwrap_or_default();
+        // the stored path now holds another card: the conflict must state the drift
+        // (never auto-resolve a delete onto a different card) and name what sits there
+        assert!(err.contains("drifted"), "conflict must state the drift: {err}");
+        assert!(err.contains(r#""other""#), "conflict must name the occupant: {err}");
+        // label falls back to the snapshot text (row was deleted at enqueue time)
+        assert_eq!(conflicts[0].label.as_deref(), Some("Dentist checkup"));
+    }
+
+    
+    #[tokio::test]
+    async fn item_delete_conflict_stays_human_when_both_path_and_text_gone() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "Appointments", "category": "Home", "type": "kanban",
+                    "items": [ { "index": 0, "text": "other", "completed": false, "status": "todo" } ],
+                    "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "Appointments".into(), category: "Home".into() }).unwrap();
+        conn.execute("UPDATE checklists SET id='l1', list_type='kanban', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        // op was queued against a stored path that ALSO no longer exists (server reindexed past it):
+        outbox::enqueue(&conn, "delete", "checklist_item", "gone-1",
+            &serde_json::json!({"checklist_id": "l1", "item_local_id": "gone-1",
+                "snapshot": {"server_path": "7", "text": "Dentist checkup"}})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.conflicts, 1);
+        let conflicts = list_conflicts_inner(&conn).unwrap();
+        let err = conflicts[0].last_error.clone().unwrap_or_default();
+        assert!(err.contains("deleted or archived elsewhere"), "reason must be stated: {err}");
+        assert!(err.contains("Dentist checkup"), "conflict must name the card: {err}");
+        assert_eq!(conflicts[0].label.as_deref(), Some("Dentist checkup"));
+    }
+
+    #[tokio::test]
+    async fn keep_mine_on_rowless_delete_marks_done() {
+        // keep-mine on a delete whose row is gone must NOT requeue into the same
+        // conflict loop: the deletion's end state already exists, so it resolves as done.
+        let conn = db();
+        outbox::enqueue(&conn, "delete", "checklist_item", "gone-1",
+            &serde_json::json!({"checklist_id": "l1", "item_local_id": "gone-1",
+                "snapshot": {"server_path": "0", "text": "Dentist checkup"}})).unwrap();
+        conn.execute("UPDATE outbox SET state='conflict', last_error='unresolved item op: card \"Dentist checkup\" no longer exists on the server (deleted or archived elsewhere)' WHERE op_type='delete'", []).unwrap();
+        conn.execute("UPDATE outbox SET seq=9", []).unwrap();
+        keep_mine_rowless_delete(&conn, 9).unwrap();
+        let (state, attempts): (String, i64) = conn.query_row(
+            "SELECT state, attempts FROM outbox WHERE seq=9", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(state, "done");
+        assert_eq!(attempts, 0);
+    }
 }
+

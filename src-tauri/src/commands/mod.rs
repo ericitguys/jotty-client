@@ -393,14 +393,49 @@ pub(crate) fn set_item_reminder_inner(
 }
 
 pub(crate) fn delete_item_inner(conn: &mut Connection, checklist_id: &str, item_local_id: &str) -> AppResult<()> {
+    // Snapshot BEFORE the row goes (2026-09-29, user report: every card delete
+    // replayed into "unresolved item op <uid>"): the delete arm's resolve read
+    // this very row, which delete_local removes first — a guaranteed conflict,
+    // and list_conflicts had no row left to label either. The op now carries
+    // its own resolve reference (stored path + text) for replay.
+    let row = items::get(conn, item_local_id).ok().flatten();
+    if row.is_none() {
+        // nothing tracked under this id (double click / already gone): an
+        // idempotent no-op — enqueuing would only manufacture a conflict.
+        return Ok(());
+    }
+    let row = row.unwrap();
+    let snapshot = serde_json::json!({
+        "server_path": row.server_path,
+        "text": row.text,
+        "server_item_id": row.server_item_id,
+    });
     let tx = conn.transaction()?;
     items::delete_local(&tx, item_local_id)?;
     // Ruling D: delete → {checklist_id, item_local_id}.
     outbox::enqueue(&tx, "delete", "checklist_item", item_local_id, &serde_json::json!({
-        "checklist_id": checklist_id, "item_local_id": item_local_id
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "snapshot": snapshot
     }))?;
     tx.commit()?;
     Ok(())
+}
+
+/// Row-gone delete conflicts are terminal: the row can never re-resolve (removed
+/// at enqueue time), so keep-mine means "dismiss" → mark DONE, not requeue into
+/// the same conflict loop. Called from inner_resolve_conflict after loading the op.
+pub(crate) fn keep_mine_rowless_delete(conn: &Connection, seq: i64) -> AppResult<bool> {
+    let (op_type, entity): (String, String) = conn.query_row(
+        "SELECT op_type, entity FROM outbox WHERE seq=?1 AND state='conflict'",
+        [seq],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if op_type == "delete" && entity == "checklist_item" {
+        // the local row is long gone and the replay proved the server target
+        // can't be resolved — the deletion's end state already exists.
+        outbox::mark_done(conn, seq)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 // Superseded ruling (brief NB): reorder enqueues entity="checklist_item",
@@ -557,13 +592,24 @@ fn label_for(conn: &Connection, entity: &str, entity_id: &str) -> Option<String>
 
 pub(crate) fn list_conflicts_inner(conn: &Connection) -> AppResult<Vec<ConflictDto>> {
     let mut stmt = conn.prepare(
-        "SELECT seq, entity, entity_id, op_type, last_error FROM outbox WHERE state='conflict' ORDER BY seq",
+        "SELECT seq, entity, entity_id, op_type, last_error, payload FROM outbox WHERE state='conflict' ORDER BY seq",
     )?;
     let rows = stmt
         .query_map([], |r| {
             let entity: String = r.get(1)?;
             let entity_id: String = r.get(2)?;
-            let label = label_for(conn, &entity, &entity_id);
+            let mut label = label_for(conn, &entity, &entity_id);
+            // rowless deletes: the row is gone, so the op's snapshot text is the
+            // only human label left (v0.21.3)
+            if label.is_none() {
+                let payload: Option<String> = r.get(5).ok();
+                if let Some(p) = payload {
+                    if entity == "checklist_item" {
+                        let v: serde_json::Value = serde_json::from_str(&p).unwrap_or_default();
+                        label = v["snapshot"]["text"].as_str().map(|s| s.to_string());
+                    }
+                }
+            }
             Ok(ConflictDto {
                 seq: r.get(0)?,
                 entity,
@@ -596,8 +642,15 @@ pub(crate) async fn inner_resolve_conflict(
         }
         "mine" => {
             let conn = state.db.lock().await;
-            conn.execute("UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1", [seq])?;
-            Ok(())
+            // rowless delete conflicts are terminal (the row was removed at enqueue
+            // time and can never re-resolve) — keep-mine dismisses as DONE instead
+            // of requeueing into the same conflict loop (v0.21.3).
+            if keep_mine_rowless_delete(&conn, seq)? {
+                Ok(())
+            } else {
+                conn.execute("UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1", [seq])?;
+                Ok(())
+            }
         }
         _ => Err(AppError::Other(format!("unknown keep '{keep}'"))),
     }
