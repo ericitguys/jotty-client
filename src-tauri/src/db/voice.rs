@@ -116,6 +116,25 @@ pub fn delete_staging(conn: &Connection, id: &str) -> AppResult<bool> {
     Ok(n > 0)
 }
 
+/// Badge count (2026-09-30 offline-voice run): recordings waiting to be
+/// transcribed = staging rows in any not-yet-transcribed state + already-saved
+/// notes still carrying audio and an EMPTY body (the staging row is deleted on
+/// save, so saved-offline notes are tracked by the note arm; their transcript
+/// arrives via the retry pass). `recording`/`transcribed` rows never count.
+pub fn count_pending_transcriptions(conn: &Connection) -> AppResult<usize> {
+    let staging: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM voice_recordings WHERE state IN ('recorded','transcribing','transcription_failed','transcription_failed_auth')",
+        [],
+        |r| r.get(0),
+    )?;
+    let notes: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM notes WHERE audio_path IS NOT NULL AND content='' AND deleted_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok((staging + notes) as usize)
+}
+
 pub fn referenced_audio_paths(conn: &Connection) -> AppResult<HashSet<String>> {
     let mut set = HashSet::new();
     let mut stmt = conn.prepare("SELECT path FROM voice_recordings")?;
@@ -321,5 +340,43 @@ mod tests {
             stats.stale_transcribing_reset + stats.recording_rows_deleted + stats.orphan_files_deleted,
             0
         );
+    }
+
+    #[test]
+    fn count_pending_transcriptions_counts_waiting_recordings_and_saved_notes() {
+        let conn = db();
+        // staging rows in every state: 'recording' + 'transcribed' never count
+        create_staging(&conn, "a", "/tmp/a.wav").unwrap();
+        mark_recorded(&conn, "a", 1.0).unwrap(); // recorded — pending
+        create_staging(&conn, "b", "/tmp/b.wav").unwrap(); // recording — excluded
+        create_staging(&conn, "c", "/tmp/c.wav").unwrap();
+        set_transcript(&conn, "c", "done").unwrap(); // transcribed — excluded
+        create_staging(&conn, "e", "/tmp/e.wav").unwrap();
+        mark_transcribing(&conn, "e").unwrap(); // transcribing — pending
+        create_staging(&conn, "f", "/tmp/f.wav").unwrap();
+        mark_recorded(&conn, "f", 1.0).unwrap();
+        mark_failed(&conn, "f", false, "offline").unwrap(); // failed — pending
+        create_staging(&conn, "g", "/tmp/g.wav").unwrap();
+        mark_recorded(&conn, "g", 1.0).unwrap();
+        mark_failed(&conn, "g", true, "bad key").unwrap(); // failed_auth — pending
+        // a saved note with audio + EMPTY body counts (staging row deleted on save;
+        // its transcript arrives via the retry pass)
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n1','t','','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1,'/tmp/voice/n1.wav')",
+            [],
+        ).unwrap();
+        // ... but not with content, and never without audio
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty,audio_path) VALUES ('n2','t','typed','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1,'/tmp/voice/n2.wav')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO notes (id,title,content,category,created_at,updated_at,dirty) VALUES ('n3','t','','Home','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1)",
+            [],
+        ).unwrap();
+        assert_eq!(count_pending_transcriptions(&conn).unwrap(), 5);
+        // a deleted note's empty body no longer counts
+        conn.execute("UPDATE notes SET deleted_at='2026-01-02T00:00:00Z' WHERE id='n1'", []).unwrap();
+        assert_eq!(count_pending_transcriptions(&conn).unwrap(), 4);
     }
 }

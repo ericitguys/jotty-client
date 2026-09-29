@@ -71,6 +71,12 @@ export interface VoiceRecordingDto {
 export interface AiSettingsDto {
   baseUrl: string; model: string; languageHint: string; apiPathSuffix: string; hasKey: boolean;
 }
+/** Result of the on-demand transcription retry pass (Rust VoiceRetryStatsDto,
+ * commands/dto.rs — serde camelCase): staging rows re-attempted / succeeded and
+ * saved notes backfilled by this pass. */
+export interface VoiceRetryStatsDto {
+  stagingRetried: number; stagingSucceeded: number; notesFilled: number;
+}
 /** One LLM-extracted appointment draft (Rust AppointmentDraftDto,
  * commands/dto.rs — serde camelCase): all fields nullable; a null title means
  * "no appointment in the transcript" (the command returns null then). */

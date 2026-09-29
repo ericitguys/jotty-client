@@ -12,6 +12,7 @@ use dto::{
     AgendaEntryDto, AiSettingsDto, AppointmentDraftDto, BoardDto, BoardStatusDto, CategoriesDto,
     ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
     SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
+    VoiceRetryStatsDto,
 };
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -1593,6 +1594,40 @@ fn voice_list_unsaved_inner(conn: &Connection) -> AppResult<Vec<VoiceRecordingDt
 pub async fn voice_list_unsaved(state: tauri::State<'_, AppState>) -> Result<Vec<VoiceRecordingDto>, String> {
     let conn = state.db.lock().await;
     voice_list_unsaved_inner(&conn).map_err(|e| e.to_string())
+}
+
+// ---- on-demand retry + pending badge (2026-09-30 offline-voice run) ----
+//
+// voice_ai::maybe_retry runs the retry pass after sync completions; these
+// commands expose the SAME pass on demand: the reconnect tap (App listens for
+// the webview 'online' event) and the waiting-to-transcribe count chip.
+
+#[tauri::command]
+pub async fn voice_get_pending_transcriptions(state: tauri::State<'_, AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().await;
+    crate::db::voice::count_pending_transcriptions(&conn)
+        .map(|n| n as i64)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn voice_retry_pending(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<VoiceRetryStatsDto, String> {
+    let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
+    let hint = { let conn = state.db.lock().await; ai_language_hint(&conn).map_err(|e| e.to_string())? };
+    let language = if hint.trim().is_empty() { None } else { Some(hint.trim().to_string()) };
+    let stats = {
+        let mut conn = state.db.lock().await;
+        crate::voice_ai::retry_pending(&mut conn, &ai, language.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    // Same contract as the sync hook: the pass finished, the UI may refresh.
+    use tauri::Emitter;
+    let _ = app.emit("voice-updated", ());
+    Ok(stats.into())
 }
 
 pub(crate) fn voice_save_note_inner(

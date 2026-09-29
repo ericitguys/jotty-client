@@ -7,6 +7,7 @@ import ChecklistList from './components/ChecklistList';
 import ChecklistView from './components/ChecklistView';
 import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
+import VoicePendingBadge from './components/VoicePendingBadge';
 import ConflictDialog from './components/ConflictDialog';
 import SearchPalette from './components/SearchPalette';
 import SettingsModal from './components/SettingsModal';
@@ -110,7 +111,19 @@ export default function App() {
     refreshVoiceDrafts();
     const un = listen('sync-updated', () => refreshAll());
     const uv = listen('voice-updated', () => { refreshAll(); refreshVoiceDrafts(); });
-    return () => { un.then((f) => f()); uv.then((f) => f()); };
+    // Reconnect tap (2026-09-30 offline-voice run): the moment the webview sees
+    // the network return, run the transcription retry pass so offline voice
+    // notes transcribe in seconds instead of waiting for the next sync tick.
+    // The pass emits 'voice-updated', which refreshes drafts + the count chip.
+    // WebKitGTK/Android WebView both fire 'online' on OS network changes; jsdom
+    // tests dispatch the event manually. A failed tap is silent: the next sync
+    // tick retries the same rows anyway.
+    const onOnline = () => { api.voiceRetryPending().catch(() => {}); };
+    window.addEventListener('online', onOnline);
+    return () => {
+      un.then((f) => f()); uv.then((f) => f());
+      window.removeEventListener('online', onOnline);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshAll, refreshUpdate]);
 
@@ -233,6 +246,11 @@ export default function App() {
       {voice?.mode === 'retranscribe' && (
         <VoiceNoteReview mode="retranscribe" noteId={voice.noteId} onClose={closeVoice} onSaved={noteSaved} />
       )}
+      {/* waiting-to-transcribe chip (2026-09-30 offline-voice run): OUTSIDE
+          SyncBadge so its fetch failures can never take the sync bar down —
+          a SyncBadge child's own effect can only unmount itself, not the
+          footer (root cause of the failed 1st implementation attempt). */}
+      <VoicePendingBadge />
     </div>
   );
 }

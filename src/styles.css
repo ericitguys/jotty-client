@@ -693,6 +693,27 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* waiting-to-transcribe chip (2026-09-30 offline-voice run): OUTSIDE the sync
+   footer (a child failure there unmounted the whole bar) — same bar look. */
+.voice-pending-chip {
+  position: fixed;
+  bottom: 12px;
+  left: 14px;
+  background: var(--badge-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 99px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--amber);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
 
 /* ---------- jotty-site-style dropdown (theme picker) ---------- */
 .jotty-dropdown { position: relative; }
@@ -990,6 +1011,10 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 
   /* keep sync badge clear of Android gesture navigation */
   #sync-badge { bottom: 20px; right: 12px; max-width: calc(100vw - 70px); }
+
+  /* waiting-to-transcribe chip (2026-09-30): clears the gesture zone the same
+     way; stacks above the sync bar instead of beside it (drawer width) */
+  .voice-pending-chip { bottom: 56px; right: 12px; left: auto; max-width: calc(100vw - 70px); }
 
   /* kanban columns stay readable on phones (board scrolls horizontally) */
   .kanban-col { width: 82vw; max-width: 340px; }

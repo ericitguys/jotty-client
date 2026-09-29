@@ -85,6 +85,10 @@ export const voiceExtractAppointment = (text: string) =>
 export const voiceListUnsaved = () => invoke<T.VoiceRecordingDto[]>('voice_list_unsaved');
 export const voiceTranscribeNote = (noteId: string) => invoke<{ text: string }>('voice_transcribe_note', { noteId });
 export const voiceDeleteNoteAudio = (noteId: string) => invoke<T.NoteDto>('voice_delete_note_audio', { noteId });
+// On-demand retry pass + waiting-to-transcribe badge (2026-09-30 offline voice):
+// the reconnect tap and the count chip both ride these.
+export const voiceRetryPending = () => invoke<T.VoiceRetryStatsDto>('voice_retry_pending');
+export const voicePendingTranscriptions = () => invoke<number>('voice_get_pending_transcriptions');
 export const aiGetModels = () => invoke<string[]>('ai_get_models');
 export const getAiSettings = () => invoke<T.AiSettingsDto>('get_ai_settings');
 export const setAiSettings = (baseUrl: string | null, model: string | null, languageHint: string | null, apiKey: string | null) =>

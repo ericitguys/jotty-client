@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
+// import removed 2026-09-30: embedding the pending chip inside the footer made
+// a chip fetch failure unmount the whole sync bar; the chip is now a sibling
+// of #sync-badge (same fixed bar look via its own CSS).
 import { useStore } from '../stores/store';
 
 export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {

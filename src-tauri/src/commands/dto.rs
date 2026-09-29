@@ -342,6 +342,28 @@ impl From<crate::voice_ai::AppointmentDraft> for AppointmentDraftDto {
     }
 }
 
+/// Report of the on-demand transcription retry pass (voice_retry_pending):
+/// mirrors voice_ai::RetryStats (internal struct) for the wire — the same
+/// shape the sync-hook glue logs after every successful sync. TS contract in
+/// src/api/types.ts (VoiceRetryStatsDto).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceRetryStatsDto {
+    pub staging_retried: usize,
+    pub staging_succeeded: usize,
+    pub notes_filled: usize,
+}
+
+impl From<crate::voice_ai::RetryStats> for VoiceRetryStatsDto {
+    fn from(s: crate::voice_ai::RetryStats) -> Self {
+        VoiceRetryStatsDto {
+            staging_retried: s.staging_retried,
+            staging_succeeded: s.staging_succeeded,
+            notes_filled: s.notes_filled,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

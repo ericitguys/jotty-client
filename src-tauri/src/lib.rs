@@ -102,6 +102,8 @@ pub fn run() {
             commands::voice_save_note,
             commands::voice_transcribe_note,
             commands::voice_delete_note_audio,
+            commands::voice_get_pending_transcriptions,
+            commands::voice_retry_pending,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

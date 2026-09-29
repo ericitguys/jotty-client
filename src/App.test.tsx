@@ -541,4 +541,25 @@ describe('web preference mirroring', () => {
     expect(document.getElementById('note-editor')).toBeNull();
     expect(document.getElementById('checklist-view')).toBeNull();
   });
+
+  it('reconnect tap + waiting-to-transcribe chip (2026-09-30 offline-voice run)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      if (cmd === 'voice_get_pending_transcriptions') return Promise.resolve(2);
+      if (cmd === 'voice_retry_pending') return Promise.resolve({ stagingRetried: 2, stagingSucceeded: 2, notesFilled: 0 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    // chip: the count surfaces inside the sync footer
+    await waitFor(() => expect(screen.getByTestId('voice-pending-chip')).toHaveTextContent('2 waiting to transcribe'));
+    // the webview sees the network return -> the retry pass runs immediately
+    await act(async () => { window.dispatchEvent(new Event('online')); });
+    expect(invoke).toHaveBeenCalledWith('voice_retry_pending');
+  });
 });
