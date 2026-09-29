@@ -1389,10 +1389,20 @@ pub(crate) fn set_ai_settings_inner(
     language_hint: Option<String>,
     api_key: Option<String>,
 ) -> AppResult<AiSettingsDto> {
-    if let Some(u) = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        // validate with the same rule the client enforces (https, or http on localhost)
-        let _ = crate::voice_ai::VoiceAiClient::new(u, "unused", crate::voice_ai::Suffix::V1)?;
-        kv_set(conn, "ai_base_url", u)?;
+    // Field contract (v0.22.3): Some(trimmed) = write the field's new state,
+    // including Some("") = CLEAR (the frontend sends '' when the user empties
+    // a field); None = don't touch (the masked API-key field relies on it —
+    // its empty UI state must never delete a stored key).
+    if let Some(u) = base_url.as_deref().map(str::trim) {
+        if u.is_empty() {
+            // clearing the base url never runs URL validation (VoiceAiClient::new("")
+            // would reject an empty string with InvalidConfig)
+            kv_set(conn, "ai_base_url", "")?;
+        } else {
+            // validate with the same rule the client enforces (https, or http on localhost)
+            let _ = crate::voice_ai::VoiceAiClient::new(u, "unused", crate::voice_ai::Suffix::V1)?;
+            kv_set(conn, "ai_base_url", u)?;
+        }
     }
     if let Some(m) = model.as_deref().map(str::trim) {
         kv_set(conn, "ai_model", m)?; // empty clears
@@ -1844,6 +1854,49 @@ mod tests {
         std::mem::forget(dir);
         migrations::run(&c).unwrap();
         c
+    }
+
+    // v0.22.3 — the user's exact report: "trying to remove the en hint, hit save,
+    // reopen, it's back". The frontend coerces an empty field to null, and the
+    // backend treats None as DON'T-TOUCH — so the stored hint survived forever.
+    // Contract (all four fields): Some(trimmed) = write the field's new state
+    // ('' clears it); None = don't touch (the masked API-key field relies on it).
+    #[test]
+    fn clearing_the_language_hint_writes_empty_and_reads_back_empty() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        set_ai_settings_inner(&conn, &ks, Some("https://ai.example.com".into()), None, Some("en".into()), None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().language_hint, "en");
+        // the user's clear: the field sent as Some("") (fixed frontend shape)
+        set_ai_settings_inner(&conn, &ks, None, None, Some("".into()), None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().language_hint, "", "an intentional clear must persist as empty");
+        // None stays don't-touch (masked fields never clobber stored state)
+        set_ai_settings_inner(&conn, &ks, None, None, None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().language_hint, "");
+    }
+
+    #[test]
+    fn clearing_the_tidy_model_writes_empty_and_reads_back_empty() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        set_ai_settings_inner(&conn, &ks, Some("https://ai.example.com".into()), Some("gemma3".into()), None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().model, "gemma3");
+        set_ai_settings_inner(&conn, &ks, None, Some("".into()), None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().model, "", "an intentional clear must persist as empty");
+    }
+
+    #[test]
+    fn clearing_the_base_url_writes_empty_without_running_url_validation() {
+        let conn = db();
+        let ks = crate::keys::MockKeyStore::default();
+        set_ai_settings_inner(&conn, &ks, Some("https://ai.example.com".into()), None, None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().base_url, "https://ai.example.com");
+        // '' = clear — must NOT fall into VoiceAiClient::new("") validation
+        set_ai_settings_inner(&conn, &ks, Some("".into()), None, None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().base_url, "");
+        // re-set works afterwards
+        set_ai_settings_inner(&conn, &ks, Some("https://ai2.example.com".into()), None, None, None).unwrap();
+        assert_eq!(get_ai_settings_inner(&conn, &ks).unwrap().base_url, "https://ai2.example.com");
     }
 
     #[tokio::test]

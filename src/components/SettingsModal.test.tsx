@@ -224,3 +224,59 @@ describe('SettingsModal launcher branding (desktop)', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Brand this installation' })).toBeNull());
   });
 });
+
+// v0.22.3 — the user's exact report: a typed language hint ("en") could never be
+// REMOVED — emptying the field + Save sent null (backend = don't-touch), so the
+// stored value reappeared on every reopening. Contract: the three text fields
+// (base URL / tidy model / language hint) send their true UI value — '' clears;
+// the masked API-key field alone keeps null = don't-touch (its empty UI state
+// means "keep the stored key").
+describe('SettingsModal AI settings: empty-field clears persist', () => {
+  const aiDto = {
+    baseUrl: 'https://ai.example.com',
+    model: 'gemma3',
+    languageHint: 'en',
+    apiPathSuffix: 'v1',
+    hasKey: true,
+  };
+  beforeEach(() => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve(aiDto);
+      if (cmd === 'branding_desktop_status') return Promise.resolve({ supported: false, active: false });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ ...aiDto, languageHint: '', hasKey: true });
+      return Promise.resolve(null);
+    });
+  });
+
+  it('clearing the language hint sends languageHint: "" (not null) and saves', async () => {
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const hint = await screen.findByPlaceholderText('Language hint (optional, e.g. en)') as HTMLInputElement;
+    await waitFor(() => expect(hint).toHaveValue('en'));
+    fireEvent.change(hint, { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_ai_settings', expect.objectContaining({ languageHint: '' })),
+    );
+    await waitFor(() => expect(screen.getByText('AI settings saved.')).toBeInTheDocument());
+  });
+
+  it('clearing the tidy model sends model: "" the same way', async () => {
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await screen.findByPlaceholderText('Language hint (optional, e.g. en)');
+    fireEvent.change(screen.getByPlaceholderText('Tidy model'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_ai_settings', expect.objectContaining({ model: '' })),
+    );
+  });
+
+  it('an untouched masked API key still sends null (never deletes the stored key)', async () => {
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await screen.findByPlaceholderText('Language hint (optional, e.g. en)');
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_ai_settings', expect.objectContaining({ apiKey: null })),
+    );
+  });
+});

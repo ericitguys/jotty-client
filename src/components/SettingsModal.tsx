@@ -59,7 +59,12 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const fmtErr = (e: unknown) => String(e).replace(/^.*Error: /, '');
 
   const persistAi = async () => {
-    const s = await api.setAiSettings(aiBase.trim() || null, aiModel.trim() || null, aiLang.trim() || null, aiKey.trim() || null);
+    // v0.22.3: the three text fields send their TRUE value — '' clears (the old
+    // `|| null` coerced an intentional clear into null = backend don't-touch,
+    // so a cleared setting came back after reopen; the user's exact report).
+    // The API-key field stays masked (empty UI = usually "keep stored key"),
+    // so it alone keeps the null = don't-touch semantics.
+    const s = await api.setAiSettings(aiBase.trim(), aiModel.trim(), aiLang.trim(), aiKey.trim() || null);
     setAiHas(s.hasKey); setAiKey('');
     return s;
   };
