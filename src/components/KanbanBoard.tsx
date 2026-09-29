@@ -3,6 +3,7 @@ import type { DragEvent, KeyboardEvent } from 'react';
 import * as api from '../api/client';
 import type { BoardStatusDto, ItemDto } from '../api/types';
 import Dropdown from './Dropdown';
+import DateDropdown from './DateDropdown';
 import { timeDropdownOptions, roundToQuarter } from './timeOptions';
 
 // Z-form/offset ISO -> local 'YYYY-MM-DDTHH:mm' for datetime-local prefill (T7.1):
@@ -174,17 +175,21 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                   <div className="kanban-menu" onClick={(e) => e.stopPropagation()}>
                     {dating === item.localId ? (
                       <div className="kanban-date-edit">
-                        <input type="date" value={dateVal} autoFocus
-                               onChange={(e) => setDateVal(e.target.value)}
-                               onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && saveDate(item.localId)} />
+                        {/* WebKitGTK eradication (v0.22.2): the native date
+                            calendar commits a pick but never closes and keeps
+                            grabbing input; DateDropdown is the engine-proof
+                            replacement (closes on pick/outside/Escape).
+                            showClear: '' = clear here (saveDate semantics). */}
+                        <DateDropdown value={dateVal} onChange={setDateVal}
+                                      placeholder="Pick a date" ariaLabel="Date (clearable)"
+                                      showClear />
                         <button onClick={() => saveDate(item.localId)}>Save date</button>
                         <button onClick={() => setDating(null)}>Back</button>
                       </div>
                     ) : reminding === item.localId ? (
                       <div className="kanban-reminder-edit">
-                        <input type="date" value={reminderDate} autoFocus
-                               onChange={(e) => setReminderDate(e.target.value)}
-                               onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && saveReminder(item.localId)} />
+                        <DateDropdown value={reminderDate} onChange={setReminderDate}
+                                      placeholder="Pick a date" ariaLabel="Reminder date" />
                         <Dropdown value={reminderTime} options={TIME_OPTIONS}
                                   onChange={setReminderTime} ariaLabel="Reminder time"
                                   placeholder="Pick a time" />
@@ -225,9 +230,8 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                 <input className="kanban-add-input" placeholder="New card" autoFocus value={newCard}
                        onChange={(e) => setNewCard(e.target.value)}
                        onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && addCard(col.id)} />
-                <input type="date" aria-label="Date (optional)" value={newCardDate}
-                       onChange={(e) => setNewCardDate(e.target.value)}
-                       onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && addCard(col.id)} />
+                <DateDropdown value={newCardDate} onChange={setNewCardDate}
+                              placeholder="Date (optional)" ariaLabel="Date (optional)" />
                 <div className="kanban-add-actions">
                   <button className="kanban-add-confirm" onClick={() => addCard(col.id)}>Add card</button>
                   <button onClick={closeAddForm}>Cancel</button>

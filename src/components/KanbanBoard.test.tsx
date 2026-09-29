@@ -5,6 +5,34 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import KanbanBoard from './KanbanBoard';
+import { ymd, dateLabel } from './calendarGrid';
+
+// v0.22.2 reshape (WebKitGTK date-popup eradication): the native
+// <input type="date"> is replaced by the pure-DOM DateDropdown everywhere.
+// The native popup commits a day-pick but NEVER closes + keeps grabbing
+// pointer/keyboard (probed 2026-09-29 — references/webkitgtk-datetime-probe.md);
+// helpers drive the new picker flow: open the grid, navigate to the target
+// day's month (empty/other-month values open on "today"), click the cell.
+const pickDate = (ariaLabel: string, day: string) => {
+  fireEvent.click(screen.getByRole('button', { name: ariaLabel }));
+  let cell = screen.queryByRole('button', { name: day });
+  let guard = 0;
+  while (!cell && guard++ < 24) {
+    // first IN-month cell anchors which month the grid currently shows
+    const first = document.querySelector('.jotty-date-day:not(.dim)') as HTMLElement | null;
+    if (!first) throw new Error('date grid did not open');
+    const shown = first.getAttribute('aria-label')!.slice(0, 7); // 'YYYY-MM'
+    fireEvent.click(screen.getByRole('button', { name: day.slice(0, 7) > shown ? 'Next month' : 'Previous month' }));
+    cell = screen.queryByRole('button', { name: day });
+  }
+  if (!cell) throw new Error(`grid could not reach ${day}`);
+  fireEvent.click(cell);
+};
+// value of the picker trigger = the picker's committed value (label mirrors it)
+const dateTriggerText = (ariaLabel: string) => {
+  const btn = screen.getByRole('button', { name: ariaLabel });
+  return (btn.querySelector('.jotty-dropdown-label') as HTMLElement).textContent ?? '';
+};
 
 const board = {
   checklistId: 'b1',
@@ -122,23 +150,28 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set date'));
-    // prefilled with the card's existing target date
-    const input = screen.getByDisplayValue('2026-10-01') as HTMLInputElement;
-    expect(input.type).toBe('date');
-    fireEvent.change(input, { target: { value: '2026-10-05' } });
+    // RESHAPED v0.22.2 (DateDropdown): the picker trigger mirrors the committed
+    // value as a LOCALIZED label (dateLabel mirror — no native input remains)
+    expect(dateTriggerText('Date (clearable)')).toBe(dateLabel('2026-10-01'));
+    pickDate('Date (clearable)', '2026-10-05');
+    expect(dateTriggerText('Date (clearable)')).toBe(dateLabel('2026-10-05'));
     fireEvent.click(screen.getByText('Save date'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-05' }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 
-  it('Set date with a cleared input saves null (clears the date)', async () => {
+  it('Set date via the Clear row saves null (clears the date)', async () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set date'));
-    const input = screen.getByDisplayValue('2026-10-01');
-    fireEvent.change(input, { target: { value: '' } });
+    expect(dateTriggerText('Date (clearable)')).toBe(dateLabel('2026-10-01'));
+    // RESHAPED v0.22.2: clearing = the picker's Clear row (a native input had
+    // no clear affordance at all on the broken webview); '' saves null
+    fireEvent.click(screen.getByRole('button', { name: 'Date (clearable)' }));
+    fireEvent.click(screen.getByText('Clear'));
+    expect(dateTriggerText('Date (clearable)')).toBe('Pick a date');
     fireEvent.click(screen.getByText('Save date'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: null }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
@@ -151,7 +184,8 @@ describe('KanbanBoard', () => {
     fireEvent.click(screen.getAllByText('+')[0]);
     // the form asks BEFORE saving: text + date + Add/Cancel
     fireEvent.change(screen.getByPlaceholderText('New card'), { target: { value: 'dentist' } });
-    fireEvent.change(screen.getByLabelText('Date (optional)'), { target: { value: '2026-10-05' } });
+    // RESHAPED v0.22.2: the date ask = the DateDropdown (label 'Date (optional)')
+    pickDate('Date (optional)', '2026-10-05');
     fireEvent.click(screen.getByText('Add card'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'b1', text: 'dentist', parentLocalId: null, status: 'todo', targetDate: '2026-10-05' }));
     expect(invoke).not.toHaveBeenCalledWith('set_item_target_date', expect.anything());
@@ -263,21 +297,21 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
-    // split editor: a native date input + the engine-proof Time dropdown
+    // split editor (v0.22.2): pure-DOM DateDropdown + the engine-proof Time dropdown
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
-    const dateInput = container.querySelector('.kanban-reminder-edit input[type="date"]') as HTMLInputElement;
-    expect(dateInput).not.toBeNull();
-    expect(dateInput.value).toBe(''); // no existing reminder -> empty prefill
+    const dateTrigger = screen.getByRole('button', { name: 'Reminder date' });
+    expect(editor).toContainElement(dateTrigger);
+    expect(dateTrigger.querySelector('.jotty-dropdown-label')!.textContent).toBe('Pick a date'); // no existing reminder -> empty prefill
     // Save is DISABLED until date AND time are picked (no half-saves, ever)
     const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
     expect(editorSave.disabled).toBe(true);
     // pick the time via the Dropdown (role=option rows, same as board pickers)
     fireEvent.click(screen.getByRole('button', { name: 'Reminder time' }));
     fireEvent.click(screen.getByRole('option', { name: '09:30 AM' }));
-    // date typed via the input (native calendar popup works on webview; jsdom
-    // sees the committed value string directly)
+    // date picked via the calendar grid (RESHAPE v0.22.2 — the native input's
+    // popup never closes on the webview; the pure-DOM picker commits + closes)
     const typedDate = '2026-10-05';
-    fireEvent.change(dateInput, { target: { value: typedDate } });
+    pickDate('Reminder date', typedDate);
     expect(editorSave.disabled).toBe(false);
     fireEvent.click(editorSave);
     // composed LOCAL wall time -> ISO carries the offset (TZ-robust assert)
@@ -303,9 +337,10 @@ describe('KanbanBoard', () => {
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
-    const dateInput = editor.querySelector('input[type="date"]') as HTMLInputElement;
-    // type ONLY the date (the user's exact broken flow)
-    fireEvent.change(dateInput, { target: { value: '2026-10-05' } });
+    // pick ONLY the date (the user's exact broken flow — RESHAPED v0.22.2:
+    // the date arrives via the calendar grid now; the popup closes on pick,
+    // so the user actually REACHES Save/Back this time)
+    pickDate('Reminder date', '2026-10-05');
     expect(editor.querySelector('.kanban-reminder-hint')!.textContent).toMatch(/time/i); // names the missing TIME
     // incomplete (no time picked) -> Save stays disabled; clicking changes nothing
     const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
@@ -340,12 +375,19 @@ describe('KanbanBoard', () => {
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
-    const dateInput = editor.querySelector('input[type="date"]') as HTMLInputElement;
-    // date part prefilled with the LOCAL conversion of the Z-form reminder (TZ-robust, computed in-test)
+    // RESHAPED v0.22.2: date part prefill lands on the DateDropdown trigger
+    // (label mirrors the committed value; TZ-robust computed in-test)
     const fd = new Date(fixture);
     const pad = (n: number) => String(n).padStart(2, '0');
     const expectedDate = `${fd.getFullYear()}-${pad(fd.getMonth() + 1)}-${pad(fd.getDate())}`;
-    expect(dateInput.value).toBe(expectedDate);
+    const dateTrigger = screen.getByRole('button', { name: 'Reminder date' });
+    expect(dateTriggerText('Reminder date')).toBe(dateLabel(expectedDate));
+    // the calendar grid opens ON the stored reminder's month (never 'now')
+    fireEvent.click(dateTrigger);
+    expect((editor.querySelector('.jotty-date-header > span') as HTMLElement).textContent).toContain(
+      new Date(fd.getFullYear(), fd.getMonth(), 15).toLocaleString([], { month: 'long', year: 'numeric' }),
+    );
+    fireEvent.keyDown(document, { key: 'Escape' }); // close the grid; the prefill stays
     // time part prefilled rounded UP to the next quarter-hour on the 12h dropdown label
     expect(screen.getByText('Back')).toBeTruthy();
     const editorSave = screen.getByRole('button', { name: 'Save reminder' }) as HTMLButtonElement;
@@ -368,7 +410,7 @@ describe('KanbanBoard', () => {
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('alpha'));
     fireEvent.click(screen.getByText('Set reminder'));
-    expect(container.querySelector('.kanban-reminder-edit input')).not.toBeNull();
+    expect(container.querySelector('.kanban-reminder-edit')).not.toBeNull();
     fireEvent.click(screen.getByText('Back'));
     // Back never invokes: set_item_reminder NOT called
     expect(invoke.mock.calls.some((c) => c[0] === 'set_item_reminder')).toBe(false);

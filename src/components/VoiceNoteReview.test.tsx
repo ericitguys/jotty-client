@@ -6,6 +6,29 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 
 import VoiceNoteReview, { titleFromTranscript } from './VoiceNoteReview';
 import { useStore } from '../stores/store';
+import { dateLabel } from './calendarGrid';
+
+// v0.22.2 reshape (WebKitGTK date-popup eradication): the appointment panel's
+// native <input type="date"> is now the pure-DOM DateDropdown — same helpers
+// as KanbanBoard.test.tsx (open the grid, navigate to the month, pick).
+const pickDate = (ariaLabel: string, day: string) => {
+  fireEvent.click(screen.getByRole('button', { name: ariaLabel }));
+  let cell = screen.queryByRole('button', { name: day });
+  let guard = 0;
+  while (!cell && guard++ < 24) {
+    const first = document.querySelector('.jotty-date-day:not(.dim)') as HTMLElement | null;
+    if (!first) throw new Error('date grid did not open');
+    const shown = first.getAttribute('aria-label')!.slice(0, 7); // 'YYYY-MM'
+    fireEvent.click(screen.getByRole('button', { name: day.slice(0, 7) > shown ? 'Next month' : 'Previous month' }));
+    cell = screen.queryByRole('button', { name: day });
+  }
+  if (!cell) throw new Error(`grid could not reach ${day}`);
+  fireEvent.click(cell);
+};
+const dateTriggerText = (ariaLabel: string) => {
+  const btn = screen.getByRole('button', { name: ariaLabel });
+  return (btn.querySelector('.jotty-dropdown-label') as HTMLElement).textContent ?? '';
+};
 
 const recordedRow = {
   id: 'r1', path: '/data/voice/r1.wav', durationSecs: 4.2,
@@ -605,7 +628,8 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     fireEvent.click(screen.getByText('Stop'));
     fireEvent.click(await screen.findByRole('button', { name: 'Save as appointment' }));
     expect(await screen.findByDisplayValue('Dentist')).toBeInTheDocument();
-    expect(screen.getByLabelText('Date')).toHaveValue('2026-10-01');
+    // RESHAPED v0.22.2 (DateDropdown): prefill lands on the trigger label
+    expect(dateTriggerText('Date')).toBe(dateLabel('2026-10-01'));
     expect(screen.getByRole('button', { name: 'Time' })).toHaveTextContent('09:00 AM');
     // ruled reminder display: time known → the appointment datetime, read-only
     expect(screen.getByText(/reminder at 2026-10-01T09:00/)).toBeInTheDocument();
@@ -626,7 +650,8 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     await waitFor(() => expect(titleInput).toHaveValue('Dentist'));
     fireEvent.change(titleInput, { target: { value: 'Root canal' } });
     expect(screen.getByPlaceholderText('Appointment title')).toHaveValue('Root canal');
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-03' } });
+    // RESHAPED v0.22.2: date via the calendar grid (closes on pick)
+    pickDate('Date', '2026-10-03');
     // Time is the engine-proof custom Dropdown (WebKitGTK probe 2026-09-29:
     // native <input type=time> renders typed segments but .value stays '' and
     // NO change/input events ever fire — silent date-only saves)
@@ -680,7 +705,8 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     await waitFor(() => expect(screen.queryByText(/Extracting/)).not.toBeInTheDocument());
     // null draft → fields start empty, manual note shown — never a guessed value
     expect(titleInput).toHaveValue('');
-    expect(screen.getByLabelText('Date')).toHaveValue('');
+    // RESHAPED v0.22.2: empty prefill = the DateDropdown placeholder
+    expect(dateTriggerText('Date')).toBe('Pick a date');
     expect(screen.getByText(/No appointment found/)).toBeInTheDocument();
     // board chosen, date empty: save is BLOCKED with the ruled validation line
     fireEvent.click(await screen.findByRole('button', { name: 'Appointment board' }));
@@ -691,7 +717,8 @@ describe('VoiceNoteReview appointment flow (appointments Task 8)', () => {
     expect(onClose).not.toHaveBeenCalled();
     // manual entry, date only → reminderDatetime null → NO set_item_reminder
     fireEvent.change(screen.getByPlaceholderText('Appointment title'), { target: { value: 'Checkup' } });
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-02' } });
+    // RESHAPED v0.22.2: manual date entry via the calendar grid
+    pickDate('Date', '2026-10-02');
     expect(screen.getByText(/no reminder/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save appointment' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
