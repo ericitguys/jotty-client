@@ -1,4 +1,5 @@
-//! Self-update: check github releases, download the rpm, install via dnf+polkit.
+//! Self-update: check github releases, download the platform package, install.
+//! Linux: the .rpm via dnf+polkit. Windows: the NSIS -setup.exe, silent (/S).
 //!
 //! Pure helpers (parse/compare) are unit-testable; I/O fns take injected
 //! api base / client / command runner so tests never touch the network
@@ -14,12 +15,29 @@ pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub available: bool,
-    /// Platform-appropriate asset URL: the .rpm on desktop, the .apk on Android.
+    /// Platform-appropriate asset URL: the platform package — .rpm (linux),
+    /// NSIS -setup.exe (windows), .apk (android).
     pub download_url: Option<String>,
 }
 
+/// Which desktop package shape to offer. Runtime-determined (compile-time
+/// target), but the picker below takes it as a PARAMETER so both arms are
+/// unit-testable from any host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopFlavor {
+    Linux,
+    Windows,
+}
+
+pub fn desktop_flavor() -> DesktopFlavor {
+    #[cfg(target_os = "windows")]
+    { DesktopFlavor::Windows }
+    #[cfg(not(target_os = "windows"))]
+    { DesktopFlavor::Linux }
+}
+
 #[derive(Debug, Deserialize)]
-struct GhAsset {
+pub(crate) struct GhAsset {
     name: String,
     browser_download_url: String,
 }
@@ -44,18 +62,36 @@ pub(crate) fn is_newer(current: &str, latest_tag: &str) -> Result<bool, String> 
     Ok(lat > cur)
 }
 
-/// Extract (tag_name, rpm download url) from a /releases/latest response body.
-/// No .rpm asset -> Ok with None (a release without a package is "up to date"
-/// for our purposes but still reports its tag).
+/// The desktop package pick for a release, per flavor: Linux = the .rpm;
+/// Windows = prefer the NSIS `*-setup.exe`, fall back to any .exe
+/// (blockmaps/other assets never match). None = this release carries no
+/// package of our kind (up to date, not an error).
+pub(crate) fn pick_desktop_asset(assets: &[GhAsset], flavor: DesktopFlavor) -> Option<String> {
+    match flavor {
+        DesktopFlavor::Linux => assets
+            .iter()
+            .find(|a| a.name.ends_with(".rpm"))
+            .map(|a| a.browser_download_url.clone()),
+        DesktopFlavor::Windows => {
+            let exes: Vec<&GhAsset> = assets.iter().filter(|a| a.name.ends_with(".exe")).collect();
+            let picked = exes
+                .iter()
+                .find(|a| a.name.contains("-setup"))
+                .or_else(|| exes.first());
+            picked.map(|a| a.browser_download_url.clone())
+        }
+    }
+}
+
+/// Extract (tag_name, desktop package url) from a /releases/latest response
+/// body, for THIS host's desktop flavor. No matching asset -> Ok with None
+/// (a release without a package is "up to date" for our purposes but still
+/// reports its tag).
 pub(crate) fn parse_release(v: &Value) -> Result<(String, Option<String>), String> {
     let rel: GhRelease = serde_json::from_value(v.clone())
         .map_err(|e| format!("unexpected release payload: {e}"))?;
-    let rpm = rel
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with(".rpm"))
-        .map(|a| a.browser_download_url.clone());
-    Ok((rel.tag_name, rpm))
+    let pkg = pick_desktop_asset(&rel.assets, desktop_flavor());
+    Ok((rel.tag_name, pkg))
 }
 
 /// Pick the APK asset for this device: prefer arm64, fall back to the only .apk.
@@ -207,14 +243,50 @@ pub fn install_with(
     }
 }
 
-/// The real runner: polkit prompts for the root password in the desktop session.
+/// Windows install: the Tauri NSIS setup exe, silent (/S). The NSIS build
+/// installs per-user (currentUser mode — no UAC prompt); the app's own
+/// Restart button finishes the swap afterwards. Runner-injected like the
+/// dnf arm, and NOT cfg-gated — the exact command shape is unit-tested from
+/// any host (the tests fake the runner's exit status).
+pub fn install_windows_with(
+    setup_path: &std::path::Path,
+    runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
+) -> Result<(), String> {
+    let out = runner(&setup_path.to_string_lossy(), &["/S"])
+        .map_err(|e| format!("cannot launch installer: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "installer failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// The real runner: on linux polkit prompts for the root password in the
+/// desktop session; on windows the NSIS binary is executed directly.
+fn plain_runner(
+    program: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())
+}
+
+/// The real install dispatch (per host OS).
 pub fn install(rpm_path: &std::path::Path) -> Result<(), String> {
-    install_with(rpm_path, &|program, args| {
-        std::process::Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|e| e.to_string())
-    })
+    #[cfg(target_os = "windows")]
+    {
+        install_windows_with(rpm_path, &plain_runner)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        install_with(rpm_path, &plain_runner)
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +577,113 @@ mod tests {
         let err = install_with(std::path::Path::new("/tmp/x.rpm"), &runner).unwrap_err();
         assert!(err.contains("dnf install failed"));
         assert!(err.contains("nothing provides"));
+    }
+
+    // ---- windows: desktop flavor pick + NSIS silent install (v0.23.0) ----
+
+    #[test]
+    fn windows_flavor_prefers_the_nsis_setup_exe() {
+        let rel: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0_amd64.deb", "https://x/deb"),
+            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
+            ("jotty-desktop_0.23.0_amd64.AppImage", "https://x/ai"),
+        ])).unwrap();
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows).as_deref(),
+            Some("https://x/setup")
+        );
+    }
+
+    #[test]
+    fn windows_flavor_falls_back_to_any_exe_but_never_non_exe_assets() {
+        let rel: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0_amd64.deb", "https://x/deb"),
+            ("jotty-desktop_0.23.0_x64.exe", "https://x/plain-exe"),
+            ("jotty-desktop_0.23.0_x64-setup.exe.blockmap", "https://x/blockmap"),
+        ])).unwrap();
+        // no -setup asset: the plain exe beats the (non-matching) blockmap
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows).as_deref(),
+            Some("https://x/plain-exe")
+        );
+        let none: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
+        ])).unwrap();
+        assert!(pick_desktop_asset(&none.assets, DesktopFlavor::Windows).is_none());
+    }
+
+    #[test]
+    fn linux_flavor_still_picks_the_rpm() {
+        let rel: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
+            ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
+        ])).unwrap();
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux).as_deref(),
+            Some("https://x/rpm")
+        );
+    }
+
+    // runtime dispatch: parse_release must consult THIS host's flavor — on the
+    // linux dev box that's the rpm arm (an exe-only release parses url:None).
+    #[test]
+    fn parse_release_uses_the_runtime_flavor_for_the_desktop_pick() {
+        let exe_only = release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
+        ]);
+        let with_rpm = release_json("v0.23.0", &[
+            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
+            ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
+        ]);
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(parse_release(&exe_only).unwrap().1.as_deref(), Some("https://x/setup"));
+            assert_eq!(parse_release(&with_rpm).unwrap().1.as_deref(), Some("https://x/setup"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(parse_release(&exe_only).unwrap().1.as_deref(), None);
+            assert_eq!(parse_release(&with_rpm).unwrap().1.as_deref(), Some("https://x/rpm"));
+        }
+    }
+
+    fn win_output(code: i32, stderr: &str) -> std::process::Output {
+        // tests run on the dev linux box; the windows arm of install() is
+        // never unit-run here — ExitStatusExt::from_raw encodes the exit code.
+        #[cfg(unix)]
+        return std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(code << 8),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        #[cfg(windows)]
+        return std:: process::Output {
+            status: std::os::windows::process::ExitStatusExt::from_raw(code as u32),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        };
+    }
+
+    #[test]
+    fn install_windows_runs_the_setup_exe_silently() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls2 = calls.clone();
+        let runner = move |program: &str, args: &[&str]| {
+            calls2.lock().unwrap().push((program.to_string(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            Ok(win_output(0, "installer stderr tail"))
+        };
+        install_windows_with(std::path::Path::new(r"C:\cache\updates\jotty-desktop_0.23.0_x64-setup.exe"), &runner).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, r"C:\cache\updates\jotty-desktop_0.23.0_x64-setup.exe");
+        assert_eq!(calls[0].1, vec!["/S"]);
+    }
+
+    #[test]
+    fn install_windows_surfaces_a_failed_installer_exit() {
+        let runner = move |_p: &str, _a: &[&str]| Ok(win_output(1, "cannot write to dir"));
+        let err = install_windows_with(std::path::Path::new("C:\\x\\setup.exe"), &runner).unwrap_err();
+        assert!(err.contains("installer failed"), "got: {err}");
+        assert!(err.contains("cannot write to dir"));
     }
 }

@@ -1,0 +1,81 @@
+# Windows release bundle for the jotty desktop client (v0.23.0+).
+#
+# Tag push (vX.Y.Z): builds the NSIS setup exe on a GitHub windows runner and
+# uploads it to the release with that tag (the dev box creates the release
+# with the linux/android assets first; the upload step waits for it).
+# Manual dispatch (workflow_dispatch): build-only validation — the setup exe
+# is kept as a workflow ARTIFACT, nothing is published.
+#
+# No `cargo test` here on purpose: the test module uses the unix
+# ExitStatusExt helper in install-shape fences (they run on the dev box;
+# this runner's job is the bundle only).
+name: windows-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '!v*-android-preview'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build NSIS bundle
+        run: npx tauri build --bundles nsis
+
+      - name: Checksum the setup exe
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "${hash}  $($exe.Name)" | Out-File -FilePath setup-sha256.txt -Encoding ascii
+          Get-Content setup-sha256.txt
+
+      - name: Wait for the release to exist, then upload
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $ok = $false
+          foreach ($i in 1..30) {
+            gh release view $tag -R ericitguys/jotty-client *> $null
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ok) { Write-Error "release $tag never appeared"; exit 1 }
+          gh release upload $tag (Get-ChildItem "src-tauri/target/release/bundle/nsis/*-setup.exe").FullName -R ericitguys/jotty-client --clobber
+          gh release view $tag -R ericitguys/jotty-client --json assets --jq '.assets[].name'
+
+      - name: Upload build artifact (manual runs only)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jotty-desktop-windows-setup
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            setup-sha256.txt
+          if-no-files-found: error
