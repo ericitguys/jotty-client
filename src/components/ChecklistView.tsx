@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DragEvent } from 'react';
 import * as api from '../api/client';
 import type { ChecklistDto, ItemDto } from '../api/types';
 import { useStore } from '../stores/store';
 import KanbanBoard from './KanbanBoard';
+import Dropdown from './Dropdown';
+import type { DropdownOption } from './Dropdown';
 import { Icon } from './icons';
+import { relativeAge } from '../util/relativeTime';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
   const refreshAll = useStore((s) => s.refreshAll);
   const clickAction = useStore((s) => s.prefs?.checklistItemClickAction ?? 'toggle');
+  const categories = useStore((s) => s.categories);
+  const listRows = useStore((s) => s.checklists);
   const [items, setItems] = useState<ItemDto[]>([]);
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
@@ -62,6 +67,43 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
 
   const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
 
+  // Completed grouping (spec L8) is a DISPLAY-ONLY partition: open rows render
+  // in position order, THEN a labeled divider, THEN the done rows. Positions,
+  // the DnD payload and children attachment are untouched (done rows keep
+  // rendering inside their parent — children live where the parent lives, and
+  // drop targets on open rows behave exactly as before).
+  const openTop = top.filter((i) => !i.completed);
+  const doneTop = top.filter((i) => i.completed);
+
+  // Category instant-apply (spec L5): options merge BOTH store trees by path
+  // (a path can exist on notes AND checklists — one option), sorted by path;
+  // an empty path renders as 'Uncategorized'. The list's own current value
+  // rides along when the merged set misses it — but never rescues an EMPTY
+  // set: categories null OR no category nodes at all (disconnected/empty
+  // tree) → the merged set stays empty and the OLD text input renders
+  // (fallback, blur commit) instead of a dropdown with a lone or zero options.
+  const catOptions = useMemo<DropdownOption[]>(() => {
+    if (!categories) return [];
+    const byPath = new Map<string, DropdownOption>();
+    for (const node of [...categories.notes, ...categories.checklists]) {
+      byPath.set(node.path, { id: node.path, name: node.path || 'Uncategorized' });
+    }
+    if (byPath.size > 0 && category && !byPath.has(category)) byPath.set(category, { id: category, name: category });
+    return [...byPath.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [categories, category]);
+
+  // Header counts (plain lists) ride the T3 wire, never a client re-derivation.
+  // get_checklist serializes 0/0 defaults (dto.rs From<ChecklistRow>) — the REAL
+  // counts live on the store's list row (list_checklists_inner fills
+  // item_count/done_count over ALL checklist_items, nested children included).
+  // No row on the wire (older schema) → no meta line (ChecklistList parity).
+  // `?? []`: refreshAll sets whatever listChecklists resolved — a null payload
+  // nulls the store field at runtime (typed non-null, runtime nullable).
+  const listRow = (listRows ?? []).find((c) => c.id === checklistId);
+  const headerCounts = !isBoard && listMeta && listRow && typeof listRow.itemCount === 'number'
+    ? { item: listRow.itemCount, done: listRow.doneCount ?? 0, updatedAt: listRow.updatedAt }
+    : null;
+
   const toggle = async (item: ItemDto) => {
     await api.setItemChecked(checklistId, item.localId, !item.completed);
     await reload();
@@ -94,8 +136,10 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     await reload();
   };
 
-  const saveMeta = async () => {
-    await api.updateChecklist(checklistId, title, category);
+  // saveMeta commits title+category; the Dropdown passes its selection so the
+  // commit is never a state-tick behind, blur callers pass nothing.
+  const saveMeta = async (categoryOverride?: string) => {
+    await api.updateChecklist(checklistId, title, categoryOverride ?? category);
     await refreshAll();
   };
 
@@ -110,6 +154,36 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     toggle(item);
   };
 
+  const renderRow = (item: ItemDto) => (
+    <li key={item.localId} id={`item-${item.localId}`}
+        className={item.completed ? 'completed-item' : ''}
+        draggable
+        onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => onDrop(item.localId, e)}>
+      <div className="row-line">
+        <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
+        <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
+        {item.targetDate && <span className="item-date-chip">{item.targetDate}</span>}
+        <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
+        <button aria-label="Delete item" title="Delete" onClick={() => remove(item)}><Icon name="x" size={12}/></button>
+      </div>
+      <ul>
+        {(item.children ?? []).map((c) => (
+          <li key={c.localId} className="child">
+            <div className="row-line">
+              <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
+              <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
+              {c.targetDate && <span className="item-date-chip">{c.targetDate}</span>}
+              <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
+              <button aria-label="Delete subitem" title="Delete" onClick={() => remove(c)}><Icon name="x" size={12}/></button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </li>
+  );
+
   return (
     <div id="checklist-view">
       <div id="checklist-head">
@@ -117,59 +191,76 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
           className="cl-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          onBlur={saveMeta}
+          onBlur={() => saveMeta()}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
         />
         <div className="cl-meta-row">
-          <input
-            className="cl-category"
-            value={category}
-            placeholder="Category"
-            onChange={(e) => setCategory(e.target.value)}
-            onBlur={saveMeta}
-            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          />
-          {/* preventDefault on mousedown keeps input focus; Save then commits once */}
-          <button className="cl-save" onMouseDown={(e) => e.preventDefault()} onClick={saveMeta}>Save</button>
+          {catOptions.length > 0 ? (
+            <Dropdown
+              className="cl-cat-dd"
+              ariaLabel="Category"
+              value={category}
+              placeholder="Category"
+              options={catOptions}
+              onChange={(id) => { setCategory(id); void saveMeta(id); }}
+            />
+          ) : (
+            // Fallback (offline / empty tree): typed edits keep working, blur
+            // commits. No Save button in EITHER mode.
+            <input
+              className="cl-category"
+              value={category}
+              placeholder="Category"
+              onChange={(e) => setCategory(e.target.value)}
+              onBlur={() => saveMeta()}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+          )}
         </div>
+        {headerCounts && (
+          <>
+            <div className="cl-progress" aria-hidden="true">
+              <div
+                className="cl-progress-fill"
+                style={{ width: `${headerCounts.item > 0 ? Math.max(0, Math.min(100, Math.round((headerCounts.done / headerCounts.item) * 100))) : 0}%` }}
+              />
+            </div>
+            {/* LAST block in the header (T3-review F1 pattern). One inner span
+                so the joined text is a single flex item (no per-text-node
+                anonymous-item gaps) and textContent stays readable. */}
+            <div className="row-meta meta-line">
+              <span>{headerCounts.done} of {headerCounts.item} done · {relativeAge(headerCounts.updatedAt)}</span>
+            </div>
+          </>
+        )}
+      </div>
+      {/* Top-of-list add row (spec L8, Things/Todoist pattern): Enter adds,
+          the explicit Add button stays beside the input. */}
+      <div className="cl-add-row">
+        <input
+          placeholder="Add an item ⏎"
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && add()}
+        />
+        <button onClick={add}>Add</button>
       </div>
       {isBoard ? (
         <KanbanBoard checklistId={checklistId} items={items} reload={reload} />
       ) : (
       <ul>
-        {top.map((item) => (
-          <li key={item.localId} id={`item-${item.localId}`}
-              className={item.completed ? 'completed-item' : ''}
-              draggable
-              onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => onDrop(item.localId, e)}>
-            <div className="row-line">
-              <input type="checkbox" checked={item.completed} onChange={() => toggle(item)} />
-              <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
-              {item.targetDate && <span className="item-date-chip">{item.targetDate}</span>}
-              <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
-              <button aria-label="Delete item" title="Delete" onClick={() => remove(item)}><Icon name="x" size={12}/></button>
-            </div>
-            <ul>
-              {(item.children ?? []).map((c) => (
-                <li key={c.localId} className="child">
-                  <div className="row-line">
-                    <input type="checkbox" checked={c.completed} onChange={() => toggle(c)} />
-                    <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
-                    {c.targetDate && <span className="item-date-chip">{c.targetDate}</span>}
-                    <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
-                    <button aria-label="Delete subitem" title="Delete" onClick={() => remove(c)}><Icon name="x" size={12}/></button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
+        {openTop.map(renderRow)}
+        {doneTop.length > 0 && (
+          <div className="completed-group">
+            {/* Divider rides inside the ul between open and done rows: the
+                group fence pins done rows as direct `#checklist-view > ul > li`
+                children, so the divider must be a non-li sibling. */}
+            <h3>Completed · {doneTop.length}</h3>
+          </div>
+        )}
+        {doneTop.map(renderRow)}
       </ul>
       )}
-      <input placeholder="New item" value={newText} onChange={(e) => setNewText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
-      <button onClick={add}>Add</button>
     </div>
   );
 }

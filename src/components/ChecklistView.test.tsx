@@ -6,11 +6,19 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 
 import ChecklistView from './ChecklistView';
 import { useStore } from '../stores/store';
+import type { ChecklistDto } from '../api/types';
 
 const items = [
   { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
   { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
 ];
+
+// Minimal store-side checklist row (the T3-counted list_checklists wire, consumed
+// by the view's header counts line). `items` stays [] — counts ride the wire.
+const storeRow = (over: Partial<ChecklistDto> = {}): ChecklistDto => ({
+  id: 'l1', title: 'L', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null,
+  dirty: false, completed: false, listType: 'plain', items: [], ...over,
+});
 
 beforeEach(() => {
   invoke.mockReset();
@@ -21,6 +29,9 @@ beforeEach(() => {
   });
   // zustand module singleton: the one-shot pending highlight must not leak between tests
   useStore.setState({ pendingHighlightId: null });
+  // tier A T4 hygiene: category tree + list rows persist across tests (module
+  // singleton) — clear so every test seeds its own state (order-independent).
+  useStore.setState({ categories: null, checklists: [] });
 });
 
 // jsdom has no Element.prototype.scrollIntoView: define it (so it can be
@@ -54,36 +65,48 @@ describe('ChecklistView', () => {
   it('add item calls add_item and reloads', async () => {
     render(<ChecklistView checklistId="l1" />);
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
-    fireEvent.change(screen.getByPlaceholderText('New item'), { target: { value: 'c' } });
+    fireEvent.change(screen.getByPlaceholderText('Add an item ⏎'), { target: { value: 'c' } });
     fireEvent.click(screen.getByText('Add'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null, status: null }));
   });
 
-  it('category change commits via update_checklist on blur', async () => {
+  it('category applies via dropdown — selecting an option commits update_checklist (Save button gone)', async () => {
+    // pre-seed the store singleton's categories (beforeEach of this file does NOT):
+    // 'Home' rides BOTH trees — the merged option set must carry it ONCE (dedupe by path).
+    useStore.setState({ categories: {
+      notes: [{ name: 'Home', path: 'Home', count: 1, level: 0 }, { name: 'Work', path: 'Work', count: 0, level: 0 }],
+      checklists: [{ name: 'Home', path: 'Home', count: 1, level: 0 }, { name: 'Errands', path: 'Errands', count: 2, level: 0 }],
+    } });
     render(<ChecklistView checklistId="l1" />);
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
-    const cat = screen.getByPlaceholderText('Category');
+    expect(screen.queryByRole('button', { name: /save/i })).not.toBeInTheDocument(); // Save button is GONE in dropdown mode
+    fireEvent.click(screen.getByRole('button', { name: 'Category' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Work' }));  // merged tree: one 'Home' even tho both sides carry it
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Work' }));
+    // refresh evidence (T4 reshape of the old save-button fence, brief step 4):
+    // the store re-pulls the lists after committing — assertion survives verbatim.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_notes'));
+    expect(screen.queryAllByRole('option', { name: 'Home' })).toHaveLength(0); // menu closed again after the commit
+  });
+
+  it('category falls back to the text input when no categories exist (disconnected/empty tree)', async () => {
+    useStore.setState({ categories: null });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    const cat = screen.getByPlaceholderText('Category');  // the OLD text input still renders
+    expect(screen.queryByRole('button', { name: /save/i })).not.toBeInTheDocument(); // no Save in either mode (plan §Task 4)
     fireEvent.change(cat, { target: { value: 'Errands' } });
     fireEvent.blur(cat);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Errands' }));
   });
 
-  it('save button commits meta and refreshes the store lists', async () => {
-    render(<ChecklistView checklistId="l1" />);
-    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
-    fireEvent.change(screen.getByPlaceholderText('Category'), { target: { value: 'Trips' } });
-    fireEvent.click(screen.getByText('Save'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'L', category: 'Trips' }));
-    // refreshAll evidence: the store re-pulls the lists after committing
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_notes'));
-  });
-
   it('item ops do not clobber in-progress category edits', async () => {
+    useStore.setState({ categories: null }); // typed in-progress edits survive only in the fallback input (dropdown applies instantly)
     render(<ChecklistView checklistId="l1" />);
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
     const cat = screen.getByPlaceholderText('Category');
     fireEvent.change(cat, { target: { value: 'Ho' } });
-    fireEvent.change(screen.getByPlaceholderText('New item'), { target: { value: 'c' } });
+    fireEvent.change(screen.getByPlaceholderText('Add an item ⏎'), { target: { value: 'c' } });
     fireEvent.click(screen.getByText('Add'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null, status: null }));
     // the reload after add_item must not snap the category field back to the DB value
@@ -95,6 +118,115 @@ describe('ChecklistView', () => {
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
     fireEvent.drop(screen.getAllByRole('listitem')[0], { dataTransfer: { getData: () => 'i2' } });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('reorder_items', { checklistId: 'l1', orderedTopLevelIds: ['i2', 'i1'] }));
+  });
+
+  it('completed items group at the bottom under a labeled divider; order data untouched', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+          { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
+          { localId: 'i3', checklistId: 'l1', parentLocalId: null, text: 'c', completed: false, position: 2, dirty: false, children: [] },
+        ] });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    const lis = document.querySelectorAll('#checklist-view > ul > li');
+    // open rows first (positions preserved), THEN the divider, THEN the done row
+    expect(document.querySelectorAll('#checklist-view > ul > li.completed-item')).toHaveLength(1);
+    const texts = Array.from(lis).map((li) => li.querySelector('.item-text')?.textContent);
+    expect(texts).toEqual(['a', 'c', 'b']); // i2 renders LAST despite position 1
+    expect(screen.getByText(/Completed · 1/)).toBeInTheDocument();
+    // order data untouched: a drop onto the FIRST row still sends the FULL top
+    // order incl. i2 at its position. Insert-before-target is the pinned
+    // contract (the retained 'reorder action sends full top-level order' fence
+    // asserts the same drop semantics, spec L8: 'drop targets on open rows
+    // unchanged') — the brief's literal array needed insert-AFTER, which would
+    // break that retained fence, so the array here is the before-target shape.
+    fireEvent.drop(screen.getAllByRole('listitem')[0], { dataTransfer: { getData: () => 'i3' } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('reorder_items',
+      { checklistId: 'l1', orderedTopLevelIds: ['i3', 'i1', 'i2'] }));
+  });
+
+  it('no completed group when nothing is done', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+          { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: false, position: 1, dirty: false, children: [] },
+        ] });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('b')).toBeInTheDocument());
+    expect(screen.queryByText(/Completed/)).not.toBeInTheDocument();
+  });
+
+  it('add input sits above the list; Enter or Add button both call add_item', async () => {
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    const input = screen.getByPlaceholderText('Add an item ⏎');
+    // input is ABOVE the rows in DOM order. Brief's bit test had the direction
+    // flipped: compareDocumentPosition reports the ARGUMENT relative to the
+    // caller, so rows following a top add-input = DOCUMENT_POSITION_FOLLOWING
+    // (brief's PRECEDING would hold only if the rows PRECEDED it).
+    expect(input.compareDocumentPosition(screen.getByText('a')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.change(input, { target: { value: 'c' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'c', parentLocalId: null, status: null }));
+    fireEvent.change(input, { target: { value: 'd' } });
+    fireEvent.click(screen.getByText('Add'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_item', { checklistId: 'l1', text: 'd', parentLocalId: null, status: null }));
+  });
+
+  it('plain list: header renders the counts meta line + progress bar (T3 wire counts; display-only)', async () => {
+    useStore.setState({ checklists: [storeRow({ itemCount: 5, doneCount: 2 })] });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, children: [] },
+          { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'b', completed: true, position: 1, dirty: false, children: [] },
+          { localId: 'i3', checklistId: 'l1', parentLocalId: null, text: 'c', completed: false, position: 2, dirty: false,
+            children: [
+              { localId: 'c1', checklistId: 'l1', parentLocalId: 'i3', text: 'c1', completed: false, position: 0, dirty: false, children: [] },
+              { localId: 'c2', checklistId: 'l1', parentLocalId: 'i3', text: 'c2', completed: true, position: 1, dirty: false, children: [] },
+            ] },
+        ] });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    // counts ride the T3 wire (store row), never re-derived client-side —
+    // nested children counted: 2 done (i2 + child c2) of 5 items, while the
+    // view shows only 3 top-level rows (F6: wire counts ≠ visible top rows).
+    const meta = document.querySelector('#checklist-head .row-meta.meta-line') as HTMLElement | null;
+    expect(meta).not.toBeNull();
+    expect(meta?.textContent).toContain('2 of 5 done');
+    expect(meta?.textContent).toContain('never synced');
+    expect(document.querySelectorAll('#checklist-view > ul > li')).toHaveLength(3); // display-only divergence is fine
+    // 4px pure-CSS progress bar with a fill sized to the wire ratio
+    const fill = document.querySelector('#checklist-head .cl-progress-fill') as HTMLElement | null;
+    expect(fill).not.toBeNull();
+    expect(fill?.style.width).toBe('40%');
+    // header meta line is the LAST block in the header (T3-review F1 pattern)
+    expect(document.getElementById('checklist-head')?.lastElementChild).toBe(meta);
+  });
+
+  it('boards render no header counts line or progress bar (plain lists only)', async () => {
+    useStore.setState({ checklists: [storeRow({ itemCount: 5, doneCount: 2, listType: 'kanban' })] });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false, listType: 'kanban',
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'card', completed: false, position: 0, dirty: false, status: null, priority: null, targetDate: null, children: [] },
+        ] });
+      if (cmd === 'get_board_columns' || cmd === 'fetch_task_board') return Promise.resolve({ checklistId: 'l1', statuses: [{ id: 'todo', label: 'To do', color: null, order: 0, autoComplete: false }] });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('card')).toBeInTheDocument()); // board branch mounted
+    expect(document.querySelector('#checklist-head .row-meta.meta-line')).toBeNull(); // counts meta is plain-list only
+    expect(document.querySelector('#checklist-head .cl-progress')).toBeNull();
   });
 
   it('rows with a targetDate render a date chip after the item text (top-level and children)', async () => {

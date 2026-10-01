@@ -373,14 +373,19 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   padding: 2px 0 8px;
 }
 #checklist-head .cl-title:focus { box-shadow: none; border-bottom-color: var(--accent); }
-#checklist-head .cl-category {
-  align-self: flex-start;
-  font-size: 12px;
-  padding: 4px 10px;
-  color: var(--accent-text);
-}
+/* T4 (L5): the category input + Save button die on the checklist view —
+   instant-apply via the site-style Dropdown (the commit IS the selection).
+   Compact chip-sized trigger; menu width follows its trigger (base rule). (Fallback mode keeps
+   .cl-category — the rule stays for the offline/empty-tree input.) */
 .cl-meta-row { display: flex; align-items: center; gap: 8px; }
-.cl-meta-row .cl-category { align-self: auto; }
+.cl-meta-row .cl-cat-dd { flex: 0 1 auto; min-width: 140px; max-width: 240px; }
+.cl-meta-row .cl-cat-dd .jotty-dropdown-button {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--accent-text);
+  background: transparent;
+  border-color: var(--border-soft);
+}
 .cl-save {
   font-size: 12px;
   padding: 4px 14px;
@@ -438,8 +443,26 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   flex-shrink: 0;
 }
 #checklist-view .row-line button:hover { color: var(--danger); background: rgba(239, 68, 68, 0.12); border: none; }
-#checklist-view > input { width: 100%; }
-#checklist-view > button { align-self: flex-start; }
+/* T4 (L8): the add pair moves ABOVE the list (Things/Todoist pattern) inside
+   .cl-add-row — input flex-fills, the Add button stays inline and never
+   stretches: it keeps the old "#checklist-view > button { align-self:
+   flex-start }" job via the row's button rule. */
+.cl-add-row { display: flex; align-items: center; gap: 8px; }
+.cl-add-row input { flex: 1; min-width: 0; }
+.cl-add-row button { align-self: flex-start; white-space: nowrap; }
+/* T4 (L5, plain lists): header progress — pure-CSS 4px bar; fill carries the
+   wire ratio. Display-only: counts COUNT nested children (COUNT(*) over
+   checklist_items), never re-derived client-side (T3-review F6). */
+.cl-progress { flex-basis: 100%; height: 4px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.cl-progress-fill { height: 100%; border-radius: 2px; background: var(--accent); }
+/* T4 (L8): display-only completed group divider — rides the h3 small-caps
+   style; the wrapper sits inside the ul (a flex column), so flatten its
+   margins. */
+.completed-group { border-top: 1px solid var(--border-soft); padding-top: 10px; }
+.completed-group h3 { margin: 0; }
+/* .row-meta's flex-basis:100% is the flex-ROW wrap rule (list rows); in the
+   checklist HEADER (a flex column) it would claim full container height. */
+#checklist-head .row-meta { flex-basis: auto; }
 
 /* ---------- note editor ---------- */
 #note-editor {
