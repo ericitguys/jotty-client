@@ -114,7 +114,7 @@ describe('NoteList row metadata', () => {
     expect(screen.getByText('B').closest('li')!.querySelector('.row-snippet')).toBeNull();
   });
 
-  it('empty content renders nothing, no snippet, no age — never syncs note renders never-synced age', () => {
+  it('empty content renders no snippet; never-synced note renders never-synced age', () => {
     const notes = [{ id: 'n3', title: 'C', content: '', category: '', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null }];
     render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
     const row = screen.getByText('C').closest('li')!;

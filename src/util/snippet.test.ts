@@ -23,4 +23,10 @@ describe('snippetFromHtml', () => {
     expect(snippetFromHtml('')).toBe('');
     expect(snippetFromHtml('<p></p>')).toBe('');
   });
+
+  it('drops script/style subtrees (R5 probe: code is not note content)', () => {
+    expect(snippetFromHtml('<p>x</p><script>var steal = 1</script><p>y</p>')).toBe('x y');
+    expect(snippetFromHtml('<style>.m{color:red}</style><p>kept</p>')).toBe('kept');
+    expect(snippetFromHtml('<p>outer<script>nested var x = 1</script></p>')).toBe('outer');
+  });
 });

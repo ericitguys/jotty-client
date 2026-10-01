@@ -59,3 +59,68 @@ describe('ux polish (tier A) static token fences', () => {
     expect(RULE('.kanban-card')).toContain('var(--surface)');
   });
 });
+
+// Task 5 fences keep the RULE shape but run on a COMMENT-STRIPPED copy and use
+// a LINE-ANCHORED lookup (ChecklistView.test.tsx 'column-idiomatic' pattern):
+// a bare indexOf('.modal') would alias the '.modal-backdrop' block that
+// precedes it in styles.css.
+describe('ux polish task 5 — static CSS ledger (modal scroll, agenda meta, riders R1/R2/R4/R7)', () => {
+  const css5 = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = (sel: string) => {
+    const escaped = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{`).exec(css5);
+    expect(m, `${sel} exists`).not.toBeNull();
+    const braces = css5.indexOf('{', m!.index);
+    return css5.slice(braces + 1, css5.indexOf('}', braces));
+  };
+
+  it('settings modal scrolls internally instead of floating content past the viewport', () => {
+    const block = rule('.modal');
+    expect(block).toContain('max-height: min(76vh, 640px)');
+    expect(block).toContain('overflow');
+  });
+
+  it('the scroll region is the modal body: overflow lives there, the h2 stays pinned', () => {
+    const block = rule('.modal-body');
+    expect(block).toContain('overflow: auto');
+    expect(block).toContain('min-height: 0');
+  });
+
+  it('agenda meta spans keep layout-only rules — typography rides the shared .meta-line rule (L9)', () => {
+    expect(rule('.meta-line')).toContain('font-size: 11.5px');
+    const list = rule('.agenda-list');
+    expect(list).toContain('margin-left: auto');
+    expect(list).not.toContain('font-size'); // a re-pinned 12px would fight the shared rule
+  });
+
+  it('R1: sidebar selected rows read as the soft tint; the section toggle keeps full accent', () => {
+    const sel = rule('#sidebar li.selected');
+    expect(sel).toContain('background: var(--accent-soft)');
+    expect(sel).toContain('var(--accent-strong-text)');
+    expect(sel).not.toContain('#fff');
+    expect(rule('li.selected .count')).toContain('var(--accent-strong-text)');
+    expect(rule('#sidebar .sec-toggle.selected')).toContain('background: var(--accent)');
+  });
+
+  it('R2: h2 section labels sit at the L2 small-caps size (10.5px + .09em tracking)', () => {
+    const h2 = rule('h2');
+    expect(h2).toContain('font-size: 10.5px');
+    expect(h2).toContain('letter-spacing: 0.09em');
+  });
+
+  it('R4: .row-age right-aligns on the meta line', () => {
+    const age = rule('.row-age');
+    expect(age).toContain('margin-left: auto');
+    expect(age).toContain('flex-shrink: 0');
+  });
+
+  it("R7: the strike rule is scoped to the item's own row-line (unscoped descendant dies)", () => {
+    const sel = '#checklist-view li.completed-item > .row-line .item-text';
+    expect(css5).toContain(`${sel} {`);
+    const b = css5.indexOf(sel);
+    const block = css5.slice(css5.indexOf('{', b) + 1, css5.indexOf('}', b));
+    expect(block).toContain('line-through');
+    // regression literal: the old UNSCOPED form struck open children of done parents
+    expect(css5).not.toContain('#checklist-view li.completed-item .item-text');
+  });
+});

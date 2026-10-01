@@ -185,4 +185,21 @@ describe('AgendaView', () => {
     await waitFor(() => expect(screen.getByText('Agenda unavailable.')).toBeInTheDocument());
     expect(document.querySelector('.agenda-entry')).toBeNull();
   });
+
+  it('agenda entry meta rides the meta-line typography; the bell stays a span wrapper (title + icon)', async () => {
+    const rows = [
+      entry({ itemLocalId: 'i1', text: 'meta typ', targetDate: dated(0), reminderDatetime: '2026-10-01T09:00:00.000Z', reminderNotified: false }),
+    ];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('meta typ')).toBeInTheDocument());
+    // meta-line typography (spec L9): the shared muted/tabular rule rides the spans
+    expect(document.querySelector('.agenda-list')).toHaveClass('meta-line');
+    expect(document.querySelector('.agenda-time')).toHaveClass('meta-line');
+    // bell chip (task 5): a SPAN wrapper carries the title + the Icon's svg — never a raw glyph
+    const bell = document.querySelector('.agenda-bell') as HTMLElement;
+    expect(bell.tagName).toBe('SPAN');
+    expect(bell.getAttribute('title')).toBeTruthy();
+    expect(bell.querySelector('svg')).not.toBeNull();
+  });
 });

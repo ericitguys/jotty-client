@@ -95,10 +95,10 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 h2 {
-  font-size: 12px;
+  font-size: 10.5px; /* R2 (T2-review): L2's unrealized half — 12px → 10.5px + looser tracking */
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   color: var(--muted);
   margin: 0;
 }
@@ -265,8 +265,10 @@ input::placeholder { color: var(--muted); }
   border-color: transparent;
 }
 #sidebar li:hover { background: var(--row-hover); color: var(--fg); }
-#sidebar li.selected { background: var(--accent); color: #fff; }
-li.selected .count { color: rgba(255, 255, 255, 0.85); }
+/* R1 (T1-review): selected rows read as the tint — full accent lives on the
+   .sec-toggle.selected CONTROL (a control, not a row). */
+#sidebar li.selected { background: var(--accent-soft); color: var(--accent-strong-text); }
+li.selected .count { color: var(--accent-strong-text); }
 .count {
   color: var(--muted);
   font-size: 11px;
@@ -327,6 +329,11 @@ li.selected .count { color: rgba(255, 255, 255, 0.85); }
   text-overflow: ellipsis; /* cap-at-70 already applied; long words still clip */
   white-space: nowrap;
   min-width: 0;
+}
+/* R4 (T2-review): the age right-aligns (Linear parity) — last meta child */
+.row-age {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .chip {
   margin-left: auto;
@@ -418,7 +425,9 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   cursor: pointer;
   flex-shrink: 0;
 }
-#checklist-view li.completed-item .item-text { text-decoration: line-through; color: var(--muted); }
+/* R7 (T4-review M-4): the strike scopes to the item's OWN row-line — an open
+   child nested in a done parent renders attached there, and keeps normal text. */
+#checklist-view li.completed-item > .row-line .item-text { text-decoration: line-through; color: var(--muted); }
 #checklist-view .item-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* click-to-edit: the rename input overlays the row text (transparent until
    focus); rename semantics unchanged — onChange still fires per keystroke. */
@@ -958,11 +967,20 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   display: flex;
   flex-direction: column;
   gap: 10px;
+  max-height: min(76vh, 640px); /* L9 (task 5): scrolls internally, never floats past the viewport */
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: 14px;
   padding: 20px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+/* L9 (task 5): the scroll region is the modal BODY — the h2 stays pinned on
+   the modal surface while the sections scroll under it (min-height 0 lets the
+   flex column shrink the body instead of the header). */
+.modal-body {
+  overflow: auto;
+  min-height: 0;
 }
 .modal h2 { font-size: 15px; text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 700; }
 .modal p { margin: 0; color: var(--muted); font-size: 13px; }
@@ -1440,9 +1458,10 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .agenda-entry.completed { opacity: 0.55; }
 .agenda-text { font-weight: 600; overflow-wrap: anywhere; }
 .agenda-entry.completed .agenda-text { text-decoration: line-through; }
-.agenda-list { color: var(--muted); font-size: 12px; margin-left: auto; }
-.agenda-time { color: var(--muted); font-size: 12px; }
-.agenda-bell { font-size: 13px; flex: none; }
+/* L9 (task 5): agenda meta typography rides the shared .meta-line rule —
+   these span rules keep only their layout job. */
+.agenda-list { margin-left: auto; }
+.agenda-bell { flex: none; }
 .agenda-bell.notified { opacity: 0.4; }
 /* plain-list rows: the item's targetDate chip (kanban cards show dates in the
    card UI instead) */

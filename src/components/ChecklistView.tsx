@@ -60,6 +60,14 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     setItems(list.items ?? []);
   }, [checklistId]);
 
+  // R6 (T3-review F4): item ops move item COUNTS too — the sidebar's n-of-m
+  // rows + completed tint ride the store's catalog refetch (refreshAll), not
+  // the next sync tick (or nothing, offline). Same shape as saveMeta below;
+  // reload() stays first so the rows re-render immediately.
+  const refreshCatalog = useCallback(async () => {
+    await refreshAll();
+  }, [refreshAll]);
+
   // Board mode: kanban/task listTypes render the KanbanBoard; plain lists keep
   // the checkbox list. Derived from the loaded meta (not the row stub) so the
   // header stays editable in BOTH modes.
@@ -107,16 +115,19 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
   const toggle = async (item: ItemDto) => {
     await api.setItemChecked(checklistId, item.localId, !item.completed);
     await reload();
+    await refreshCatalog();
   };
 
   const rename = async (item: ItemDto, text: string) => {
     await api.setItemText(checklistId, item.localId, text);
     await reload();
+    await refreshCatalog();
   };
 
   const remove = async (item: ItemDto) => {
     await api.deleteItem(checklistId, item.localId);
     await reload();
+    await refreshCatalog();
   };
 
   const add = async () => {
@@ -124,6 +135,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
     await api.addItem(checklistId, newText.trim(), null, null);
     setNewText('');
     await reload();
+    await refreshCatalog();
   };
 
   const onDrop = async (targetId: string, e: DragEvent) => {

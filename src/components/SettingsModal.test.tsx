@@ -280,3 +280,25 @@ describe('SettingsModal AI settings: empty-field clears persist', () => {
     );
   });
 });
+
+describe('SettingsModal scroll wrapper (tier A task 5, L9)', () => {
+  it('the modal sections live inside the .modal-body scroll wrapper; the h2 stays pinned outside it', () => {
+    invoke.mockImplementation((cmd: string) => cmd === 'get_settings' ? Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 }) : Promise.resolve(null));
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const modal = document.querySelector('.modal') as HTMLElement | null;
+    expect(modal).not.toBeNull();
+    const body = modal!.querySelector('.modal-body') as HTMLElement | null;
+    expect(body).not.toBeNull();
+    expect(body!.querySelector('.ai-settings')).not.toBeNull();
+    expect(body!.querySelector('h2')).toBeNull(); // section header pinned OUTSIDE the scroll region
+    expect(modal!.querySelector('h2')).not.toBeNull();
+  });
+
+  it('onboarding mode wraps the same way (wrapper is structural, mode-independent)', () => {
+    invoke.mockImplementation((cmd: string) => Promise.resolve(null));
+    render(<SettingsModal mode="onboarding" onClose={() => {}} />);
+    const modal = document.querySelector('.modal') as HTMLElement | null;
+    expect(modal!.querySelector('.modal-body')).not.toBeNull();
+    expect(modal!.querySelector('h2')!.textContent).toBe('Connect to jotty');
+  });
+});

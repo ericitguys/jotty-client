@@ -8,6 +8,11 @@
 const BLOCK_SEL =
   'p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,pre,div,table,tr,td,th,br,hr';
 
+// R5 (T2-review): script/style carry code, not note text — the walk drops
+// their WHOLE subtree (probe: '<p>x</p><script>var steal = 1</script><p>y</p>'
+// must be 'x y', not 'x var steal = 1 y').
+const SKIP_SEL = 'script,style';
+
 const TEXT_NODE = 3; // DOM Node.TEXT_NODE
 
 export function snippetFromHtml(html: string, max = 70): string {
@@ -20,6 +25,7 @@ export function snippetFromHtml(html: string, max = 70): string {
       return;
     }
     const el = node as Element;
+    if (el.matches?.(SKIP_SEL)) return;
     const isBlock = !!el.matches?.(BLOCK_SEL);
     if (isBlock) parts.push(' ');
     node.childNodes.forEach(walk);

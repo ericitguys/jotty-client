@@ -145,96 +145,101 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{mode === 'onboarding' ? 'Connect to jotty' : 'Settings'}</h2>
-        {mode === 'settings' && <p className="instance-url">{settings?.instanceUrl ?? 'not connected'}</p>}
-        {mode === 'onboarding' && (
-          <>
-            <p>Generate an API key in your jotty web UI: Profile → Settings → API Key → Generate.</p>
-            <input placeholder="https://jotty.example.com" value={url} onChange={(e) => setUrl(e.target.value)} />
-            <input placeholder="ck_..." value={key} onChange={(e) => setKey(e.target.value)} type="password" />
-            <button disabled={busy || !url || !key} onClick={connect}>{busy ? 'Connecting…' : 'Connect'}</button>
-          </>
-        )}
-        {mode === 'settings' && (
-          <>
-            <label>Sync every <input type="number" min={1} value={interval} onChange={(e) => setIntervalMin(Number(e.target.value))} /> minutes</label>
-            <button onClick={async () => { await api.setSyncInterval(interval); }}>Save interval</button>
-            <button onClick={async () => { await api.disconnectInstance(); onClose(); }}>Disconnect</button>
-            <div className="appearance-settings">
-              <h3>Appearance</h3>
-              <label htmlFor="theme-select">Theme</label>
-              <Dropdown
-                value={themeOverride ?? 'auto'}
-                onChange={(v) => setThemeOverride(v === 'auto' ? null : (v as ThemeOverride))}
-                options={[
-                  { id: 'auto', name: 'Follow site' },
-                  { id: 'dark', name: 'Dark', swatch: { bg: '#0e1840', primary: '#9d5ffe' } },
-                  { id: 'light', name: 'Light', swatch: { bg: '#f9f9f9', primary: '#9d5ffe' } },
-                  { id: 'rwmarkable-dark', name: 'Blue (rwMarkable dark)', swatch: { bg: '#111827', primary: '#3b82f6' } },
-                ]}
-              />
-              <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
-            </div>
-            {bdStatus?.supported && (branding?.name || branding?.iconDataUrl) && (
-              <div className="branding-settings">
-                <h3>Launcher branding</h3>
-                <p className="voice-hint">Show the server's name and icon in your system's app menu.</p>
-                {bdStatus.active ? (
-                  <button onClick={async () => {
-                    try { await api.brandingDesktopRemove(); setBdStatus({ supported: true, active: false }); setBdMsg('Menu entry restored to the default.'); }
-                    catch (e) { setBdMsg(fmtErr(e)); }
-                  }}>Restore default</button>
-                ) : (
-                  <button className="primary" onClick={async () => {
-                    try {
-                      await api.brandingDesktopApply(branding?.name ?? null, branding?.iconDataUrl ?? null);
-                      setBdStatus({ supported: true, active: true });
-                      setBdMsg('Menu entry updated — the change appears in your app menu within seconds.');
-                    } catch (e) { setBdMsg(fmtErr(e)); }
-                  }}>Brand this installation</button>
+        {/* L9 (task 5): the scroll region is the modal BODY — the h2 stays
+            pinned on top while the sections scroll inside. Structure otherwise
+            untouched; section elements keep their existing classes. */}
+        <div className="modal-body">
+          {mode === 'settings' && <p className="instance-url">{settings?.instanceUrl ?? 'not connected'}</p>}
+          {mode === 'onboarding' && (
+            <>
+              <p>Generate an API key in your jotty web UI: Profile → Settings → API Key → Generate.</p>
+              <input placeholder="https://jotty.example.com" value={url} onChange={(e) => setUrl(e.target.value)} />
+              <input placeholder="ck_..." value={key} onChange={(e) => setKey(e.target.value)} type="password" />
+              <button disabled={busy || !url || !key} onClick={connect}>{busy ? 'Connecting…' : 'Connect'}</button>
+            </>
+          )}
+          {mode === 'settings' && (
+            <>
+              <label>Sync every <input type="number" min={1} value={interval} onChange={(e) => setIntervalMin(Number(e.target.value))} /> minutes</label>
+              <button onClick={async () => { await api.setSyncInterval(interval); }}>Save interval</button>
+              <button onClick={async () => { await api.disconnectInstance(); onClose(); }}>Disconnect</button>
+              <div className="appearance-settings">
+                <h3>Appearance</h3>
+                <label htmlFor="theme-select">Theme</label>
+                <Dropdown
+                  value={themeOverride ?? 'auto'}
+                  onChange={(v) => setThemeOverride(v === 'auto' ? null : (v as ThemeOverride))}
+                  options={[
+                    { id: 'auto', name: 'Follow site' },
+                    { id: 'dark', name: 'Dark', swatch: { bg: '#0e1840', primary: '#9d5ffe' } },
+                    { id: 'light', name: 'Light', swatch: { bg: '#f9f9f9', primary: '#9d5ffe' } },
+                    { id: 'rwmarkable-dark', name: 'Blue (rwMarkable dark)', swatch: { bg: '#111827', primary: '#3b82f6' } },
+                  ]}
+                />
+                <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
+              </div>
+              {bdStatus?.supported && (branding?.name || branding?.iconDataUrl) && (
+                <div className="branding-settings">
+                  <h3>Launcher branding</h3>
+                  <p className="voice-hint">Show the server's name and icon in your system's app menu.</p>
+                  {bdStatus.active ? (
+                    <button onClick={async () => {
+                      try { await api.brandingDesktopRemove(); setBdStatus({ supported: true, active: false }); setBdMsg('Menu entry restored to the default.'); }
+                      catch (e) { setBdMsg(fmtErr(e)); }
+                    }}>Restore default</button>
+                  ) : (
+                    <button className="primary" onClick={async () => {
+                      try {
+                        await api.brandingDesktopApply(branding?.name ?? null, branding?.iconDataUrl ?? null);
+                        setBdStatus({ supported: true, active: true });
+                        setBdMsg('Menu entry updated — the change appears in your app menu within seconds.');
+                      } catch (e) { setBdMsg(fmtErr(e)); }
+                    }}>Brand this installation</button>
+                  )}
+                  {bdMsg && <p className="voice-hint">{bdMsg}</p>}
+                </div>
+              )}
+              <div className="ai-settings">
+                <h3>AI server (OpenWebUI)</h3>
+                <input placeholder="https://ai.example.com" value={aiBase} onChange={(e) => setAiBase(e.target.value)} />
+                <input placeholder={aiHas ? 'API key stored' : 'sk-...'} value={aiKey} onChange={(e) => setAiKey(e.target.value)} type="password" />
+                <input list="ai-model-list" placeholder="Tidy model" value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
+                <datalist id="ai-model-list">{models.map((m) => <option key={m} value={m} />)}</datalist>
+                <input placeholder="Language hint (optional, e.g. en)" value={aiLang} onChange={(e) => setAiLang(e.target.value)} />
+                <div className="voice-actions">
+                  <button onClick={saveAi} disabled={aiBusy}>{aiBusy ? 'Working…' : 'Save'}</button>
+                  <button onClick={testAi} disabled={aiBusy}>Test connection</button>
+                </div>
+                {aiMsg && <p className="voice-hint">{aiMsg}</p>}
+              </div>
+              <div className="updater">
+                <span className="updater-version">Version {updateInfo?.current ?? 'unknown'}</span>
+                {phase.kind === 'checking' && <span>Checking…</span>}
+                {phase.kind === 'upToDate' && <span className="updater-ok">Up to date</span>}
+                {phase.kind === 'available' && (
+                  <>
+                    <span className="updater-avail">Update available: {updateInfo?.latest}</span>
+                    {isAndroid
+                      ? <button onClick={openAndroidUpdate} disabled={!updateInfo?.downloadUrl}>Open download</button>
+                      : <button onClick={runUpdate} disabled={!updateInfo?.downloadUrl}>Download &amp; install</button>}
+                  </>
                 )}
-                {bdMsg && <p className="voice-hint">{bdMsg}</p>}
+                {updateHint && <span className="updater-ok">{updateHint}</span>}
+                {phase.kind === 'downloading' && <span>Downloading…</span>}
+                {phase.kind === 'installing' && <span>Installing (confirm in the password dialog)…</span>}
+                {phase.kind === 'installed' && <span className="updater-ok">Installed — restart to finish</span>}
+                {phase.kind === 'idle' && updateInfo?.available && (
+                  isAndroid
+                    ? <button onClick={openAndroidUpdate} disabled={!updateInfo.downloadUrl}>Open download</button>
+                    : <button onClick={runUpdate} disabled={!updateInfo.downloadUrl}>Download &amp; install</button>
+                )}
+                <button onClick={check}>Check for updates</button>
+                <button onClick={() => api.restartApp()}>Restart</button>
               </div>
-            )}
-            <div className="ai-settings">
-              <h3>AI server (OpenWebUI)</h3>
-              <input placeholder="https://ai.example.com" value={aiBase} onChange={(e) => setAiBase(e.target.value)} />
-              <input placeholder={aiHas ? 'API key stored' : 'sk-...'} value={aiKey} onChange={(e) => setAiKey(e.target.value)} type="password" />
-              <input list="ai-model-list" placeholder="Tidy model" value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
-              <datalist id="ai-model-list">{models.map((m) => <option key={m} value={m} />)}</datalist>
-              <input placeholder="Language hint (optional, e.g. en)" value={aiLang} onChange={(e) => setAiLang(e.target.value)} />
-              <div className="voice-actions">
-                <button onClick={saveAi} disabled={aiBusy}>{aiBusy ? 'Working…' : 'Save'}</button>
-                <button onClick={testAi} disabled={aiBusy}>Test connection</button>
-              </div>
-              {aiMsg && <p className="voice-hint">{aiMsg}</p>}
-            </div>
-            <div className="updater">
-              <span className="updater-version">Version {updateInfo?.current ?? 'unknown'}</span>
-              {phase.kind === 'checking' && <span>Checking…</span>}
-              {phase.kind === 'upToDate' && <span className="updater-ok">Up to date</span>}
-              {phase.kind === 'available' && (
-                <>
-                  <span className="updater-avail">Update available: {updateInfo?.latest}</span>
-                  {isAndroid
-                    ? <button onClick={openAndroidUpdate} disabled={!updateInfo?.downloadUrl}>Open download</button>
-                    : <button onClick={runUpdate} disabled={!updateInfo?.downloadUrl}>Download &amp; install</button>}
-                </>
-              )}
-              {updateHint && <span className="updater-ok">{updateHint}</span>}
-              {phase.kind === 'downloading' && <span>Downloading…</span>}
-              {phase.kind === 'installing' && <span>Installing (confirm in the password dialog)…</span>}
-              {phase.kind === 'installed' && <span className="updater-ok">Installed — restart to finish</span>}
-              {phase.kind === 'idle' && updateInfo?.available && (
-                isAndroid
-                  ? <button onClick={openAndroidUpdate} disabled={!updateInfo.downloadUrl}>Open download</button>
-                  : <button onClick={runUpdate} disabled={!updateInfo.downloadUrl}>Download &amp; install</button>
-              )}
-              <button onClick={check}>Check for updates</button>
-              <button onClick={() => api.restartApp()}>Restart</button>
-            </div>
-          </>
-        )}
-        {error && <p className="error">{error}</p>}
+            </>
+          )}
+          {error && <p className="error">{error}</p>}
+        </div>
       </div>
     </div>
   );

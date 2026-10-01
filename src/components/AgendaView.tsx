@@ -108,10 +108,10 @@ export default function AgendaView() {
                    data-id={entry.itemLocalId}
                    onClick={() => open(entry)}>
                 <strong className="agenda-text">{entry.text}</strong>
-                <span className="agenda-list">{entry.checklistTitle}</span>
-                {time && <span className="agenda-time">{time}</span>}
+                <span className="agenda-list meta-line">{entry.checklistTitle}</span>
+                {time && <span className="agenda-time meta-line">{time}</span>}
                 {entry.reminderDatetime && (
-                  <span className={`agenda-bell${entry.reminderNotified ? ' notified' : ''}`}
+                  <span className={`agenda-bell meta-line${entry.reminderNotified ? ' notified' : ''}`}
                         title={new Date(entry.reminderDatetime).toLocaleString()}>
                     <Icon name="bell" size={11}/> {formatReminderTime(entry.reminderDatetime)}
                   </span>

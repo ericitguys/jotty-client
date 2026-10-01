@@ -305,4 +305,72 @@ describe('ChecklistView', () => {
       scroll.restore();
     }
   });
+
+  it('R6: add_item also fires the store catalog refresh (refreshAll), reload staying intact', async () => {
+    let load = 0;
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') {
+        load++;
+        return Promise.resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+          items: load === 1 ? items : [...items,
+            { localId: 'i3', checklistId: 'l1', parentLocalId: null, text: 'c', completed: false, position: 2, dirty: false, children: [] }] });
+      }
+      return Promise.resolve(null); // add_item + every refreshAll fetch resolve plainly
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('Add an item ⏎'), { target: { value: 'c' } });
+    fireEvent.click(screen.getByText('Add'));
+    // existing reload() behavior intact: the row re-render rides the SECOND get_checklist payload
+    await waitFor(() => expect(screen.getByText('c')).toBeInTheDocument());
+    // refreshAll fingerprint — the same store catalog refetch the saveMeta path uses
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_checklists'));
+    expect(invoke).toHaveBeenCalledWith('list_notes');
+  });
+
+  it('R6: toggle, rename and delete each fire the catalog refresh too', async () => {
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    invoke.mockClear();
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_checked', { checklistId: 'l1', itemLocalId: 'i1', checked: true }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_checklists')); // refreshAll rode the op
+    invoke.mockClear();
+    const input = screen.getByText('a').closest('.row-line')!
+      .querySelector<HTMLInputElement>('input:not([type="checkbox"])')!; // the rename overlay input
+    fireEvent.change(input, { target: { value: 'renamed' } });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_text', { checklistId: 'l1', itemLocalId: 'i1', text: 'renamed' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_checklists'));
+    invoke.mockClear();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete item' })[0]);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_item', { checklistId: 'l1', itemLocalId: 'i1' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_checklists'));
+  });
+
+  it('R7 companion pin: an open child of a done parent renders attached; the strike scope covers only the own line', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({
+        id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [
+          { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'done parent', completed: true, position: 0, dirty: false,
+            children: [
+              { localId: 'c1', checklistId: 'l1', parentLocalId: 'i1', text: 'open child attached', completed: false, position: 0, dirty: false, children: [] },
+            ] },
+          { localId: 'i2', checklistId: 'l1', parentLocalId: null, text: 'open top', completed: false, position: 1, dirty: false, children: [] },
+        ],
+      });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('open child attached')).toBeInTheDocument());
+    const done = document.querySelector('#checklist-view > ul > li.completed-item') as HTMLElement | null;
+    expect(done).not.toBeNull();
+    // children render attached to their parent wherever it sits (grouped done
+    // section): the old UNSCOPED strike matcher would own BOTH lines
+    expect(Array.from(done!.querySelectorAll('.item-text')).map((e) => e.textContent))
+      .toEqual(['done parent', 'open child attached']);
+    // the SCOPED strike shape (the styles.css selector) owns ONLY the own line
+    expect(Array.from(document.querySelectorAll('#checklist-view > ul > li.completed-item > .row-line > .item-text'))
+      .map((e) => e.textContent)).toEqual(['done parent']);
+  });
 });
