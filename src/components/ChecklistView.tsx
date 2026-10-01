@@ -149,7 +149,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
               <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
               {item.targetDate && <span className="item-date-chip">{item.targetDate}</span>}
               <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
-              <button onClick={() => remove(item)}><Icon name="x" size={12}/></button>
+              <button aria-label="Delete item" title="Delete" onClick={() => remove(item)}><Icon name="x" size={12}/></button>
             </div>
             <ul>
               {(item.children ?? []).map((c) => (
@@ -159,7 +159,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
                     <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
                     {c.targetDate && <span className="item-date-chip">{c.targetDate}</span>}
                     <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
-                    <button onClick={() => remove(c)}><Icon name="x" size={12}/></button>
+                    <button aria-label="Delete subitem" title="Delete" onClick={() => remove(c)}><Icon name="x" size={12}/></button>
                   </div>
                 </li>
               ))}
