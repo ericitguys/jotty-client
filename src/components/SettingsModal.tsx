@@ -151,12 +151,14 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
         <div className="modal-body">
           {mode === 'settings' && <p className="instance-url">{settings?.instanceUrl ?? 'not connected'}</p>}
           {mode === 'onboarding' && (
-            <>
+            // S4 onboarding hierarchy pass — wrapper is VISUAL ONLY: the connect
+            // flow (busy/error/validation, api.connectInstance) stays byte-identical.
+            <div className="connect-form">
               <p>Generate an API key in your jotty web UI: Profile → Settings → API Key → Generate.</p>
               <input placeholder="https://jotty.example.com" value={url} onChange={(e) => setUrl(e.target.value)} />
               <input placeholder="ck_..." value={key} onChange={(e) => setKey(e.target.value)} type="password" />
               <button disabled={busy || !url || !key} onClick={connect}>{busy ? 'Connecting…' : 'Connect'}</button>
-            </>
+            </div>
           )}
           {mode === 'settings' && (
             <>

@@ -135,3 +135,16 @@ describe('ChecklistList row meta + header buttons (tier A task 3)', () => {
     expect(RULE('.head-actions')).toContain('flex-wrap: wrap');
   });
 });
+
+describe('selected-chip contrast (tier B task 4, rider c)', () => {
+  it('li.selected .chip text rides the per-theme --accent-contrast token (never literal white)', () => {
+    const rule = RULE('li.selected .chip');
+    expect(rule).toContain('var(--accent-contrast)');
+    expect(rule).toContain('var(--accent-soft)'); // the tint background survives
+    expect(rule).not.toContain('#fff');           // white-on-light-tint contrast class (m8)
+    // one token, three theme blocks: dark ink on the light tint, white on the dark blocks
+    expect(RULE(':root')).toContain('--accent-contrast: #fff');
+    expect(RULE("#app[data-theme='light']")).toContain('--accent-contrast: #1b1b1f');
+    expect(RULE("#app[data-theme='rwmarkable-dark']")).toContain('--accent-contrast: #fff');
+  });
+});

@@ -373,4 +373,70 @@ describe('ChecklistView', () => {
     expect(Array.from(document.querySelectorAll('#checklist-view > ul > li.completed-item > .row-line > .item-text'))
       .map((e) => e.textContent)).toEqual(['done parent']);
   });
+
+  it('rider a: checklist-view delete buttons carry the row-del class (top-level + child rows)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return Promise.resolve({
+        id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false,
+        items: [{
+          localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false,
+          children: [{ localId: 'c1', checklistId: 'l1', parentLocalId: 'i1', text: 'kid', completed: false, position: 0, dirty: false, children: [] }],
+        }],
+      });
+      return Promise.resolve({});
+    });
+    render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('kid')).toBeInTheDocument());
+    const dels = document.querySelectorAll('#checklist-view .row-del');
+    expect(dels.length).toBe(2); // top-level AND child rows join the uniform affordance (spec L4 half)
+    expect(dels[0].getAttribute('aria-label')).toBe('Delete item');
+    expect(dels[1].getAttribute('aria-label')).toBe('Delete subitem'); // a11y names never change
+  });
+
+  it('rider a: the .row-del hover-reveal rule covers the checklist view (selector-list extension)', () => {
+    const css = readFileSync(join(here, '..', 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const i = css.indexOf('#notes li:hover .row-del');
+    expect(i).toBeGreaterThan(-1);
+    // the extension joins the EXISTING hover-reveal rule's selector list (T5-review
+    // precedent: extend lists, never duplicate rules the static fences read first)
+    const selList = css.slice(i, css.indexOf('{', i));
+    expect(selList).toContain('#checklist-view li:hover .row-del');
+  });
+
+  it('rider g (R-B5 evidence): warm mount renders the category dropdown from the STORE tree before listMeta loads', async () => {
+    useStore.setState({
+      categories: {
+        notes: [{ name: 'Home', path: 'Home', count: 1, level: 0 }],
+        checklists: [{ name: 'Work', path: 'Work', count: 2, level: 0 }],
+      },
+    });
+    // listMeta still loading: the mount-resolve never fires during the asserts
+    invoke.mockImplementation((cmd: string) =>
+      cmd === 'get_checklist' ? new Promise(() => { /* pending — the mount window */ }) : Promise.resolve(null));
+    render(<ChecklistView checklistId="l1" />);
+    // pre-listMeta window: the Dropdown (store-derived options) is up, NOT the fallback input
+    // — catOptions derives from store categories alone, so the ~120ms wire never downgrades
+    expect(screen.getByRole('button', { name: 'Category' })).toBeInTheDocument();
+    expect(document.querySelector('.cl-category')).toBeNull();
+  });
+
+  it('rider g (R-B5 re-rule): a mount-window blur with an EMPTY title never commits update_checklist', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') return new Promise((resolve) =>
+        setTimeout(() => resolve({ id: 'l1', title: 'L', category: 'Home', updatedAt: null, dirty: false, items }), 50));
+      return Promise.resolve(null);
+    });
+    render(<ChecklistView checklistId="l1" />);
+    const titleInput = document.querySelector('.cl-title') as HTMLInputElement; // renders pre-load (controlled, value '')
+    expect(titleInput.value).toBe('');   // the mount window: title state is still ''
+    fireEvent.blur(titleInput);          // stray blur DURING the ~120ms window
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());  // the load resolved
+    await waitFor(() => expect(screen.getByDisplayValue('L')).toBeInTheDocument());
+    // the empty-title stray blur must NEVER commit — not now, not after the load
+    expect(invoke).not.toHaveBeenCalledWith('update_checklist', expect.objectContaining({ id: 'l1' }));
+    // the commit path stays live for a REAL title (non-empty blur commits as before)
+    fireEvent.change(titleInput, { target: { value: 'Renamed' } });
+    fireEvent.blur(titleInput);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'Renamed', category: 'Home' }));
+  });
 });

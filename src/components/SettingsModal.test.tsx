@@ -317,3 +317,15 @@ describe('reduce motion setting (tier B task 1)', () => {
     expect(window.localStorage.getItem('jotty.reduce-motion')).toBeNull();
   });
 });
+
+describe('SettingsModal connect-form wrapper (tier B task 4)', () => {
+  it('onboarding wraps the connect cluster in .connect-form (visual only — trio rides inside)', () => {
+    invoke.mockImplementation(() => Promise.resolve(null));
+    render(<SettingsModal mode="onboarding" onClose={() => {}} onConnected={() => {}} />);
+    const form = document.querySelector('.modal-body > .connect-form') as HTMLElement;
+    // the hint + url/key inputs + connect button live INSIDE the wrapper
+    expect(form.querySelector('input[placeholder="https://jotty.example.com"]')).not.toBeNull();
+    expect(form.querySelector('input[placeholder="ck_..."]')).not.toBeNull();
+    expect((form.querySelector('button') as HTMLButtonElement).textContent).toBe('Connect');
+  });
+});

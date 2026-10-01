@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
-import AgendaView from './AgendaView';
+import AgendaView, { agendaDueLabel } from './AgendaView';
+import { dateLabel } from './calendarGrid';
 import { useStore } from '../stores/store';
 import type { AgendaEntry } from '../api/types';
 
@@ -201,5 +202,31 @@ describe('AgendaView', () => {
     expect(bell.tagName).toBe('SPAN');
     expect(bell.getAttribute('title')).toBeTruthy();
     expect(bell.querySelector('svg')).not.toBeNull();
+  });
+
+  // tier B S4 — right-side due chip (datedAtNoon anchors both fixtures at LOCAL
+  // noon, so the local date key is drift-immune exactly like the bucket tests)
+  it('entries render a right-side due chip; overdue + today rows get the group classes', async () => {
+    const rows = [
+      entry({ itemLocalId: 'i-over', text: 'overdue thing', targetDate: datedAtNoon(-3) }),
+      entry({ itemLocalId: 'i-today', text: 'today thing', targetDate: datedAtNoon(0) }),
+    ];
+    invoke.mockImplementation((cmd: string) => (cmd === 'list_agenda' ? Promise.resolve(rows) : Promise.resolve(null)));
+    render(<AgendaView />);
+    await waitFor(() => expect(screen.getByText('overdue thing')).toBeInTheDocument());
+    expect(document.querySelector('.agenda-entry .agenda-due.overdue')).not.toBeNull();
+    expect(document.querySelector('.agenda-entry .agenda-due.today')).not.toBeNull();
+  });
+});
+
+describe('agendaDueLabel (tier B task 4)', () => {
+  it('today → Today', () => expect(agendaDueLabel('2026-10-01', '2026-10-01', '2026-10-02', '2026-10-08')).toBe('Today'));
+  it('tomorrow → Tomorrow', () => expect(agendaDueLabel('2026-10-02', '2026-10-01', '2026-10-02', '2026-10-08')).toBe('Tomorrow'));
+  it('past → localized date label (dateLabel contract)', () => {
+    expect(agendaDueLabel('2020-05-05', '2026-10-01', '2026-10-02', '2026-10-08')).toBe(dateLabel('2020-05-05'));
+  });
+  it('unparseable → raw value', () => expect(agendaDueLabel('weird', '2026-10-01', '2026-10-02', '2026-10-08')).toBe('weird'));
+  it('within-7-days → weekday label (locale-rendered, type-asserted)', () => {
+    expect(typeof agendaDueLabel('2026-10-03', '2026-10-01', '2026-10-02', '2026-10-08')).toBe('string');
   });
 });

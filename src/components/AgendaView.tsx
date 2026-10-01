@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import type { AgendaEntry } from '../api/types';
 import { formatReminderTime } from './KanbanBoard';
+import { dateLabel } from './calendarGrid';
 import { useStore } from '../stores/store';
 import { Icon } from './icons';
 
@@ -13,6 +14,23 @@ import { Icon } from './icons';
 function dateKey(iso: string): string {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Relative-day label for an entry's due chip (tier B S4). y is a local
+ * 'YYYY-MM-DD' key (the file's dateKey), todayKey/tomorrowKey/weekKey the
+ * component's boundaries. Today/Tomorrow read as words; anything inside the
+ * Next-7 window reads as its weekday; overdue (below todayKey) falls back to
+ * the dateLabel contract — string-key lexicography would otherwise swallow
+ * past dates into the weekday branch. Unparseable input echoes itself. */
+export function agendaDueLabel(y: string, todayKey: string, tomorrowKey: string, weekKey: string): string {
+  if (y === todayKey) return 'Today';
+  if (y === tomorrowKey) return 'Tomorrow';
+  if (y < todayKey) return dateLabel(y);
+  if (y <= weekKey) {
+    const d = new Date(`${y}T12:00:00`);
+    return isNaN(d.getTime()) ? y : d.toLocaleDateString([], { weekday: 'short' });
+  }
+  return dateLabel(y);
 }
 
 // Bucket order is the rendered order; completed entries always land last.
@@ -114,6 +132,11 @@ export default function AgendaView() {
                   <span className={`agenda-bell meta-line${entry.reminderNotified ? ' notified' : ''}`}
                         title={new Date(entry.reminderDatetime).toLocaleString()}>
                     <Icon name="bell" size={11}/> {formatReminderTime(entry.reminderDatetime)}
+                  </span>
+                )}
+                {entry.targetDate && (
+                  <span className={`agenda-due${g.name === 'Overdue' ? ' overdue' : g.name === 'Today' ? ' today' : ''}`}>
+                    {agendaDueLabel(dateKey(entry.targetDate), todayKey, tomorrowKey, weekKey)}
                   </span>
                 )}
               </div>
