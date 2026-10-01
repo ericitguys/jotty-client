@@ -6,7 +6,7 @@
   --bg: #0e1840;
   --panel: #131c46;            /* cards / modal surface: bg + subtle lift */
   --row: #1d1a55;              /* item rows: secondary purple blended over bg */
-  --row-hover: #26205e;
+  --row-hover: #2c256d;
   --secondary: #4c1684;        /* background-secondary (chips, strong fills) */
   --fg: #f9f9f9;
   --muted: #a39caf;
@@ -31,6 +31,10 @@
   --surface: #1b2233;
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* tier B S2 — motion tokens */
+  --motion-fast: 120ms;
+  --motion-med: 180ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
 }
 
 /* light theme (web preference mirror: preferredTheme light|dark|system).
@@ -124,6 +128,17 @@ button {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:hover { background: var(--row-hover); border-color: var(--border-soft); }
+
+/* tier B S2 — motion: compositor-friendly transitions only (opacity/transform/
+   shadow/colors; layout properties are fence-banned). Menus/modals are always
+   mounted on open in this app (JSX-conditional), so the transition acts on
+   MOUNT-STYLE the browser can't interpolate — the visible effect is a fast
+   fade of the backdrop + color/softening of surfaces, and hover/focus states
+   gain the smooth timing. This is the R-B2 ruling: NO new mount-animation
+   machinery in WebKitGTK; the probe verifies menus/modals still position.
+   (The rule sits above every rule whose surfaces it names — the first
+   substring occurrence of each selector is what the static fences read.) */
+.modal, .drawer { transition: opacity var(--motion-med) var(--ease-out), transform var(--motion-med) var(--ease-out); }
 button.primary, .modal > button, .modal-body > button {
   background: var(--accent);
   border-color: var(--accent);
@@ -549,7 +564,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .edt-codelang { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .edt-codelang .jotty-dropdown { min-width: 170px; }
 .edt-codelang .jotty-dropdown-button { padding: 5px 10px; font-size: 12px; }
-.edt-codelang .jotty-dropdown-menu { max-height: 260px; overflow-y: auto; right: auto; left: 0; background: var(--surface); border-color: var(--border-soft); box-shadow: var(--shadow-2); }
+.edt-codelang .jotty-dropdown-menu { max-height: 260px; overflow-y: auto; right: auto; left: 0; background: var(--surface); border-color: var(--border-soft); box-shadow: var(--shadow-2); transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out); }
 .code-lang-hint { color: var(--muted); font-size: 11px; }
 #note-editor .tiptap ul { padding-left: 1.3em; }
 #saving { color: var(--amber); font-size: 12px; align-self: flex-end; }
@@ -636,6 +651,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   box-shadow: var(--shadow-2);
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out);
 }
 .edt-bubble button {
   display: inline-flex;
@@ -666,6 +682,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   box-shadow: var(--shadow-2);
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out);
 }
 .edt-tablebar button {
   display: inline-flex;
@@ -699,6 +716,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   box-shadow: var(--shadow-2);
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out);
 }
 .edt-slash-list { display: flex; flex-direction: column; gap: 2px; }
 .edt-slash-item {
@@ -834,6 +852,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   box-shadow: var(--shadow-2);
   max-height: 12rem;
   overflow-y: auto;
+  transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out);
 }
 .jotty-dropdown-option {
   width: 100%;
@@ -921,6 +940,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   /* P2 task 4: 70 — above every editor overlay (bubble pill, slash popup,
      dropdowns) so the link prompt never stacks under one. */
   z-index: 70;
+  transition: opacity var(--motion-med) var(--ease-out);
 }
 /* PromptModal card (P2 task 4): narrower prompt-style dialog, same token
    family as .modal (panel surface, soft border) with the tighter 8px radius. */
@@ -1056,7 +1076,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
    substring of '.kanban-cards' — the card rule must come first so the
    static fence reads the card's own block. The two selectors are disjoint
    (cards are CHILDREN of the wrap), so the order is behaviorally neutral. */
-.kanban-card { position: relative; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; }
+.kanban-card { position: relative; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; transition: background-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
 .kanban-cards { display: flex; flex-direction: column; gap: 6px; }
 .kanban-card.completed-item .kanban-card-text { text-decoration: line-through; opacity: 0.65; }
 .kanban-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
@@ -1068,7 +1088,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .kanban-add-actions { display: flex; gap: 6px; }
 .kanban-add-actions button { flex: 1; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 13.5px; }
 .kanban-add-actions .kanban-add-confirm { background: var(--accent); border-color: transparent; color: #fff; }
-.kanban-menu { position: absolute; z-index: 60; top: 100%; left: 8px; right: 8px; margin-top: 2px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: var(--shadow-2); display: flex; flex-direction: column; padding: 4px 0; }
+.kanban-menu { position: absolute; z-index: 60; top: 100%; left: 8px; right: 8px; margin-top: 2px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; box-shadow: var(--shadow-2); display: flex; flex-direction: column; padding: 4px 0; transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out); }
 .kanban-menu button { background: transparent; border: none; text-align: left; padding: 7px 12px; border-radius: 0; font-size: 13.5px; }
 .kanban-menu button:hover { background: var(--row-hover); }
 .kanban-menu .kanban-danger { color: var(--danger); }
@@ -1090,6 +1110,16 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .kanban-reminder-edit button:hover { background: var(--row-hover); }
 .kanban-backdrop { position: fixed; inset: 0; z-index: 55; background: transparent; }
 
+/* tier B S2 — reduced motion, two layers: the OS preference and the in-app
+   setting (#app[data-reduce-motion="true"] from Settings → Appearance). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0ms !important; animation: none !important; }
+}
+[data-reduce-motion="true"] *, [data-reduce-motion="true"] *::before, [data-reduce-motion="true"] *::after {
+  transition-duration: 0ms !important;
+  animation: none !important;
+}
+
 /* ---------- mobile (phones, e.g. Pixel 9: 412×916 CSS px) ---------- */
 /* Desktop is untouched: everything below applies only at narrow widths.
    The drawer/backdrop/menu/back buttons are rendered by App at all sizes and
@@ -1109,7 +1139,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
     z-index: 60;
     background: var(--bg);
     transform: translateX(-103%);
-    transition: transform 0.18s ease;
+    transition: transform var(--motion-med) var(--ease-out);
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
   }
   #app.drawer-open #sidebar { transform: translateX(0); }

@@ -124,3 +124,44 @@ describe('ux polish task 5 — static CSS ledger (modal scroll, agenda meta, rid
     expect(css5).not.toContain('#checklist-view li.completed-item .item-text');
   });
 });
+
+const cssStripped = () => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+describe('tier B motion tokens (task 1)', () => {
+  it('duration + ease tokens exist in :root', () => {
+    const root = RULE(':root');
+    expect(root).toContain('--motion-fast: 120ms');
+    expect(root).toContain('--motion-med: 180ms');
+    expect(root).toContain('--ease-out: cubic-bezier(0.2, 0, 0, 1)');
+  });
+  it('fast-motion surfaces: menus + editor overlays transition on the fast token', () => {
+    for (const sel of ['.jotty-dropdown-menu', '.kanban-menu', '.edt-slash-menu', '.edt-bubble', '.edt-tablebar']) {
+      const rule = RULE(sel);
+      expect(rule).toMatch(/transition:[^;]*var\(--motion-fast\)/);
+    }
+  });
+  it('med-motion surfaces: modal + backdrop + drawer transition on the med token', () => {
+    for (const sel of ['.modal', '.modal-backdrop', '.drawer']) {
+      const rule = RULE(sel);
+      expect(rule).toMatch(/transition:[^;]*var\(--motion-med\)/);
+    }
+  });
+  it('cards + li.selected transition colors only (no transform/movement)', () => {
+    const card = RULE('.kanban-card');
+    expect(card).toMatch(/transition:[^;]*(background-color|box-shadow)/);
+    expect(card).not.toMatch(/transition:[^;]*transform/);
+  });
+  it('NO layout-property transitions anywhere in the sheet', () => {
+    for (const m of cssStripped().matchAll(/transition(?:-property)?\s*:[^;}]*/g)) {
+      expect(m[0]).not.toMatch(/\b(width|height|top|left|margin)\b/);
+    }
+  });
+  it('NO @keyframes anywhere', () => {
+    expect(cssStripped()).not.toContain('@keyframes');
+  });
+  it('reduced-motion layers exist (OS + in-app)', () => {
+    const s = cssStripped();
+    expect(s).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(s).toContain('[data-reduce-motion="true"]');
+  });
+});

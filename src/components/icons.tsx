@@ -1,20 +1,20 @@
 import type { ReactElement } from 'react';
 
 // Single-stroke icon module (tier A task 1): the app's emoji/text-glyph buttons
-// (mic/speaker, ballot-checked box, upload arrow, hamburger, note memo, bell,
-// close-x, back-arrow) become lucide shapes. Path data is hand-embedded from
-// lucide.dev icons (lucide 0.4xx, ISC license — https://github.com/lucide-icons/lucide)
-// so there is NO runtime icon dependency; the stroke discipline (currentColor,
-// 1.8px, round caps) lives on the shared <svg> shell below.
+// (mic/speaker, ballot-checked box, close-x, back-arrow, bell, note memo, …) become lucide
+// shapes. Path data is COPIED VERBATIM — selected icons at tier A (2026-10-01), `sun`/`more`
+// at tier B — from lucide.dev (lucide ~0.4x, ISC license — https://github.com/lucide-icons/
+// lucide); several ride feather-era coordinates. NO runtime icon dependency; the stroke
+// discipline (currentColor, 1.8px, round caps) lives on the shared <svg> shell below.
 //
-// Map shape: Record<IconName, ReactElement> — a fragment of <path>/<circle>/
-// <rect> primitives per icon (the lucide settings gear is a multi-command path +
-// the hub circle). Every rendered svg is a 24-viewBox, fill:none,
-// stroke:currentColor shape that scales with the `size` prop.
+// Map shape: Record<IconName, ReactElement> — a fragment of <path>/<circle>/<rect>
+// primitives per icon (the lucide settings gear is a multi-command path + the hub circle).
+// Every rendered svg is a 24-viewBox, fill:none, stroke:currentColor shape that scales
+// with the `size` prop.
 
 export type IconName =
   | 'mic' | 'plus' | 'search' | 'settings' | 'refresh' | 'trash' | 'x' | 'check' | 'note'
-  | 'list' | 'columns' | 'calendar' | 'bell' | 'menu' | 'back' | 'arrow-up' | 'clock';
+  | 'list' | 'columns' | 'calendar' | 'bell' | 'menu' | 'back' | 'arrow-up' | 'clock' | 'sun' | 'more';
 
 type IconProps = {
   name: IconName;
@@ -133,6 +133,26 @@ const PATHS: Record<IconName, ReactElement> = {
     <>
       <circle cx={12} cy={12} r={9} />
       <path d="M12 7v5l3 2" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx={12} cy={12} r={4} />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </>
+  ),
+  more: (
+    <>
+      <circle cx={12} cy={12} r={1} />
+      <circle cx={19} cy={12} r={1} />
+      <circle cx={5} cy={12} r={1} />
     </>
   ),
 };

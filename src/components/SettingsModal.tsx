@@ -16,7 +16,7 @@ type UpdatePhase =
 export default function SettingsModal({ mode, onClose, onConnected }: {
   mode: 'onboarding' | 'settings'; onClose: () => void; onConnected?: () => void;
 }) {
-  const { themeOverride, setThemeOverride } = useStore();
+  const { themeOverride, setThemeOverride, reduceMotion, setReduceMotion } = useStore();
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
   const [interval, setIntervalMin] = useState(5);
@@ -176,6 +176,10 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
                     { id: 'rwmarkable-dark', name: 'Blue (rwMarkable dark)', swatch: { bg: '#111827', primary: '#3b82f6' } },
                   ]}
                 />
+                <label htmlFor="reduce-motion" className="reduce-motion-row">
+                  <input id="reduce-motion" type="checkbox" checked={reduceMotion}
+                         onChange={(e) => setReduceMotion(e.target.checked)} /> Reduce motion
+                </label>
                 <p className="voice-hint">Follow site mirrors your jotty instance's theme.</p>
               </div>
               {bdStatus?.supported && (branding?.name || branding?.iconDataUrl) && (

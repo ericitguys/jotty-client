@@ -302,3 +302,18 @@ describe('SettingsModal scroll wrapper (tier A task 5, L9)', () => {
     expect(modal!.querySelector('h2')!.textContent).toBe('Connect to jotty');
   });
 });
+
+describe('reduce motion setting (tier B task 1)', () => {
+  it('checkbox writes the store + localStorage key (on → set, off → removed)', async () => {
+    const { useStore } = await import('../stores/store');
+    useStore.setState({ reduceMotion: false });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const box = screen.getByLabelText('Reduce motion');
+    fireEvent.click(box);
+    expect(useStore.getState().reduceMotion).toBe(true);
+    expect(window.localStorage.getItem('jotty.reduce-motion')).toBe('true');
+    fireEvent.click(box);
+    expect(useStore.getState().reduceMotion).toBe(false);
+    expect(window.localStorage.getItem('jotty.reduce-motion')).toBeNull();
+  });
+});

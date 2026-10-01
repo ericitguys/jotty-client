@@ -23,7 +23,7 @@ type VoiceFlow =
   | { mode: 'retranscribe'; noteId: string };
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, themeOverride, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, themeOverride, reduceMotion, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [voice, setVoice] = useState<VoiceFlow | null>(null);
   const [resumeRows, setResumeRows] = useState<VoiceRecordingDto[] | null>(null);
@@ -185,7 +185,7 @@ export default function App() {
   }
 
   return (
-    <div id="app" data-theme={dataTheme} className={drawerOpen ? 'drawer-open' : ''}>
+    <div id="app" data-theme={dataTheme} data-reduce-motion={reduceMotion ? 'true' : undefined} className={drawerOpen ? 'drawer-open' : ''}>
     <header className="topbar">
       <button
         className="menu-btn"

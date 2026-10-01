@@ -25,6 +25,9 @@ interface AppState {
   /** In-app theme override (0.10.8): null = follow the site mirror. */
   themeOverride: T.ThemeOverride | null;
   setThemeOverride: (v: T.ThemeOverride | null) => void;
+  /** Tier B S2: prefers-reduced-motion in-app override (Settings → Appearance checkbox). */
+  reduceMotion: boolean;
+  setReduceMotion: (v: boolean) => void;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -82,12 +85,22 @@ export const useStore = create<AppState>((set, get) => ({
     try { return (localStorage.getItem('jotty.theme-override') as T.ThemeOverride | null) ?? null; }
     catch { return null; }
   })(),
+  reduceMotion: (() => {
+    try { return localStorage.getItem('jotty.reduce-motion') === 'true'; } catch { return false; }
+  })(),
   setThemeOverride: (v) => {
     set({ themeOverride: v });
     try {
       if (v) localStorage.setItem('jotty.theme-override', v);
       else localStorage.removeItem('jotty.theme-override');
     } catch { /* storage unavailable: session-only override */ }
+  },
+  setReduceMotion: (v) => {
+    set({ reduceMotion: v });
+    try {
+      if (v) localStorage.setItem('jotty.reduce-motion', 'true');
+      else localStorage.removeItem('jotty.reduce-motion');
+    } catch { /* storage unavailable */ }
   },
   refreshUpdate: async () => {
     try {

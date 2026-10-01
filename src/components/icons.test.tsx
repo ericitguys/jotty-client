@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Icon } from './icons';
 
 const NAMES = ['mic', 'plus', 'search', 'settings', 'refresh', 'trash', 'x', 'check', 'note',
-  'list', 'columns', 'calendar', 'bell', 'menu', 'back', 'arrow-up', 'clock'] as const;
+  'list', 'columns', 'calendar', 'bell', 'menu', 'back', 'arrow-up', 'clock', 'sun', 'more'] as const;
 
 describe('Icon module', () => {
   it('renders every name as a stroke-based 24-viewBox svg', () => {
@@ -36,5 +36,26 @@ describe('Icon module', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, 'icons.tsx'), 'utf8');
     expect(src).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+  });
+  it('sun + more ride copied-verbatim lucide path data (tier B task 1)', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, 'icons.tsx'), 'utf8');
+    // lucide 'sun': hub circle + 8 rays — each ray copied verbatim from lucide.dev
+    expect(src).toContain('cx={12} cy={12} r={4}');
+    expect(src).toContain('d="M12 2v2"');
+    expect(src).toContain('d="M12 20v2"');
+    expect(src).toContain('d="m4.93 4.93 1.41 1.41"');
+    expect(src).toContain('d="m17.66 17.66 1.41 1.41"');
+    expect(src).toContain('d="M2 12h2"');
+    expect(src).toContain('d="M20 12h2"');
+    expect(src).toContain('d="m6.34 17.66-1.41 1.41"');
+    expect(src).toContain('d="m19.07 4.93-1.41 1.41"');
+    // lucide 'more' (ellipsis): three r=1 stroke circles at cx 5/12/19, cy 12
+    expect(src).toContain('<circle cx={12} cy={12} r={1} />');
+    expect(src).toContain('<circle cx={19} cy={12} r={1} />');
+    expect(src).toContain('<circle cx={5} cy={12} r={1} />');
+    // provenance comment (rider d) names the copy event + license
+    expect(src).toContain('COPIED VERBATIM');
+    expect(src).toContain('ISC license');
   });
 });
