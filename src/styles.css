@@ -273,7 +273,8 @@ li.selected .count { color: rgba(255, 255, 255, 0.85); }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  padding: 10px 12px; /* spec L9: 9px → 10px vertical (aligns with the 412px rail) */
+  flex-wrap: wrap; /* the meta line wraps to the row's second line */
   background: var(--row);
   border: 1px solid transparent;
   border-radius: 8px;
@@ -299,6 +300,21 @@ li.selected .count { color: rgba(255, 255, 255, 0.85); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Row meta line (spec L7): snippet + relative age. Typography rides T1's
+   .meta-line class (muted 11.5px tabular-nums) via className="row-meta meta-line". */
+.row-meta {
+  flex-basis: 100%; /* full row → wraps to its own second line */
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+.row-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis; /* cap-at-70 already applied; long words still clip */
+  white-space: nowrap;
+  min-width: 0;
 }
 .chip {
   margin-left: auto;

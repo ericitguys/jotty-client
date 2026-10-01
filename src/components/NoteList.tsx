@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { NoteDto } from '../api/types';
 import { useStore } from '../stores/store';
+import { relativeAge } from '../util/relativeTime';
+import { snippetFromHtml } from '../util/snippet';
 import ConfirmModal from './modals/ConfirmModal';
 import { Icon } from './icons';
 
@@ -22,7 +24,9 @@ export default function NoteList({ notes, onStartVoiceNote, onOpenSettings }: {
         </div>
       </div>
       <ul>
-        {notes.map((n) => (
+        {notes.map((n) => {
+          const snippet = snippetFromHtml(n.content || '');
+          return (
           <li key={n.id} className={n.id === selectedNoteId ? 'selected' : ''} onClick={() => selectNote(n.id)}>
             <span className="item-title">{n.title}{n.dirty ? ' •' : ''}</span>
             {n.audioPath && n.content === '' && (
@@ -38,8 +42,18 @@ export default function NoteList({ notes, onStartVoiceNote, onOpenSettings }: {
               title="Delete"
               onClick={(e) => { e.stopPropagation(); setPendingDelete(n); }}
             ><Icon name="x" size={12}/></button>
+            {/* Meta line (spec L7): last flex child — flex-basis 100% wraps it to
+                the row's second line under title+chip. Snippet span renders ONLY
+                for non-empty stripped content (RTL text-node discipline:
+                element-scoped, never a joined string). .row-age always rides the
+                row: relativeAge(null) renders the 'never synced' arm. */}
+            <div className="row-meta meta-line">
+              {snippet !== '' && <span className="row-snippet">{snippet}</span>}
+              <span className="row-age">{relativeAge(n.updatedAt)}</span>
+            </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
       {/* Portal confirmDeleteItem string (en.json:188) with the note title. */}
       <ConfirmModal

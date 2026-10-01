@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
+import { relativeAge } from '../util/relativeTime'; // not mocked — real data rides the row
+
 import NoteList from './NoteList';
 
 beforeEach(() => {
@@ -85,5 +87,38 @@ describe('NoteList delete', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Groceries' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_note', { id: 'n1' }));
+  });
+});
+
+describe('NoteList row metadata', () => {
+  it('rows carry the meta line: stripped snippet + relative age', () => {
+    const iso = new Date(Date.now() - 7_200_000).toISOString();
+    const notes = [{ id: 'n1', title: 'Groceries', content: '<p>&nbsp;oat milk &amp; bread</p>',
+      category: 'Home', createdAt: null, updatedAt: iso, deletedAt: null, dirty: false,
+      audioPath: null, audioDurationSecs: null }];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    const row = screen.getByText('Groceries').closest('li')!;
+    expect(row.querySelector('.row-snippet')!.textContent).toBe('oat milk & bread');
+    // '2h ago' derived from relativeAge (same arithmetic) per the brief note —
+    // wall-clock-safe at any local hour.
+    expect(row.querySelector('.row-age')!.textContent).toBe(relativeAge(iso));
+  });
+
+  it('snippet collapses markup blocks to spaces; empty content renders no snippet', () => {
+    const notes = [
+      { id: 'n1', title: 'A', content: '<h1>t1</h1><p>t2</p>', category: '', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+      { id: 'n2', title: 'B', content: '', category: '', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+    ];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    expect(screen.getByText('A').closest('li')!.querySelector('.row-snippet')!.textContent).toBe('t1 t2');
+    expect(screen.getByText('B').closest('li')!.querySelector('.row-snippet')).toBeNull();
+  });
+
+  it('empty content renders nothing, no snippet, no age — never syncs note renders never-synced age', () => {
+    const notes = [{ id: 'n3', title: 'C', content: '', category: '', createdAt: null, updatedAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null }];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    const row = screen.getByText('C').closest('li')!;
+    expect(row.querySelector('.row-snippet')).toBeNull();
+    expect(row.querySelector('.row-age')!.textContent).toBe('never synced');
   });
 });
