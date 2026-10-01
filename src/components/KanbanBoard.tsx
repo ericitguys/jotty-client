@@ -5,6 +5,7 @@ import type { BoardStatusDto, ItemDto } from '../api/types';
 import Dropdown from './Dropdown';
 import DateDropdown from './DateDropdown';
 import { timeDropdownOptions, roundToQuarter } from './timeOptions';
+import { dateLabel, todayYmd } from './calendarGrid';
 import { Icon } from './icons';
 
 // Z-form/offset ISO -> local 'YYYY-MM-DDTHH:mm' for datetime-local prefill (T7.1):
@@ -141,29 +142,33 @@ export default function KanbanBoard({ checklistId, items, reload }: {
           <div className="kanban-cards">
             {cardsFor(col).map((item) => (
               <div key={item.localId}
-                   className={`kanban-card${item.completed || col.autoComplete ? ' completed-item' : ''}${menuFor === item.localId ? ' menu-open' : ''}`}
+                   className={`kanban-card${item.completed || col.autoComplete ? ' completed-item' : ''}${menuFor === item.localId ? ' menu-open' : ''}${dragId === item.localId ? ' dragging' : ''}`}
                    draggable
                    onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
-                   onClick={(e) => {
-                     e.stopPropagation();
-                     if (renaming) return;
-                     setMenuFor((m) => {
-                       const next = m === item.localId ? null : item.localId;
-                       if (next !== item.localId) { setDating(null); setReminding(null); }
-                       return next;
-                     });
-                   }}>
+                   onDragEnd={() => setDragId(null)}>
                 {renaming === item.localId ? (
                   <input value={renameText} autoFocus
                          onChange={(e) => setRenameText(e.target.value)}
                          onBlur={() => rename(item.localId)}
-                         onKeyDown={(e: KeyboardEvent) => e.key === 'Enter' && rename(item.localId)} />
+                         onKeyDown={(e: KeyboardEvent) => {
+                           if (e.key === 'Enter') rename(item.localId);
+                           else if (e.key === 'Escape') { setRenaming(null); setRenameText(''); }
+                         }} />
                 ) : (
-                  <span className="kanban-card-text">{item.text}</span>
+                  <span className="kanban-card-text"
+                        onClick={(e) => { e.stopPropagation(); setRenameText(item.text); setRenaming(item.localId); }}>{item.text}</span>
                 )}
                 <span className="kanban-badges">
                   {item.priority && <span className="kanban-badge">{item.priority}</span>}
-                  {item.targetDate && <span className="kanban-badge">{item.targetDate}</span>}
+                  {item.targetDate && (() => {
+                    const today = todayYmd();
+                    const cls = item.targetDate === today ? ' due-today' : item.targetDate < today ? ' overdue' : '';
+                    return (
+                      <span className={`kanban-badge${cls}`} title={`Due ${dateLabel(item.targetDate)}`}>
+                        <Icon name="calendar" size={11}/> {dateLabel(item.targetDate)}
+                      </span>
+                    );
+                  })()}
                   {item.reminderDatetime && (
                     <span className={`kanban-badge kanban-reminder${item.reminderNotified ? ' notified' : ''}`}
                           title={new Date(item.reminderDatetime).toLocaleString()}>
@@ -172,6 +177,13 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                   )}
                   {item.children.length > 0 && <span className="kanban-badge">{item.children.length} subtask{item.children.length === 1 ? '' : 's'}</span>}
                 </span>
+                <button className="kanban-card-menu" aria-label="Card actions" title="Card actions"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuFor((m) => (m === item.localId ? null : item.localId));
+                        }}>
+                  <Icon name="more" size={13}/>
+                </button>
                 {menuFor === item.localId && (
                   <div className="kanban-menu" onClick={(e) => e.stopPropagation()}>
                     {dating === item.localId ? (

@@ -435,7 +435,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
                 <Dropdown value={apptTime} options={TIME_OPTIONS}
                           onChange={setApptTime} ariaLabel="Time"
                           placeholder="Pick a time" />
-                <p className="voice-hint">{apptTime ? (<><Icon name="bell" size={12}/> reminder at {apptDate}T{apptTime}</>) : 'No reminder — date-only appointment.'}</p>
+                <p className="voice-hint">{apptTime ? (<><Icon name="bell" size={12}/> <span>reminder at {apptDate}T{apptTime}</span></>) : 'No reminder — date-only appointment.'}</p>
                 {apptError && <p className="error">{apptError}</p>}
                 <div className="voice-actions">
                   <button className="primary" disabled={busy || !apptBoardId}

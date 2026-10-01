@@ -1084,11 +1084,11 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
    substring of '.kanban-cards' — the card rule must come first so the
    static fence reads the card's own block. The two selectors are disjoint
    (cards are CHILDREN of the wrap), so the order is behaviorally neutral. */
-.kanban-card { position: relative; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; transition: background-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
+.kanban-card { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; position: relative; background: var(--surface); box-shadow: var(--shadow-1); border: 1px solid var(--border-soft); border-radius: 8px; padding: 8px 10px; cursor: grab; font-size: 14px; transition: background-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
 .kanban-cards { display: flex; flex-direction: column; gap: 6px; }
 .kanban-card.completed-item .kanban-card-text { text-decoration: line-through; opacity: 0.65; }
-.kanban-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
-.kanban-badge { font-size: 10.5px; background: var(--badge-surface); color: var(--muted); border-radius: 6px; padding: 1px 5px; }
+.kanban-badges { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+.kanban-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; background: var(--badge-surface); color: var(--muted); border-radius: 6px; padding: 1px 5px; }
 .kanban-add { border-style: dashed; background: transparent; color: var(--muted); width: 100%; }
 .kanban-add-input { width: 100%; }
 .kanban-add-form { position: relative; z-index: 60; display: flex; flex-direction: column; gap: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
@@ -1117,6 +1117,14 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 .kanban-reminder-edit button { background: transparent; border: none; text-align: left; padding: 7px 4px; border-radius: 0; font-size: 13.5px; }
 .kanban-reminder-edit button:hover { background: var(--row-hover); }
 .kanban-backdrop { position: fixed; inset: 0; z-index: 55; background: transparent; }
+/* tier B S3 — board cards: inline edit + pills + ⋯ trigger + css ghost */
+.kanban-card-text { flex: 0 1 auto; min-width: 0; overflow-wrap: break-word; cursor: text; }
+.kanban-card > input { flex: 1 1 auto; min-width: 0; }
+.kanban-badge.due-today { color: var(--accent-text); }
+.kanban-badge.overdue { color: var(--danger); }
+.kanban-card-menu { flex-shrink: 0; margin-left: auto; opacity: 0.4; transition: opacity var(--motion-fast) var(--ease-out); color: var(--muted); background: transparent; border: none; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.kanban-card:hover .kanban-card-menu, .kanban-card-menu:focus-visible { opacity: 1; }
+.kanban-card.dragging { opacity: 0.45; box-shadow: var(--shadow-2); transform: rotate(1.5deg) scale(1.02); }
 
 /* tier B S2 — reduced motion, two layers: the OS preference and the in-app
    setting (#app[data-reduce-motion="true"] from Settings → Appearance). */

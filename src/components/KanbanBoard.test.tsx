@@ -5,7 +5,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import KanbanBoard from './KanbanBoard';
-import { ymd, dateLabel } from './calendarGrid';
+import { ymd, dateLabel, todayYmd } from './calendarGrid';
 
 // v0.22.2 reshape (WebKitGTK date-popup eradication): the native
 // <input type="date"> is replaced by the pure-DOM DateDropdown everywhere.
@@ -83,7 +83,8 @@ describe('KanbanBoard', () => {
   it('shows display-only badges (priority, target date, subtask count)', async () => {
     render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
     await waitFor(() => expect(screen.getByText('high')).toBeInTheDocument());
-    expect(screen.getByText('2026-10-01')).toBeInTheDocument();
+    // tier B T3: pills render the LOCALIZED date label (raw YYYY-MM-DD text is gone)
+    expect(screen.getByText(dateLabel('2026-10-01'))).toBeInTheDocument();
     expect(screen.getByText('1 subtask')).toBeInTheDocument();
   });
 
@@ -98,7 +99,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Move to In Progress'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_status', { checklistId: 'b1', itemLocalId: 'i1', status: 'in_progress' }));
     await waitFor(() => expect(reload).toHaveBeenCalled());
@@ -108,13 +109,13 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Rename'));
     const input = screen.getByDisplayValue('alpha');
     fireEvent.change(input, { target: { value: 'renamed' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_text', { checklistId: 'b1', itemLocalId: 'i1', text: 'renamed' }));
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Delete'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_item', { checklistId: 'b1', itemLocalId: 'i1' }));
   });
@@ -148,7 +149,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set date'));
     // RESHAPED v0.22.2 (DateDropdown): the picker trigger mirrors the committed
     // value as a LOCALIZED label (dateLabel mirror — no native input remains)
@@ -164,7 +165,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set date'));
     expect(dateTriggerText('Date (clearable)')).toBe(dateLabel('2026-10-01'));
     // RESHAPED v0.22.2: clearing = the picker's Clear row (a native input had
@@ -295,7 +296,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set reminder'));
     // split editor (v0.22.2): pure-DOM DateDropdown + the engine-proof Time dropdown
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
@@ -334,7 +335,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set reminder'));
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
     // pick ONLY the date (the user's exact broken flow — RESHAPED v0.22.2:
@@ -357,7 +358,7 @@ describe('KanbanBoard', () => {
     const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: '2026-10-01T09:00', reminderNotified: null }];
     render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     expect(screen.getByText('Clear reminder')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Clear reminder'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_reminder', { checklistId: 'b1', itemLocalId: 'i1', datetime: null }));
@@ -372,7 +373,7 @@ describe('KanbanBoard', () => {
     const withReminder = [{ ...items[0], priority: null, targetDate: null, children: [], reminderDatetime: fixture, reminderNotified: null }];
     const { container } = render(<KanbanBoard checklistId="b1" items={withReminder} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set reminder'));
     const editor = container.querySelector('.kanban-reminder-edit') as HTMLElement;
     // RESHAPED v0.22.2: date part prefill lands on the DateDropdown trigger
@@ -408,7 +409,7 @@ describe('KanbanBoard', () => {
     const reload = vi.fn(async () => {});
     const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('alpha'));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
     fireEvent.click(screen.getByText('Set reminder'));
     expect(container.querySelector('.kanban-reminder-edit')).not.toBeNull();
     fireEvent.click(screen.getByText('Back'));
@@ -417,5 +418,95 @@ describe('KanbanBoard', () => {
     // menu rows visible again
     expect(screen.getByText('Set reminder')).toBeInTheDocument();
     expect(screen.getByText('Rename')).toBeInTheDocument();
+  });
+});
+
+describe('tier B board cards (task 3)', () => {
+  it('clicking the card text starts the inline edit pre-filled', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    expect(screen.getByDisplayValue('alpha')).toBeInTheDocument();
+  });
+
+  it('Enter commits the inline edit via set_item_text', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    const input = screen.getByDisplayValue('alpha');
+    fireEvent.change(input, { target: { value: 'renamed' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_text', { checklistId: 'b1', itemLocalId: 'i1', text: 'renamed' }));
+  });
+
+  it('Escape cancels the inline edit WITHOUT invoking', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('alpha'));
+    const input = screen.getByDisplayValue('alpha');
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByText('alpha')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('set_item_text', expect.anything());
+  });
+
+  it('the ⋯ trigger (Card actions) opens the menu; menu Rename still works', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    // ADAPTED from the brief's verbatim singular getByRole: the items fixture
+    // renders THREE 'Card actions' triggers (one per card) — a singular query
+    // throws on multiple matches; [0] = the DOM-first card (i1 'alpha').
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    expect(screen.getByText('Rename')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Rename'));
+    expect(screen.getByDisplayValue('alpha')).toBeInTheDocument();
+  });
+
+  it('today targetDate pill renders the localized label with due-today', async () => {
+    // ADAPTED from the brief's verbatim shape: the first render is CAPTURED and
+    // UNMOUNTED before the fresh seeded render — when todayYmd() === '2026-10-01'
+    // (the fixture date) two live renders would BOTH carry the same pill label
+    // and the brief's second screen.getByText would throw on multiple matches.
+    const first = render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    const pill = screen.getByText(dateLabel('2026-10-01')).closest('.kanban-badge') as HTMLElement;
+    expect(pill.querySelector('.kanban-card, svg')).toBeTruthy(); // calendar icon rides the pill
+    // NOTE: '2026-10-01' fixture reads as past/overdue as the calendar drifts;
+    // the CLASS assert is on a seeded TODAY item below (calendar-proof).
+    first.unmount();
+    const rows = items.map((i) => (i.localId === 'i1' ? { ...i, targetDate: todayYmd() } : i));
+    const { unmount } = render(<KanbanBoard checklistId="b1" items={rows} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText(dateLabel(todayYmd()))).toBeInTheDocument());
+    const fresh = screen.getByText(dateLabel(todayYmd())).closest('.kanban-badge') as HTMLElement;
+    expect(fresh).toHaveClass('due-today');
+    expect(fresh).not.toHaveClass('overdue');
+    unmount();
+  });
+
+  it('past targetDate pill carries the overdue class (calendar-proof seed)', async () => {
+    const rows = items.map((i) => (i.localId === 'i1' ? { ...i, targetDate: '2001-01-01' } : i));
+    render(<KanbanBoard checklistId="b1" items={rows} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText(dateLabel('2001-01-01'))).toBeInTheDocument());
+    const pill = screen.getByText(dateLabel('2001-01-01')).closest('.kanban-badge') as HTMLElement;
+    expect(pill).toHaveClass('overdue');
+    expect(pill).not.toHaveClass('due-today');
+  });
+
+  it('pill/menu clicks do NOT start the inline edit', async () => {
+    const rows = items.map((i) => (i.localId === 'i1' ? { ...i, targetDate: todayYmd() } : i));
+    render(<KanbanBoard checklistId="b1" items={rows} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText(dateLabel(todayYmd()))); // the pill itself
+    expect(screen.queryByDisplayValue('alpha')).toBeNull();
+  });
+
+  it('dragStart adds .dragging and dragEnd clears it (ghost is css-only)', async () => {
+    const { container } = render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    const card = screen.getByText('alpha').closest('.kanban-card') as HTMLElement;
+    const dt = { getData: (t: string) => (t === 'text/plain' ? 'i1' : ''), setData: () => {} };
+    fireEvent.dragStart(card, { dataTransfer: dt });
+    expect(card).toHaveClass('dragging');
+    fireEvent.dragEnd(card, { dataTransfer: dt });
+    expect(card).not.toHaveClass('dragging');
   });
 });
