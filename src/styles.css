@@ -169,8 +169,14 @@ input::placeholder { color: var(--muted); }
 #app > main > section h2 { margin-bottom: 8px; }
 /* tier A: panels get a rest shadow (one elevation step above --bg) */
 #app > main > section, #note-editor { box-shadow: var(--shadow-1); }
-.section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.section-head h2 { margin-bottom: 0; }
+.section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+/* tier A T3-review F2: "New checklist" was CLIPPED at the narrow desktop list
+   rail (nowrap min-content 359px > ~314px inner head width) — the wrap
+   fallback used to live only in the <=700px phone media query, but the
+   desktop 3-pane rail gets just as narrow. Generalized to all widths (carried
+   by the base .section-head above): the .head-actions GROUP wraps as a unit
+   (NoteList parity), button labels never wrap mid-text (nowrap on .new-btn). */
+.head-actions { flex-wrap: wrap; min-width: 0; }
 .new-btn {
   font-size: 12px;
   padding: 3px 10px;
@@ -1114,9 +1120,7 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   #app > main > * { min-width: 0; }
   #note-editor, #checklist-view { max-width: 100%; }
 
-  /* touch targets + head-actions wrapping in the narrow list header */
-  .section-head { flex-wrap: wrap; gap: 8px; }
-  .head-actions { flex-wrap: wrap; }
+  /* touch targets (wrap rides the base .section-head/.head-actions rules now) */
   .new-btn { padding: 8px 10px; }
   li { padding-top: 10px; padding-bottom: 10px; }
 

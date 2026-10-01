@@ -12,22 +12,16 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
     <section id="checklists">
       <div className="section-head">
         <h2>Checklists</h2>
-        <button className="new-btn" onClick={() => createBoard('New board', 'Uncategorized')} disabled={!connection}
-                title={connection ? 'Create a kanban board' : 'Connect to create boards'}><Icon name="columns" size={12}/> New board</button>
-        <button className="new-btn" onClick={() => createChecklist('New checklist', 'Uncategorized')}><Icon name="plus" size={12}/> New checklist</button>
+        <div className="head-actions">
+          <button className="new-btn" onClick={() => createBoard('New board', 'Uncategorized')} disabled={!connection}
+                  title={connection ? 'Create a kanban board' : 'Connect to create boards'}><Icon name="columns" size={12}/> New board</button>
+          <button className="new-btn" onClick={() => createChecklist('New checklist', 'Uncategorized')}><Icon name="plus" size={12}/> New checklist</button>
+        </div>
       </div>
       <ul>
         {checklists.map((c) => (
           <li key={c.id} className={c.id === selectedChecklistId ? 'selected' : ''} onClick={() => selectChecklist(c.id)}>
             <span className="item-title">{c.title}{c.dirty ? ' •' : ''}</span>
-            {/* Row meta (tier A task 3): counts + age render ONLY when the
-                wire carried counts — old fixtures (no itemCount) skip. Boards
-                show the same meta (their data is items too) and keep the
-                board chip beside it. One span so textContent reads
-                "N of M done · <age>". */}
-            {typeof c.itemCount === 'number' && (
-              <span className="row-meta">{c.doneCount ?? 0} of {c.itemCount} done · {relativeAge(c.updatedAt)}</span>
-            )}
             {(c.listType === 'kanban' || c.listType === 'task') && <span className="chip board-chip">board</span>}
             <span className="chip">{c.category}</span>
             {/* Delete affordance — covers boards AND plain checklists (the
@@ -40,6 +34,17 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
               title="Delete"
               onClick={(e) => { e.stopPropagation(); setPendingDelete(c); }}
             ><Icon name="x" size={12}/></button>
+            {/* Row meta (tier A task 3 + T3-review F1/F3): LAST flex child —
+                flex-basis:100% wraps it to its own second line under
+                title+chips (NoteList parity; mid-row placement broke the
+                chip/cascade onto a third line in the real engine). Meta line
+                renders ONLY when the wire carried counts — old fixtures
+                (no itemCount) skip. Board chip survives beside it. One span
+                so textContent reads "N of M done · <age>"; meta-line class
+                gives the muted 11.5px tabular-nums typography (review F3). */}
+            {typeof c.itemCount === 'number' && (
+              <span className="row-meta meta-line">{c.doneCount ?? 0} of {c.itemCount} done · {relativeAge(c.updatedAt)}</span>
+            )}
           </li>
         ))}
       </ul>

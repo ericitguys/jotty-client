@@ -16,11 +16,14 @@ import { relativeAge } from '../util/relativeTime'; // not mocked — real data 
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(here, '..', 'styles.css'), 'utf8');
 const RULE = (sel: string) => {
-  const idx = css.indexOf(sel);
+  // match the first selector occurrence OUTSIDE a /* comment */ — the T1 helper's
+  // first-substring intent (voiceTheme pattern); comments mention selectors too.
+  const noComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const idx = noComments.indexOf(sel);
   expect(idx, `${sel} exists`).toBeGreaterThan(-1);
-  const braces = css.indexOf('{', idx);
-  const end = css.indexOf('}', braces);
-  return css.slice(braces + 1, end);
+  const braces = noComments.indexOf('{', idx);
+  const end = noComments.indexOf('}', braces);
+  return noComments.slice(braces + 1, end);
 };
 
 beforeEach(() => {
@@ -125,5 +128,10 @@ describe('ChecklistList row meta + header buttons (tier A task 3)', () => {
   it('new-buttons never wrap (tier A finding: +New board/+New checklist wrapped to two lines)', () => {
     const block = RULE('.new-btn');
     expect(block).toContain('white-space: nowrap');
+    // T3 review F2 (real-engine probe): the phone-media-only wrap fallback left the
+    // narrow DESKTOP rail clipped. The group must wrap as a unit at any width.
+    const head = RULE('.section-head');
+    expect(head).toContain('flex-wrap: wrap');
+    expect(RULE('.head-actions')).toContain('flex-wrap: wrap');
   });
 });
