@@ -178,7 +178,13 @@ input::placeholder { color: var(--muted); }
   border-color: transparent;
   color: var(--accent-strong-text);
   font-weight: 600;
+  /* tier A task 3: "New board"/"New checklist" wrapped to two lines at 12px
+     inside the section-head — keep each button on one line and give its
+     inline icon the spacing. (Base .new-btn rule so every usage renders the
+     same: the checklist section-head carries the buttons directly.) */
+  white-space: nowrap;
 }
+.new-btn svg { margin-right: 4px; }
 .new-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* ---------- sidebar ---------- */

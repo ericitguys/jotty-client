@@ -30,6 +30,10 @@ export interface ChecklistDto {
   id: string; title: string; category: string;
   createdAt: string | null; updatedAt: string | null; deletedAt: string | null;
   dirty: boolean; completed: boolean; listType: string; items: ItemDto[];
+  // tier A task 3: list-checklist counts ride list_checklists (Rust
+  // ChecklistDto item_count/done_count, serde camelCase). Optional so older
+  // mocks keep compiling — a row without itemCount renders no meta line.
+  itemCount?: number; doneCount?: number;
 }
 export interface Branding { name: string | null; iconDataUrl: string | null; themeColor: string | null; }
 /** In-app theme choices: 'auto' follows the site mirror chain. */

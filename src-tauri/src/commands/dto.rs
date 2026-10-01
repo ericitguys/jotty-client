@@ -128,6 +128,12 @@ pub struct ChecklistDto {
     pub list_type: String,
     #[serde(default)]
     pub items: Vec<ItemDto>,
+    // tier A task 3: list-row metadata rides the catalog wire (list_checklists
+    // only); defaults keep any partial-path construction honest at 0/0.
+    #[serde(default)]
+    pub item_count: i64,
+    #[serde(default)]
+    pub done_count: i64,
 }
 
 impl From<checklists::ChecklistRow> for ChecklistDto {
@@ -143,6 +149,8 @@ impl From<checklists::ChecklistRow> for ChecklistDto {
             completed: false,
             list_type: r.list_type,
             items: Vec::new(),
+            item_count: 0,
+            done_count: 0,
         }
     }
 }

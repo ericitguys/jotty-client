@@ -3,6 +3,7 @@ import type { ChecklistDto } from '../api/types';
 import { useStore } from '../stores/store';
 import ConfirmModal from './modals/ConfirmModal';
 import { Icon } from './icons';
+import { relativeAge } from '../util/relativeTime';
 
 export default function ChecklistList({ checklists }: { checklists: ChecklistDto[] }) {
   const { selectedChecklistId, selectChecklist, createChecklist, createBoard, deleteChecklist, connection } = useStore();
@@ -19,6 +20,14 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
         {checklists.map((c) => (
           <li key={c.id} className={c.id === selectedChecklistId ? 'selected' : ''} onClick={() => selectChecklist(c.id)}>
             <span className="item-title">{c.title}{c.dirty ? ' •' : ''}</span>
+            {/* Row meta (tier A task 3): counts + age render ONLY when the
+                wire carried counts — old fixtures (no itemCount) skip. Boards
+                show the same meta (their data is items too) and keep the
+                board chip beside it. One span so textContent reads
+                "N of M done · <age>". */}
+            {typeof c.itemCount === 'number' && (
+              <span className="row-meta">{c.doneCount ?? 0} of {c.itemCount} done · {relativeAge(c.updatedAt)}</span>
+            )}
             {(c.listType === 'kanban' || c.listType === 'task') && <span className="chip board-chip">board</span>}
             <span className="chip">{c.category}</span>
             {/* Delete affordance — covers boards AND plain checklists (the

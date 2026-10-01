@@ -164,6 +164,10 @@ pub(crate) fn list_checklists_inner(conn: &Connection) -> AppResult<Vec<Checklis
         let total = *item_counts.get(&d.id).unwrap_or(&0);
         let open = *open_counts.get(&d.id).unwrap_or(&0);
         d.completed = total > 0 && open == 0;
+        // tier A task 3: counts on the wire — done = total - open (same two
+        // maps already computed for the completion mirror).
+        d.item_count = total;
+        d.done_count = total - open;
     }
     Ok(dtos)
 }
@@ -1939,6 +1943,31 @@ mod tests {
         let open_dto = lists.iter().find(|l| l.id == open.id).unwrap();
         assert!(done_dto.completed, "all items checked -> completed");
         assert!(!open_dto.completed, "open item -> not completed");
+    }
+
+    #[tokio::test]
+    async fn list_checklists_inner_reports_item_and_done_counts() {
+        // tier A task 3: SAME helpers as list_checklists_inner_reports_completion
+        // (create_checklist_inner + add_item_inner + set_item_checked_inner) —
+        // NO new seed helpers.
+        let mut conn = db();
+        let list = create_checklist_inner(&mut conn, "Counts", "Home").unwrap();
+        add_item_inner(&mut conn, &list.id, "a", None, None, None).unwrap();
+        let done_item = add_item_inner(&mut conn, &list.id, "b", None, None, None).unwrap();
+        set_item_checked_inner(&mut conn, &list.id, &done_item.local_id, true).unwrap();
+        let lists = list_checklists_inner(&conn).unwrap();
+        let l = lists.iter().find(|l| l.id == list.id).unwrap();
+        assert_eq!(l.item_count, 2);
+        assert_eq!(l.done_count, 1);
+    }
+
+    #[tokio::test]
+    async fn list_checklists_inner_counts_default_zero_for_empty_list() {
+        let mut conn = db();
+        let list = create_checklist_inner(&mut conn, "Empty", "Home").unwrap();
+        let lists = list_checklists_inner(&conn).unwrap();
+        let l = lists.iter().find(|l| l.id == list.id).unwrap();
+        assert_eq!((l.item_count, l.done_count), (0, 0));
     }
 
     #[tokio::test]
