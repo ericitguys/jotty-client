@@ -1039,6 +1039,14 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
   padding: 3px 9px;
   flex-shrink: 0;
 }
+/* tier B S1 — unified command bar (replaces the search palette; rides the
+   shared .modal shell = width/max-height/transitions from T1 for free).
+   overflow-y keeps the palette's scroll (its .modal ul rule retired with it:
+   rows are flat buttons now, no ul). */
+.command-bar { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+.command-row { display: flex; align-items: center; gap: 8px; text-align: left; }
+.command-row.active { background: var(--accent-soft); }
+.palette-sep { margin: 4px 0 0; }
 .voice-modal textarea { width: 100%; margin: 8px 0; font-family: inherit; }
 .voice-toggle { display: flex; gap: 6px; margin: 8px 0; }
 .voice-toggle .selected { background: var(--accent); color: #fff; }

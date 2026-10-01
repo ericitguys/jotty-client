@@ -9,7 +9,7 @@ import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
 import VoicePendingBadge from './components/VoicePendingBadge';
 import ConflictDialog from './components/ConflictDialog';
-import SearchPalette from './components/SearchPalette';
+import CommandBar from './components/CommandBar';
 import SettingsModal from './components/SettingsModal';
 import VoiceNoteReview from './components/VoiceNoteReview';
 import * as api from './api/client';
@@ -219,7 +219,15 @@ export default function App() {
       )}
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}
-      {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onSelectNote={(id) => selectNote(id)} onSelectChecklist={(id) => selectChecklist(id)} />}
+      {showSearch && (
+        <CommandBar
+          onClose={() => setShowSearch(false)}
+          onSelectNote={(id) => selectNote(id)}
+          onSelectChecklist={(id) => selectChecklist(id)}
+          onStartVoiceNote={startVoiceNote}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+      )}
       {showSettings && <SettingsModal mode="settings" onClose={() => setShowSettings(false)} />}
       {resumeRows && (
         <div className="modal-backdrop" onClick={() => setResumeRows(null)}>
