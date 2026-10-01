@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ChecklistDto } from '../api/types';
 import { useStore } from '../stores/store';
 import ConfirmModal from './modals/ConfirmModal';
+import { Icon } from './icons';
 
 export default function ChecklistList({ checklists }: { checklists: ChecklistDto[] }) {
   const { selectedChecklistId, selectChecklist, createChecklist, createBoard, deleteChecklist, connection } = useStore();
@@ -11,8 +12,8 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
       <div className="section-head">
         <h2>Checklists</h2>
         <button className="new-btn" onClick={() => createBoard('New board', 'Uncategorized')} disabled={!connection}
-                title={connection ? 'Create a kanban board' : 'Connect to create boards'}>+ New board</button>
-        <button className="new-btn" onClick={() => createChecklist('New checklist', 'Uncategorized')}>+ New checklist</button>
+                title={connection ? 'Create a kanban board' : 'Connect to create boards'}><Icon name="columns" size={12}/> New board</button>
+        <button className="new-btn" onClick={() => createChecklist('New checklist', 'Uncategorized')}><Icon name="plus" size={12}/> New checklist</button>
       </div>
       <ul>
         {checklists.map((c) => (
@@ -29,7 +30,7 @@ export default function ChecklistList({ checklists }: { checklists: ChecklistDto
               aria-label={`Delete ${c.title}`}
               title="Delete"
               onClick={(e) => { e.stopPropagation(); setPendingDelete(c); }}
-            >✕</button>
+            ><Icon name="x" size={12}/></button>
           </li>
         ))}
       </ul>

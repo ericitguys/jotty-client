@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Editor } from '@tiptap/core';
+import { Icon } from './icons';
 
 // Fixed bar placed just above the active table. Measured from the table's DOM
 // node (domAtPos on the position before the table node); jsdom/headless views
@@ -56,7 +57,7 @@ export default function TableToolbar({ editor, visible }: { editor: Editor; visi
       <button type="button" aria-label="Row -" title="Row -" onMouseDown={(e) => e.preventDefault()} onClick={() => chain().deleteRow().run()}>-R</button>
       <button type="button" aria-label="Col +" title="Col +" onMouseDown={(e) => e.preventDefault()} onClick={() => chain().addColumnAfter().run()}>+C</button>
       <button type="button" aria-label="Col -" title="Col -" onMouseDown={(e) => e.preventDefault()} onClick={() => chain().deleteColumn().run()}>-C</button>
-      <button type="button" aria-label="Delete table" title="Delete table" onMouseDown={(e) => e.preventDefault()} onClick={() => chain().deleteTable().run()}>✕</button>
+      <button type="button" aria-label="Delete table" title="Delete table" onMouseDown={(e) => e.preventDefault()} onClick={() => chain().deleteTable().run()}><Icon name="x" size={13}/></button>
       <button
         type="button"
         aria-label="Header toggle"

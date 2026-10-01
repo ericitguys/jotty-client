@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('NoteList creation', () => {
   it('new note button calls create_note with default title and category', async () => {
     render(<NoteList notes={[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
-    fireEvent.click(screen.getByText('+ New note'));
+    fireEvent.click(screen.getByText('New note'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('create_note', { title: 'Untitled note', category: 'Uncategorized' }));
   });
 
@@ -36,7 +36,7 @@ describe('NoteList creation', () => {
   it('voice note button calls onStartVoiceNote', () => {
     const onStart = vi.fn();
     render(<NoteList notes={[]} onStartVoiceNote={onStart} onOpenSettings={vi.fn()} />);
-    fireEvent.click(screen.getByText('🎙 New voice note'));
+    fireEvent.click(screen.getByText('New voice note'));
     expect(onStart).toHaveBeenCalled();
   });
 

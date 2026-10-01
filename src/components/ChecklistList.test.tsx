@@ -25,13 +25,13 @@ beforeEach(() => {
 describe('ChecklistList creation', () => {
   it('new checklist button calls create_checklist with default title and category', async () => {
     render(<ChecklistList checklists={[]} />);
-    fireEvent.click(screen.getByText('+ New checklist'));
+    fireEvent.click(screen.getByText('New checklist'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('create_checklist', { title: 'New checklist', category: 'Uncategorized' }));
   });
 
   it('+ New board calls create_task_board via the store and renders the button', async () => {
     render(<ChecklistList checklists={[]} />);
-    fireEvent.click(screen.getByText('+ New board'));
+    fireEvent.click(screen.getByText('New board'));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('create_task_board', { title: 'New board', category: 'Uncategorized' }));
   });
 

@@ -244,11 +244,11 @@ describe('KanbanBoard', () => {
     // RESHAPED (R6/T7-N5): the chip renders FORMATTED local time, so the v1-raw
     // substring assert (`toContain('2026-10-01T09:00:00+02:00')`) is replaced by
     // the TZ-robust formatted-not-raw check — the raw offset-form text would
-    // carry 'T'; clock digits asserted without exact digits. 🔔 prefix + dim
+    // carry 'T'; clock digits asserted without exact digits. bell-icon prefix + dim
     // classes unchanged.
     const chipPlain = (screen.getByText('reminded').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
     expect(chipPlain).not.toBeNull();
-    expect(chipPlain.textContent).toContain('🔔');
+    expect(chipPlain.querySelector('svg')).not.toBeNull();
     expect(chipPlain.textContent).toMatch(/\d{1,2}:\d{2}/);
     expect(chipPlain.textContent).not.toContain('T');
     expect(chipPlain.textContent).not.toContain('Z');
@@ -271,7 +271,7 @@ describe('KanbanBoard', () => {
     // exact clock digits — the local rendering is TZ-dependent)
     const chipPlain = (screen.getByText('formatted').closest('.kanban-card') as HTMLElement).querySelector('.kanban-reminder') as HTMLElement;
     expect(chipPlain).not.toBeNull();
-    expect(chipPlain.textContent).toContain('🔔');
+    expect(chipPlain.querySelector('svg')).not.toBeNull();
     expect(chipPlain.textContent).toMatch(/\d{1,2}:\d{2}/);
     expect(chipPlain.textContent).not.toContain('T');
     expect(chipPlain.textContent).not.toContain('Z');

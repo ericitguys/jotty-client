@@ -4,6 +4,7 @@ import * as api from '../api/client';
 import type { ChecklistDto, ItemDto } from '../api/types';
 import { useStore } from '../stores/store';
 import KanbanBoard from './KanbanBoard';
+import { Icon } from './icons';
 
 export default function ChecklistView({ checklistId }: { checklistId: string }) {
   const refreshAll = useStore((s) => s.refreshAll);
@@ -148,7 +149,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
               <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(item)}>{item.text}</span>
               {item.targetDate && <span className="item-date-chip">{item.targetDate}</span>}
               <input value={item.text} onChange={(e) => rename(item, e.target.value)} />
-              <button onClick={() => remove(item)}>✕</button>
+              <button onClick={() => remove(item)}><Icon name="x" size={12}/></button>
             </div>
             <ul>
               {(item.children ?? []).map((c) => (
@@ -158,7 +159,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
                     <span className="item-text" style={{ cursor: 'pointer' }} onClick={() => onTextClick(c)}>{c.text}</span>
                     {c.targetDate && <span className="item-date-chip">{c.targetDate}</span>}
                     <input value={c.text} onChange={(e) => rename(c, e.target.value)} />
-                    <button onClick={() => remove(c)}>✕</button>
+                    <button onClick={() => remove(c)}><Icon name="x" size={12}/></button>
                   </div>
                 </li>
               ))}

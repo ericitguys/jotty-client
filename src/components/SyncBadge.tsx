@@ -4,6 +4,7 @@ import * as api from '../api/client';
 // a chip fetch failure unmount the whole sync bar; the chip is now a sibling
 // of #sync-badge (same fixed bar look via its own CSS).
 import { useStore } from '../stores/store';
+import { Icon } from './icons';
 
 export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {
   onOpenConflicts: () => void; onOpenSettings: () => void;
@@ -20,7 +21,7 @@ export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {
   return (
     <footer id="sync-badge" className={state} title={syncStatus.lastError ?? undefined}>
       {updateInfo?.available && (
-        <button className="update-chip" onClick={onOpenSettings}>⬆ {updateInfo.latest}</button>
+        <button className="update-chip" onClick={onOpenSettings}><Icon name="arrow-up" size={11}/> {updateInfo.latest}</button>
       )}
       <span className="dot" />
       {state === 'conflict' && <button onClick={onOpenConflicts}>{conflicts} conflicts</button>}

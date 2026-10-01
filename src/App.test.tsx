@@ -388,7 +388,7 @@ describe('web preference mirroring', () => {
   it('new voice note opens the review overlay when the AI server is configured', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('🎙 New voice note'));
+    fireEvent.click(screen.getByText('New voice note'));
     await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
   });
 
@@ -405,7 +405,7 @@ describe('web preference mirroring', () => {
     });
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('🎙 New voice note'));
+    fireEvent.click(screen.getByText('New voice note'));
     await waitFor(() => expect(screen.getByText('Settings')).toBeInTheDocument());
   });
 
@@ -469,9 +469,9 @@ describe('web preference mirroring', () => {
       return Promise.resolve(null);
     });
     render(<App />);
-    await waitFor(() => expect(screen.getByText('🎙 New voice note')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('New voice note')).toBeInTheDocument());
     expect(screen.queryByText('Unfinished voice note')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText('🎙 New voice note'));
+    fireEvent.click(screen.getByText('New voice note'));
     await waitFor(() => expect(screen.getByText(/Recording/)).toBeInTheDocument());
     // close the modal (recording-phase Cancel): the draft list must re-run and prompt
     fireEvent.click(screen.getByText('Cancel'));

@@ -3,6 +3,7 @@ import * as api from '../api/client';
 import type { AgendaEntry } from '../api/types';
 import { formatReminderTime } from './KanbanBoard';
 import { useStore } from '../stores/store';
+import { Icon } from './icons';
 
 /** Local-time date key ('YYYY-MM-DD') of an ISO string. Date-only strings
  * parse as UTC midnight, so in UTC-behind timezones the local key can trail
@@ -112,7 +113,7 @@ export default function AgendaView() {
                 {entry.reminderDatetime && (
                   <span className={`agenda-bell${entry.reminderNotified ? ' notified' : ''}`}
                         title={new Date(entry.reminderDatetime).toLocaleString()}>
-                    🔔 {formatReminderTime(entry.reminderDatetime)}
+                    <Icon name="bell" size={11}/> {formatReminderTime(entry.reminderDatetime)}
                   </span>
                 )}
               </div>

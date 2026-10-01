@@ -5,6 +5,7 @@ import type { BoardStatusDto, ItemDto } from '../api/types';
 import Dropdown from './Dropdown';
 import DateDropdown from './DateDropdown';
 import { timeDropdownOptions, roundToQuarter } from './timeOptions';
+import { Icon } from './icons';
 
 // Z-form/offset ISO -> local 'YYYY-MM-DDTHH:mm' for datetime-local prefill (T7.1):
 // datetime-local inputs SANITIZE TZ-suffixed values to empty, so raw stored reminders
@@ -17,7 +18,7 @@ const toLocalInput = (iso: string): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-// 🔔 chip time (R6): local HH:MM of the reminder — toLocaleTimeString with
+// Bell chip time (R6): local HH:MM of the reminder — toLocaleTimeString with
 // 2-digit hour/minute in the default locale; empty/null/invalid (NaN instant)
 // → '' so a malformed stored value never renders "Invalid Date" in the chip.
 // Exported: AgendaView's bell chip shares this exact formatting.
@@ -166,7 +167,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                   {item.reminderDatetime && (
                     <span className={`kanban-badge kanban-reminder${item.reminderNotified ? ' notified' : ''}`}
                           title={new Date(item.reminderDatetime).toLocaleString()}>
-                      🔔 {formatReminderTime(item.reminderDatetime)}
+                      <Icon name="bell" size={11}/> {formatReminderTime(item.reminderDatetime)}
                     </span>
                   )}
                   {item.children.length > 0 && <span className="kanban-badge">{item.children.length} subtask{item.children.length === 1 ? '' : 's'}</span>}

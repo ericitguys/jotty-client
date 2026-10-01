@@ -15,6 +15,7 @@ import VoiceNoteReview from './components/VoiceNoteReview';
 import * as api from './api/client';
 import type { VoiceRecordingDto } from './api/types';
 import { useStore } from './stores/store';
+import { Icon } from './components/icons';
 
 type VoiceFlow =
   | { mode: 'new' }
@@ -190,7 +191,7 @@ export default function App() {
         className="menu-btn"
         aria-label="Toggle navigation"
         onClick={() => setDrawerOpen((o) => !o)}
-      >☰</button>
+      ><Icon name="menu" size={17}/></button>
       <span className="topbar-title">{title}</span>
     </header>
     {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
@@ -214,7 +215,7 @@ export default function App() {
             if (selectedNoteId) selectNote(null);
             else selectChecklist(null);
           }}
-        >←</button>
+        ><Icon name="back" size={17}/></button>
       )}
       <SyncBadge onOpenConflicts={() => setShowConflicts(true)} onOpenSettings={() => setShowSettings(true)} />
       {showConflicts && <ConflictDialog onClose={() => setShowConflicts(false)} />}

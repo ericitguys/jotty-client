@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import * as api from '../api/client';
 import { useStore } from '../stores/store';
+import { Icon } from './icons';
 
 // Badge (2026-09-30 offline-voice run): how many recordings are waiting to be
 // transcribed — failed drafts + already-saved notes still carrying an empty
@@ -62,7 +63,7 @@ export default function VoicePendingBadge({ onOpenDraft }: {
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(); } }}
       title="Recordings waiting to be transcribed — they retry automatically when the AI server is reachable"
     >
-      🎙 {pending} waiting to transcribe
+      <Icon name="mic" size={12}/> {pending} waiting to transcribe
     </span>
   );
 }

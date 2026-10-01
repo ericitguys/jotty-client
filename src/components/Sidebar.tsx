@@ -1,5 +1,6 @@
 import { useStore } from '../stores/store';
 import type { CategoryFilter } from '../stores/store';
+import { Icon } from './icons';
 
 export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const { categories, selectedCategory, selectCategory, listMode, setListMode, refreshAll, branding } = useStore();
@@ -47,8 +48,8 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => voi
         </ul>
       )}
       <div className="sidebar-actions">
-        <button onClick={() => refreshAll()}>Refresh</button>
-        {onOpenSettings && <button onClick={onOpenSettings}>Settings</button>}
+        <button onClick={() => refreshAll()}><Icon name="refresh" size={13}/> Refresh</button>
+        {onOpenSettings && <button onClick={onOpenSettings}><Icon name="settings" size={13}/> Settings</button>}
       </div>
     </nav>
   );

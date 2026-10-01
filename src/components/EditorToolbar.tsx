@@ -4,6 +4,7 @@ import Dropdown, { type DropdownOption } from './Dropdown';
 import DiagramsDropdown from './DiagramsDropdown';
 import FontFamilyDropdown from './FontFamilyDropdown';
 import ExtraItemsDropdown from './ExtraItemsDropdown';
+import { Icon } from './icons';
 import { applyCodeLanguage, CODE_LANGS, findActiveCodeLanguage } from '../editor/extensions';
 
 // R4 (plan): fixed 8-preset text-color palette — no picker wheel in P1.
@@ -161,7 +162,7 @@ export default function EditorToolbar({ editor, markdownMode, onToggleMode, prev
       <TBtn label="Heading" active={editor?.isActive('heading', { level: 2 })} disabled={dis || md} onClick={() => chain().toggleHeading({ level: 2 }).run()}><strong>H</strong></TBtn>
       <TBtn label="Bullet list" active={editor?.isActive('bulletList')} disabled={dis || md} onClick={() => chain().toggleBulletList().run()}>•≡</TBtn>
       <TBtn label="Ordered list" active={editor?.isActive('orderedList')} disabled={dis || md} onClick={() => chain().toggleOrderedList().run()}>1≡</TBtn>
-      <TBtn label="Task list" active={editor?.isActive('taskList')} disabled={dis || md} onClick={() => chain().toggleTaskList().run()}>☑</TBtn>
+      <TBtn label="Task list" active={editor?.isActive('taskList')} disabled={dis || md} onClick={() => chain().toggleTaskList().run()}><Icon name="check" size={13}/></TBtn>
       <TBtn label="Blockquote" active={editor?.isActive('blockquote')} disabled={dis || md} onClick={() => chain().toggleBlockquote().run()}>❝</TBtn>
       {/* Table (P2 task 5, R13): opens NoteEditor's TableInsertModal via
           onTableInsertRequest — the P1 fixed 3x3 insert is removed (parity:

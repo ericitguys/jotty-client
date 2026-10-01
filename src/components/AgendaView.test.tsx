@@ -94,7 +94,7 @@ describe('AgendaView', () => {
     // ISO would carry 'T' and 'Z'; clock digits asserted TZ-robustly (never
     // exact clock digits — the local rendering is TZ-dependent)
     const chip = document.querySelector('.agenda-bell') as HTMLElement;
-    expect(chip.textContent).toContain('🔔');
+    expect(chip.querySelector('svg')).not.toBeNull();
     expect(chip.textContent).toMatch(/\d{1,2}:\d{2}/);
     expect(chip.textContent).not.toContain('T');
     expect(chip.textContent).not.toContain('Z');

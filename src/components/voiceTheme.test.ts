@@ -38,3 +38,24 @@ describe('offline-voice field reports (2026-09-30): theme + wrap', () => {
     expect(RULE('.voice-actions')).toContain('flex-wrap');
   });
 });
+
+describe('ux polish (tier A) static token fences', () => {
+  it('elevation tokens exist and popovers live on the surface layer', () => {
+    expect(css).toContain('--shadow-2');
+    const rule = RULE('.jotty-dropdown-menu');
+    expect(rule).toContain('var(--surface)');
+    expect(rule).toContain('var(--shadow-2)');
+  });
+  it('base button hover no longer re-borders with the accent', () => {
+    const block = RULE('button:hover');
+    expect(block).not.toContain('border-color: var(--accent)');
+  });
+  it('selected list rows carry the inset accent bar', () => {
+    expect(css).toContain('#notes li.selected::before');
+    expect(RULE('#notes li.selected::before, #checklists li.selected::before'))
+      .toContain('var(--accent)');
+  });
+  it('kanban cards separate from the column by elevation', () => {
+    expect(RULE('.kanban-card')).toContain('var(--surface)');
+  });
+});

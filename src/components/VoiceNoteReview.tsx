@@ -5,6 +5,7 @@ import { useStore } from '../stores/store';
 import Dropdown from './Dropdown';
 import DateDropdown from './DateDropdown';
 import { timeDropdownOptions, roundToQuarter } from './timeOptions';
+import { Icon } from './icons';
 
 export const CAP_SECS = 480; // 8-minute cap, mirrors audio::MAX_SECS (spec §7)
 
@@ -376,7 +377,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
       <div className="modal voice-modal" onClick={(e) => e.stopPropagation()}>
         {phase === 'recording' && (
           <>
-            <h2 className="voice-rec-label">🎙 Recording… {mmss}</h2>
+            <h2 className="voice-rec-label"><Icon name="mic"/> Recording… {mmss}</h2>
             <p className="voice-hint">Auto-stops at 8 minutes.</p>
             <div className="voice-actions">
               <button className="primary" onClick={() => void stopRecording(false)}>Stop</button>
@@ -434,7 +435,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
                 <Dropdown value={apptTime} options={TIME_OPTIONS}
                           onChange={setApptTime} ariaLabel="Time"
                           placeholder="Pick a time" />
-                <p className="voice-hint">{apptTime ? `🔔 reminder at ${apptDate}T${apptTime}` : 'No reminder — date-only appointment.'}</p>
+                <p className="voice-hint">{apptTime ? (<><Icon name="bell" size={12}/> reminder at {apptDate}T{apptTime}</>) : 'No reminder — date-only appointment.'}</p>
                 {apptError && <p className="error">{apptError}</p>}
                 <div className="voice-actions">
                   <button className="primary" disabled={busy || !apptBoardId}
