@@ -124,13 +124,13 @@ button {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:hover { background: var(--row-hover); border-color: var(--border-soft); }
-button.primary, .modal > button {
+button.primary, .modal > button, .modal-body > button {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
   font-weight: 600;
 }
-button.primary:hover, .modal > button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.primary:hover, .modal > button:hover, .modal-body > button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 
 input, .modal label input {
   font: inherit;
@@ -979,6 +979,12 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
    the modal surface while the sections scroll under it (min-height 0 lets the
    flex column shrink the body instead of the header). */
 .modal-body {
+  /* T5-review I-2: the modal used to be an implicit stacked column — the body wrapper
+     needs the column + gap or the top cluster (url → label → buttons) goes flush and
+     section gaps lose the 10px rhythm (probe-measured 341→355 etc.). */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   overflow: auto;
   min-height: 0;
 }
