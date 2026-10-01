@@ -453,16 +453,18 @@ li.selected .chip { color: #fff; background: var(--accent-soft); }
 /* T4 (L5, plain lists): header progress — pure-CSS 4px bar; fill carries the
    wire ratio. Display-only: counts COUNT nested children (COUNT(*) over
    checklist_items), never re-derived client-side (T3-review F6). */
-.cl-progress { flex-basis: 100%; height: 4px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.cl-progress { /* T4-review F-1: column child — default stretch, NOT flex-basis:100% (measured 18px vs the spec 4px, text shrank to a 3px sliver) */
+  height: 4px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
 .cl-progress-fill { height: 100%; border-radius: 2px; background: var(--accent); }
 /* T4 (L8): display-only completed group divider — rides the h3 small-caps
    style; the wrapper sits inside the ul (a flex column), so flatten its
    margins. */
 .completed-group { border-top: 1px solid var(--border-soft); padding-top: 10px; }
 .completed-group h3 { margin: 0; }
-/* .row-meta's flex-basis:100% is the flex-ROW wrap rule (list rows); in the
-   checklist HEADER (a flex column) it would claim full container height. */
-#checklist-head .row-meta { flex-basis: auto; }
+/* T4-review F-1: the header meta line is a FLEX-COLUMN child — .row-meta's flex-ROW
+   idioms misfire in this column (flex-basis:100% claims HEIGHT here; row/row-meta
+   overflow:hidden lets the column shrink the n/m text to a clipped sliver). */
+#checklist-head .row-meta { flex-basis: auto; flex-shrink: 0; }
 
 /* ---------- note editor ---------- */
 #note-editor {

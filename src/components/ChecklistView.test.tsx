@@ -1,5 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
@@ -227,6 +232,23 @@ describe('ChecklistView', () => {
     await waitFor(() => expect(screen.getByText('card')).toBeInTheDocument()); // board branch mounted
     expect(document.querySelector('#checklist-head .row-meta.meta-line')).toBeNull(); // counts meta is plain-list only
     expect(document.querySelector('#checklist-head .cl-progress')).toBeNull();
+  });
+
+  it('header layout is column-idiomatic (T4-review F-1 real-engine catch, jsdom cannot see it)', () => {
+    // .cl-progress must NOT carry the list-row flex-ROW idiom (flex-basis:100%) — in the
+    // flex-COLUMN header it measured 18px instead of the spec 4px and shrunk the meta text
+    // to a 3px sliver. Bind both halves so a regression cannot re-ship without breaking here.
+    const css = readFileSync(join(here, '..', 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (sel: string) => {
+      const i = css.indexOf(sel);
+      expect(i, sel).toBeGreaterThan(-1);
+      const b = css.indexOf('{', i);
+      return css.slice(b + 1, css.indexOf('}', b));
+    };
+    expect(rule('.cl-progress')).not.toContain('flex-basis');
+    const headerMeta = rule('#checklist-head .row-meta');
+    expect(headerMeta).toContain('flex-basis: auto');
+    expect(headerMeta).toContain('flex-shrink: 0');
   });
 
   it('rows with a targetDate render a date chip after the item text (top-level and children)', async () => {
