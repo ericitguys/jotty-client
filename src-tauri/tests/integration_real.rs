@@ -51,6 +51,13 @@ fn roundtrip_note_push_and_pull() {
         };
         assert_eq!(ids.len(), 1);
         assert_ne!(ids[0], local.id, "id must be remapped to server uuid");
+        // self-cleanup: this test PUSHES a note to the shared dev instance; a
+        // leftover server-side note makes the NEXT run's `ids.len()==1` count
+        // fail (each run counts via pull, not just its own row). Delete the
+        // pushed note at the end (best-effort, logged).
+        if let Err(e) = client.delete_note(&ids[0]).await {
+            eprintln!("cleanup: failed to delete test note {}: {e:?}", ids[0]);
+        }
     });
 }
 
@@ -316,6 +323,40 @@ async fn run(
         return Err(format!(
             "pull #3 must carry the server-set web reminder (got {:?}, want {WEB_REMINDER})",
             row3.reminder_datetime,
+        ).into());
+    }
+
+    // 10) pull #4 — the CHECK+SHIFT heal (the 2026-10-03 field bug): another
+    //     surface ADDS an item (upstream inserts at INDEX 0 — live-verified),
+    //     which shifts every stored server_path +1 exactly between the local
+    //     row's last reconcile and the next pull. Reconcile must rebind by
+    //     identity: one row, ITS OWN item's flags, no tail duplicate (the old
+    //     text-agnostic path claim produced two visible copies of the task).
+    const NEW_ITEM: &str = "shift probe from another surface";
+    let http2 = reqwest::Client::builder().build()?;
+    let add_url = format!("{url}/api/checklists/{board}/items");
+    let resp = http2
+        .post(&add_url)
+        .header("x-api-key", key)
+        .json(&serde_json::json!({ "text": NEW_ITEM }))
+        .send()
+        .await?;
+    if resp.status().as_u16() != 200 {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_else(|_| "<unreadable>".to_string());
+        return Err(format!("item create for shift probe: expected 200, got {status} — {body}").into());
+    }
+    pull::pull_all(conn, client).await?;
+    let rows4 = items::list_for_checklist(conn, &board)?;
+    if rows4.len() != 2 {
+        return Err(format!(
+            "after another surface's add, exactly 2 rows must remain (the card + the added item), got {}",
+            rows4.len(),
+        ).into());
+    }
+    if !rows4.iter().any(|r| r.text == text && r.server_item_id.as_deref() == Some(item_id.as_str())) {
+        return Err(format!(
+            "the reminder card must still exist as ONE row bound to its own stable id after the +1 shift"
         ).into());
     }
 

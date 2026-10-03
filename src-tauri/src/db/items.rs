@@ -109,39 +109,108 @@ pub fn list_for_checklist(conn: &Connection, checklist_id: &str) -> AppResult<Ve
 pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerItemFlat]) -> AppResult<()> {
     let local = list_for_checklist(conn, checklist_id)?;
     let mut claimed: Vec<String> = Vec::new(); // local_ids matched to server
-    // pending ops shield items from adoption/deletion until their op resolves (Task 7 push-then-pull)
+    // pending ops shield items from adoption/deletion until their op resolves (Task 7 push-then-pull).
+    // The shield applies to EVERY arm: at pull time pending = failed/conflicted ops, and a pull
+    // must never clobber the fields those ops own (a conflicted check kept its completed=1 here).
     let pending: Vec<String> = local
         .iter()
         .filter(|l| matches!(outbox::has_pending_for(conn, "checklist_item", &l.local_id), Ok(true)))
         .map(|l| l.local_id.clone())
         .collect();
+    // local_id of the row currently bound to each claimed server path, for dot-path
+    // parent derivation: DFS order guarantees a parent claim/insert lands before
+    // its children are processed ("0" before "0.0" before "0.0.1").
+    let mut bound: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // Drift signature (v0.21.3 set_reminder precedent): a row's server_item_id is
+    // trustworthy only while the item at its stamped path still carries the row's
+    // text. The old text-agnostic path claim is what let a +1-shifted layout
+    // (upstream creates insert at index 0 — live-verified 1.27.0) stamp foreign
+    // flags/ids onto every row while KEEPING their texts, plus insert a tail copy —
+    // the "completed task shows in BOTH sections" field bug (2026-10-03).
+    // Tenant gone from the snapshot counts as drifted too (layout shrank).
+    fn signature_ok(row: &ItemRow, server_items: &[ServerItemFlat]) -> bool {
+        match row.server_path.as_deref() {
+            None => true,
+            Some(p) => server_items.iter().find(|f| f.path == p)
+                .map(|f| f.text == row.text)
+                .unwrap_or(false),
+        }
+    }
+
+    fn parent_prefix(path: &str) -> Option<String> {
+        path.rsplit_once('.').map(|(p, _)| p.to_string())
+    }
+
     for (order, s) in server_items.iter().enumerate() {
-        // 1) match by server_path
-        let mut target = local.iter().find(|l| l.server_path.as_deref() == Some(s.path.as_str()) && !claimed.contains(&l.local_id));
-        // 2) fallback: unclaimed, no pending op, same text (never-synced dirty locals are adoptable)
+        // A) stable id WITH drift signature (server truth when the binding agrees).
+        let mut target = s.id.as_deref().and_then(|id|
+            local.iter().find(|l| {
+                l.server_item_id.as_deref() == Some(id)
+                    && !claimed.contains(&l.local_id)
+                    && !pending.contains(&l.local_id)
+                    && signature_ok(l, server_items)
+            })
+        );
+        // B) stored path + text: the same item at an untouched index path.
         if target.is_none() {
             target = local.iter().find(|l| {
-                l.server_path.is_none() && !claimed.contains(&l.local_id) && !pending.contains(&l.local_id) && l.text == s.text
+                l.server_path.as_deref() == Some(s.path.as_str())
+                    && !claimed.contains(&l.local_id)
+                    && !pending.contains(&l.local_id)
+                    && l.text == s.text
+            });
+        }
+        // C) dirty in-place fence (pinned by reconcile_keeps_dirty_local_edits): a
+        // DIRTY row still at its path whose id agrees (or predates ids) is a local
+        // edit mid-flight — the local edit owns the row AND its text; claim it
+        // WITHOUT taking the server text. The id gate refuses this ride to a
+        // DRIFTED dirty row (id disagrees = its item moved = text adopt below).
+        if target.is_none() {
+            target = local.iter().find(|l| {
+                l.dirty
+                    && l.server_path.as_deref() == Some(s.path.as_str())
+                    && !claimed.contains(&l.local_id)
+                    && !pending.contains(&l.local_id)
+                    && l.text != s.text
+                    && (l.server_item_id.is_none() || l.server_item_id.as_deref() == s.id.as_deref())
+            });
+        }
+        // D) text adopt (drift heal + never-synced locals): any unclaimed,
+        // non-pending row whose text matches, whatever its stored path — this is
+        // the arm that REBINDS shifted layouts (and clears the stale duplicate).
+        if target.is_none() {
+            target = local.iter().find(|l| {
+                !claimed.contains(&l.local_id) && !pending.contains(&l.local_id) && l.text == s.text
             });
         }
         match target {
             Some(l) => {
                 claimed.push(l.local_id.clone());
+                // Dirty rows keep their local text (the queued op owns it until it
+                // replays); clean rows mirror server truth, which repairs text on
+                // id-confirmed claims whose stored path had drifted away.
+                let text = if l.dirty { l.text.clone() } else { s.text.clone() };
+                let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
                 conn.execute(
-                    "UPDATE checklist_items SET position=?2, completed=?3, server_path=?4, status=?5, priority=?6, target_date=?7, start_date=?8, server_item_id=?9, dirty=0 WHERE local_id=?1",
-                    rusqlite::params![l.local_id, order as i64, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
+                    "UPDATE checklist_items SET position=?2, text=?3, completed=?4, server_path=?5, status=?6, priority=?7, target_date=?8, start_date=?9, server_item_id=?10, parent_id=?11, dirty=0 WHERE local_id=?1",
+                    rusqlite::params![l.local_id, order as i64, text, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), parent_local],
                 )?;
+                bound.insert(s.path.clone(), l.local_id.clone());
             }
             None => {
+                let local_id = uuid::Uuid::new_v4().to_string();
+                let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
                 conn.execute(
                     "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id)
-                     VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)",
-                    rusqlite::params![uuid::Uuid::new_v4().to_string(), checklist_id, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12)",
+                    rusqlite::params![local_id, checklist_id, parent_local, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
                 )?;
+                bound.insert(s.path.clone(), local_id);
             }
         }
     }
-    // 3) unclaimed, not dirty, no pending op -> server removed it
+    // 5) unclaimed, not dirty, no pending op -> server removed it
     for l in local.iter() {
         if claimed.contains(&l.local_id) { continue; }
         if l.dirty { continue; }
@@ -365,6 +434,123 @@ mod tests {
         let after = list_for_checklist(&conn, &list.id).unwrap();
         assert_eq!(after.len(), 1, "dirty local must not be deleted or duplicated");
         assert_eq!(after[0].text, "a edited");
+    }
+
+    // THE FIELD BUG (user report 2026-10-03, mobile): "completed a task, it went
+    // in the completed section but it also stayed in the to do section".
+    // Sequence: rows synced clean -> user checks T2 (row dirty, op replayed+done)
+    // -> ANOTHER surface adds T5 (upstream creates insert at INDEX 0 — live-verified
+    // 1.27.0) -> the next reconcile sees a +1-shifted layout. Reconcile must rebind
+    // rows by identity (text for simple lists) so the checked item stays ONE row,
+    // completed, and every row binds ITS OWN server item.
+    #[test]
+    fn reconcile_rebinds_shifted_layout_after_a_check_no_duplicates() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        reconcile(&conn, &list.id, &flatten(&vec![
+            server_item("T0", false, vec![]),
+            server_item("T1", false, vec![]),
+            server_item("T2", false, vec![]),
+        ])).unwrap();
+        // user completes T2: local truth flips; the check op replays + completes (op done → NOT pending)
+        let rows = list_for_checklist(&conn, &list.id).unwrap();
+        let t2 = rows.iter().find(|r| r.text == "T2").unwrap().clone();
+        set_checked(&conn, &t2.local_id, true).unwrap();
+        // another surface (web/desktop) adds T5 — upstream inserts at index 0
+        let added = insert_local(&conn, &NewItem { checklist_id: list.id.clone(), parent_local_id: None, text: "T5".into(), status: None, priority: None, target_date: None }).unwrap();
+        let _ = added;
+        let shifted = vec![
+            server_item("T5", false, vec![]),          // NEW item at index 0 (upstream insert-at-0)
+            server_item("T0", false, vec![]),
+            server_item("T1", false, vec![]),
+            server_item("T2", true, vec![]),           // the check REPLAYED server-side: completed
+        ];
+        reconcile(&conn, &list.id, &flatten(&shifted)).unwrap();
+        let after = list_for_checklist(&conn, &list.id).unwrap();
+        let t2s: Vec<_> = after.iter().filter(|r| r.text == "T2").collect();
+        assert_eq!(t2s.len(), 1, "the completed task must exist as ONE row (user saw it in both sections): {:?}", after.iter().map(|r| (r.text.as_str(), r.completed, r.server_path.clone())).collect::<Vec<_>>());
+        assert!(t2s[0].completed, "the single T2 row keeps the completed flag");
+        // every text binds to its OWN server item — no flag/text cross-assignment
+        for r in &after {
+            let own = shifted.iter().find(|s| s.text == r.text).map(|s| s.completed.unwrap_or(false)).unwrap();
+            assert_eq!(r.completed, own, "row '{}' must carry its own item's completed flag", r.text);
+            assert_eq!(r.server_path.as_deref(), Some(flat_pos(&shifted, &r.text).as_str()), "row '{}' rebinds to its own index path", r.text);
+        }
+    }
+
+    /// flat DFS index path of the FIRST server item with `text` (top-level helper for the tests above).
+    fn flat_pos(server: &[ServerItem], text: &str) -> String {
+        flatten_items(server).into_iter().find(|(_, it)| it.text == text).map(|(p, _)| p).unwrap()
+    }
+
+    // Prior reconcile runs on a +1-shifted layout (pre-fix builds) can stamp each
+    // row with the PREVIOUS path-tenant's flags/server_item_id while keeping its
+    // text, plus an inserted tail row. The fixed reconcile must HEAL such a DB in
+    // one pull: ids only trusted with the drift signature, text rebinds the rest,
+    // orphaned contaminated rows die, and the completed tail ends bound to its own.
+    #[test]
+    fn reconcile_heals_contaminated_rows_from_older_builds() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        // simulate the contaminated state the old reconcile produced (texts kept,
+        // flags/ids/path-boundaries shifted +1): L0 carries T5's id, L1 carries
+        // T0's id, L2 carries T1's id (un-completed!), T2's real row is the tail copy.
+        for (text, completed, path, sid) in [
+            ("T0", false, "0", "srv-T5"),
+            ("T1", false, "1", "srv-T0"),
+            ("T2", false, "2", "srv-T1"),
+            ("T2", true, "3", "srv-T2"),
+        ] {
+            conn.execute(
+                "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, 0, NULL, NULL, NULL, NULL, ?7)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), list.id, text, completed as i64, path.parse::<i64>().unwrap(), path, sid],
+            ).unwrap();
+        }
+        // the phone's own never-synced T5 add rides along, adopted at index 0
+        insert_local(&conn, &NewItem { checklist_id: list.id.clone(), parent_local_id: None, text: "T5".into(), status: None, priority: None, target_date: None }).unwrap();
+        let server = vec![
+            server_item("T5", false, vec![]),
+            server_item("T0", false, vec![]),
+            server_item("T1", false, vec![]),
+            server_item("T2", true, vec![]),
+        ];
+        reconcile(&conn, &list.id, &flatten(&server)).unwrap();
+        let after = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(after.len(), 4, "contaminated copies must die, one row per item: {:?}", after.iter().map(|r| (r.text.as_str(), r.completed, r.server_path.clone())).collect::<Vec<_>>());
+        for r in &after {
+            let own = server.iter().find(|s| s.text == r.text).map(|s| s.completed.unwrap_or(false)).unwrap();
+            assert_eq!(r.completed, own, "row '{}' must carry its own item's completed flag", r.text);
+            assert_eq!(r.server_path.as_deref(), Some(flat_pos(&server, &r.text).as_str()));
+            assert_eq!(r.server_item_id.as_deref(), Some(format!("srv-{}", r.text).as_str()));
+        }
+        assert_eq!(after.iter().filter(|r| r.text == "T2").count(), 1);
+    }
+
+    /// Server-side children (added on the web) must import NESTED under their
+    /// parent row — parent derived from the dot-path prefix, never as stray
+    /// top-level rows. (reconcile's INSERT hardcoded parent_id NULL before.)
+    #[test]
+    fn reconcile_imports_server_children_nested_and_rebinds_them_after_shifts() {
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        let parent = server_item("P", false, vec![server_item("C", false, vec![])]);
+        reconcile(&conn, &list.id, &flatten(&vec![parent.clone()])).unwrap();
+        let rows = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(rows.len(), 2);
+        let c = rows.iter().find(|r| r.text == "C").unwrap();
+        let p = rows.iter().find(|r| r.text == "P").unwrap();
+        assert_eq!(c.parent_id.as_deref(), Some(p.local_id.as_str()), "server child nests under its parent row");
+        assert_eq!(c.server_path.as_deref(), Some("0.0"));
+        // shift: another surface prepends a new parent; P/C move to paths "1"/"1.0"
+        let shifted = vec![server_item("N", false, vec![]), server_item("P", false, vec![server_item("C", false, vec![])])];
+        reconcile(&conn, &list.id, &flatten(&shifted)).unwrap();
+        let after = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(after.len(), 3);
+        let c2 = after.iter().find(|r| r.text == "C").unwrap();
+        let p2 = after.iter().find(|r| r.text == "P").unwrap();
+        assert_eq!(c2.parent_id.as_deref(), Some(p2.local_id.as_str()), "child re-parents to the rebound parent row");
+        assert_eq!(c2.server_path.as_deref(), Some("1.0"));
     }
 
     #[test]
