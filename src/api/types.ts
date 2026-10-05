@@ -11,6 +11,9 @@ export interface ItemDto {
   // serde Option; optional in TS so pre-appointments mocks keep compiling.
   startDate?: string | null; serverItemId?: string | null;
   reminderDatetime?: string | null; reminderNotified?: boolean | null;
+  // LOCAL-ONLY client-side recurrence (migration v5): raw JSON string
+  // {rrule, dtstart, nextDue, ...}; never synced, never in outbox payloads.
+  recurrence?: string | null;
   children: ItemDto[];
 }
 /** Appointments agenda row (Rust AgendaEntryDto, commands/dto.rs — serde

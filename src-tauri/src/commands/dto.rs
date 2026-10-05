@@ -68,6 +68,7 @@ pub struct ItemDto {
     pub server_item_id: Option<String>,
     pub reminder_datetime: Option<String>,
     pub reminder_notified: Option<bool>,
+    pub recurrence: Option<String>,
     pub children: Vec<ItemDto>,
 }
 
@@ -88,6 +89,7 @@ impl From<items::ItemRow> for ItemDto {
             server_item_id: r.server_item_id,
             reminder_datetime: r.reminder_datetime,
             reminder_notified: r.reminder_notified,
+            recurrence: r.recurrence.clone(),
             children: Vec::new(),
         }
     }
@@ -395,6 +397,7 @@ mod tests {
             server_item_id: Some("srv-1".into()),
             reminder_datetime: Some("2026-10-01T09:00:00.000Z".into()),
             reminder_notified: Some(true),
+            recurrence: None,
         };
         let dto = ItemDto::from(row);
         assert_eq!(dto.start_date.as_deref(), Some("2026-10-01"));
@@ -406,6 +409,36 @@ mod tests {
         assert_eq!(v["serverItemId"], "srv-1");
         assert_eq!(v["reminderDatetime"], "2026-10-01T09:00:00.000Z");
         assert_eq!(v["reminderNotified"], true);
+    }
+
+    #[test]
+    fn item_dto_carries_recurrence_json() {
+        use crate::db::items::ItemRow;
+        let row = ItemRow {
+            local_id: "i1".into(),
+            checklist_id: "l1".into(),
+            parent_id: None,
+            text: "T".into(),
+            completed: false,
+            position: 0,
+            server_path: None,
+            dirty: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+            server_item_id: None,
+            reminder_datetime: None,
+            reminder_notified: None,
+            recurrence: Some("{\"rrule\":\"FREQ=WEEKLY;INTERVAL=1\"}".into()),
+        };
+        let dto: ItemDto = row.clone().into();
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["recurrence"], "{\"rrule\":\"FREQ=WEEKLY;INTERVAL=1\"}");
+        let mut row2 = row;
+        row2.recurrence = None;
+        let v2 = serde_json::to_value(&Into::<ItemDto>::into(row2)).unwrap();
+        assert!(v2.get("recurrence").is_none() || v2["recurrence"].is_null());
     }
 }
 

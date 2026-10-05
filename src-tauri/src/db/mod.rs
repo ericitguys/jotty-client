@@ -104,7 +104,9 @@ mod tests {
             assert!(cols.iter().any(|x| x == c), "missing checklist_items.{c}");
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 4);
+        // >= 4: later migrations (v5+) bump the version further; the exact pin
+        // lives in the latest migration's test (migration_v5_recurrence_column_roundtrips).
+        assert!(version >= 4);
     }
 
     #[test]

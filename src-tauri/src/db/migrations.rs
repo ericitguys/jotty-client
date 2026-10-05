@@ -97,6 +97,13 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE checklist_items ADD COLUMN reminder_datetime TEXT;
     ALTER TABLE checklist_items ADD COLUMN reminder_notified INTEGER;
     "#,
+    r#"
+-- v5: kanban recurrence (2026-10-05) - LOCAL-ONLY client-side recurrence data on
+-- checklist items. Never synced, never in outbox ops, never dirty-tracked by this
+-- column; authored/rolled by this device (db/recurrence.rs). Same contract class
+-- as the voice audio columns.
+ALTER TABLE checklist_items ADD COLUMN recurrence TEXT;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

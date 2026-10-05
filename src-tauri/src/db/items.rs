@@ -21,6 +21,7 @@ pub struct ItemRow {
     pub server_item_id: Option<String>,
     pub reminder_datetime: Option<String>,
     pub reminder_notified: Option<bool>,
+    pub recurrence: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +72,7 @@ fn fts_refresh(conn: &Connection, list_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, reminder_datetime, reminder_notified";
+const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, reminder_datetime, reminder_notified, recurrence";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
     Ok(ItemRow {
@@ -90,6 +91,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
         server_item_id: r.get(12)?,
         reminder_datetime: r.get(13)?,
         reminder_notified: r.get::<_, Option<i64>>(14)?.map(|v| v != 0),
+        recurrence: r.get(15)?,
     })
 }
 
@@ -291,6 +293,15 @@ pub fn set_reminder_from_server(conn: &Connection, local_id: &str, datetime: Opt
     Ok(())
 }
 
+pub fn set_recurrence_raw(conn: &Connection, local_id: &str, value: Option<&str>) -> AppResult<()> {
+    // LOCAL-ONLY: recurrence never syncs; no dirty flag, NO outbox op (voice audio precedent).
+    conn.execute(
+        "UPDATE checklist_items SET recurrence=?1 WHERE local_id=?2",
+        rusqlite::params![value, local_id],
+    )?;
+    Ok(())
+}
+
 /// Mirrors upstream applyStatus (item-status-utils.ts, source-verified 2026-09-20):
 /// target autoComplete -> completed=1; status CHANGED on a completed row -> completed=0;
 /// same-status no-op -> completed untouched. Row always marked dirty=1.
@@ -360,7 +371,7 @@ pub fn reorder_local(conn: &Connection, checklist_id: &str, ordered_top_level_id
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{checklists, migrations, open};
+    use crate::db::{checklists, items, migrations, open};
     use serde_json::json;
     use std::path::Path;
 
@@ -718,5 +729,81 @@ mod tests {
         assert_eq!(r.reminder_datetime, None);
         assert_eq!(r.reminder_notified, None);
         assert!(!r.dirty);
+    }
+
+    #[test]
+    fn migration_v5_recurrence_column_roundtrips() {
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let row = items::insert_local(
+            &conn,
+            &NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "T".into(), status: None, priority: None, target_date: None },
+        )
+        .unwrap();
+        items::set_recurrence_raw(&conn, &row.local_id, Some(r#"{"rrule":"FREQ=WEEKLY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-08T00:00:00+00:00"}"#)).unwrap();
+        let got = items::get(&conn, &row.local_id).unwrap().unwrap();
+        assert_eq!(
+            got.recurrence.as_deref(),
+            Some(r#"{"rrule":"FREQ=WEEKLY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-08T00:00:00+00:00"}"#)
+        );
+        items::set_recurrence_raw(&conn, &row.local_id, None).unwrap();
+        assert!(items::get(&conn, &row.local_id).unwrap().unwrap().recurrence.is_none());
+    }
+
+    #[test]
+    fn set_recurrence_raw_does_not_mark_dirty() {
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let row = items::insert_local(
+            &conn,
+            &NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "T".into(), status: None, priority: None, target_date: None },
+        )
+        .unwrap();
+        conn.execute("UPDATE checklist_items SET dirty=0 WHERE local_id=?1", [&row.local_id]).unwrap();
+        items::set_recurrence_raw(&conn, &row.local_id, Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\",\"dtstart\":\"2026-10-01T00:00:00+00:00\",\"nextDue\":\"2026-10-02T00:00:00+00:00\"}")).unwrap();
+        assert!(!items::get(&conn, &row.local_id).unwrap().unwrap().dirty);
+    }
+
+    #[test]
+    fn reconcile_claimed_update_preserves_local_recurrence() {
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let row = items::insert_local(
+            &conn,
+            &NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "Groceries".into(), status: None, priority: None, target_date: None },
+        )
+        .unwrap();
+        items::set_recurrence_raw(&conn, &row.local_id, Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}")).unwrap();
+        conn.execute("UPDATE checklist_items SET dirty=0, server_item_id='sid-1' WHERE local_id=?1", [&row.local_id]).unwrap();
+        let flat = items::ServerItemFlat {
+            path: "0".into(),
+            id: Some("sid-1".into()),
+            text: "Groceries".into(),
+            completed: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+        };
+        items::reconcile(&conn, "l1", &[flat]).unwrap();
+        let after = items::get(&conn, &row.local_id).unwrap().unwrap();
+        assert_eq!(after.recurrence.as_deref(), Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}"));
+        assert!(!after.dirty);
     }
 }
