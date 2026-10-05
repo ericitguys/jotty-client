@@ -478,7 +478,7 @@ pub(crate) fn board_dto_from_cache(conn: &Connection, checklist_id: &str) -> Boa
 pub(crate) async fn fetch_task_board_inner(state: &AppState, checklist_id: &str) -> AppResult<BoardDto> {
     let client = state.client.read().await.clone()
         .ok_or_else(|| AppError::Other("not connected".into()))?;
-    match client.get_task(checklist_id).await {
+    let result: AppResult<BoardDto> = match client.get_task(checklist_id).await {
         Ok(task) => {
             let conn = state.db.lock().await;
             let server_statuses = task.statuses.unwrap_or_default();
@@ -503,7 +503,17 @@ pub(crate) async fn fetch_task_board_inner(state: &AppState, checklist_id: &str)
             let conn = state.db.lock().await;
             Ok(board_dto_from_cache(&conn, checklist_id))
         }
+    };
+    // T3 (R-rec-5): recurrence sweep at board open — at the very END, after the
+    // existing silent-error cache handling above, so an OFFLINE board open
+    // (fetch failed) still rolls due cards. Non-fatal + silent (the `let _`
+    // shape mirrors the cache-keep pattern above): a sweep failure never
+    // fails the board open.
+    {
+        let conn = state.db.lock().await;
+        let _ = sweep_recurrence_inner(&conn);
     }
+    result
 }
 
 pub(crate) async fn get_board_columns_inner(state: &AppState, checklist_id: &str) -> AppResult<BoardDto> {
@@ -978,6 +988,26 @@ pub async fn set_item_recurrence(
 ) -> Result<(), String> {
     let mut conn = state.db.lock().await;
     crate::db::recurrence::set_item_recurrence_inner(&mut conn, &checklist_id, &item_local_id, preset).map_err(|e| e.to_string())
+}
+
+/// Roll every due recurring card (recurrence T3): the device-local sweep over
+/// completed rows whose next slot has passed — reset-in-place, ops ride the
+/// existing outbox kinds (check/status/set_date/set_reminder). The four
+/// wire seats (R-rec-5: pull post-enrichment, push group-close, board open,
+/// startup) treat this call as NON-FATAL; this command surfaces the
+/// rolled-count/error to the caller instead (the frontend timer in T4
+/// invokes it on mount + every 60s).
+pub(crate) fn sweep_recurrence_inner(conn: &Connection) -> AppResult<usize> {
+    crate::db::recurrence::sweep(conn, chrono::Utc::now())
+}
+
+/// Frontend sweep trigger (recurrence T3/T4): returns the rolled top-level
+/// count. Mirrors the set_item_reminder wrapper shape (:956): one db lock,
+/// inner call, map_err to String.
+#[tauri::command]
+pub async fn sweep_recurrence(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    let conn = state.db.lock().await;
+    sweep_recurrence_inner(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3193,5 +3223,44 @@ mod tests {
         assert_eq!(v["targetDate"], "2026-10-01");
         assert_eq!(v["reminderDatetime"], "2026-10-01T09:00:00.000Z");
         assert_eq!(v["reminderNotified"], true);
+    }
+
+    // ---- T3: recurrence sweep command + board-open seat (R-rec-5) ----
+
+    fn seed_due_recurring(conn: &Connection) -> String {
+        conn.execute(
+            "INSERT INTO checklists (id, title, list_type, created_at, updated_at) VALUES ('l1', 'L', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let id = "i-1".to_string();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, text, completed, position, dirty, recurrence) VALUES ('i-1','l1','X',1,0,0,?1)",
+            [r#"{"rrule":"FREQ=DAILY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-01T00:00:00+00:00"}"#],
+        ).unwrap();
+        id
+    }
+
+    #[test]
+    fn sweep_recurrence_inner_rolls_due_rows() {
+        let conn = crate::db::test_conn();
+        let id = seed_due_recurring(&conn);
+        let n = sweep_recurrence_inner(&conn).unwrap();
+        assert_eq!(n, 1);
+        assert!(!crate::db::items::get(&conn, &id).unwrap().unwrap().completed);
+    }
+
+    #[tokio::test]
+    async fn fetch_task_board_inner_sweeps_even_when_fetch_fails() {
+        let conn = crate::db::test_conn();
+        let id = seed_due_recurring(&conn);
+        // unreachable board URL: mirror the file-convention client usage rule
+        // (http://127.0.0.1:1). The brief sketched a (conn, client, list_id)
+        // signature; the LIVE fn takes (&AppState, checklist_id) — call shape
+        // adapted per the brief's NOTE, assertions verbatim.
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(crate::keys::MockKeyStore::default())).unwrap();
+        *state.client.write().await = Some(crate::jotty::client::JottyClient::new("http://127.0.0.1:1", "ck_test").unwrap());
+        fetch_task_board_inner(&state, "l1").await.unwrap();
+        let conn = state.db.lock().await;
+        assert!(!crate::db::items::get(&conn, &id).unwrap().unwrap().completed);
     }
 }

@@ -32,6 +32,12 @@ pub fn run() {
             if let Err(e) = db::voice::sweep_startup(&conn, &voice_dir) {
                 log::warn!("voice startup sweep failed (non-fatal): {e}");
             }
+            // T3 (R-rec-5): recurrence startup sweep — mirrors the voice
+            // sweep_startup warn pattern; non-fatal, a failed roll never
+            // blocks startup.
+            if let Err(e) = db::recurrence::sweep(&conn, chrono::Utc::now()) {
+                log::warn!("recurrence startup sweep failed (non-fatal): {e}");
+            }
             app.manage(crate::audio::VoiceRecorder::default());
             // restore connection if instance_url exists
             let state = state::AppState::new(
@@ -69,6 +75,7 @@ pub fn run() {
             commands::set_item_target_date,
             commands::set_item_reminder,
             commands::set_item_recurrence,
+            commands::sweep_recurrence,
             commands::delete_item,
             commands::reorder_items,
             commands::list_categories,

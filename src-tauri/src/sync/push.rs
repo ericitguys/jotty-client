@@ -369,6 +369,13 @@ async fn close_item_group(conn: &Connection, client: &JottyClient, list_id: &str
     if let Ok(lists) = client.get_checklists().await {
         if let Some(c) = lists.iter().find(|c| c.id == list_id) {
             items::reconcile(conn, list_id, &items::flatten(&c.items))?;
+            // T3 (R-rec-5): recurrence sweep AFTER the group-close reconcile,
+            // BEFORE mark_list_synced — a server-checked recurring card rolls
+            // the moment its group lands. Non-fatal: a sweep failure NEVER
+            // fails the push run (warn and carry on).
+            if let Err(e) = crate::db::recurrence::sweep(conn, chrono::Utc::now()) {
+                log::warn!("recurrence sweep after group close: {e}");
+            }
             checklists::mark_list_synced(conn, list_id, &c.updated_at)?;
         }
     }
@@ -1960,6 +1967,60 @@ mod tests {
             "SELECT state, attempts FROM outbox WHERE seq=9", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(state, "done");
         assert_eq!(attempts, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // T3: recurrence sweep seat in close_item_group (R-rec-5). The seat sits
+    // BETWEEN items::reconcile and mark_list_synced and is non-fatal
+    // (log::warn on error; the push run NEVER aborts on a sweep failure).
+    // Harness = byte-mirror of status_move_replays_to_resolved_path (catalog
+    // body field names, list insert + remap, row shape) with the set_date
+    // PATCH mock of item_set_date_ops_replay_as_target_date_patches; the
+    // brief's `(i64,)` tuple query shape adapted to the scalar i64 shape
+    // (Task 2 D2 precedent).
+
+    #[tokio::test]
+    async fn group_close_sweeps_due_recurring_after_reconcile() {
+        // Seed a recurring completed due row + one queued set_date op for it. The
+        // seed carries server_path='0' + server_item_id='sid-1' (+ text matching
+        // the mocked snapshot item) so the group-close reconcile CLAIMS the row
+        // (arm A + drift signature: same text at the stamped path) instead of
+        // deleting/reinserting it unclaimed. The catalog shows the card
+        // COMPLETED — the server-checked claim completes the local row, then the
+        // sweep seat rolls it. push_pending replays the op, group-close
+        // reconciles, then the sweep rolls it: row completed=0 AND new pending
+        // ops appeared beyond the replayed one.
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [ { "id": "l1", "title": "B", "category": "Home", "type": "kanban",
+                    "items": [ { "id": "sid-1", "index": 0, "text": "card", "completed": true, "status": "todo" } ],
+                    "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" } ]
+            })))
+            .mount(&s).await;
+        // the replayed set_date op (check-op class, fresh snapshot) PATCHes the card's date
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let mut conn = crate::db::test_conn();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        // same remap as status_move_replays_to_resolved_path: bind the mocked server id + clear dirty
+        conn.execute("UPDATE checklists SET id='l1', dirty=0 WHERE id=?1", [&list.id]).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, server_item_id, dirty, status, priority, target_date, recurrence)
+             VALUES ('i-1', 'l1', NULL, 'card', 1, 0, '0', 'sid-1', 0, 'todo', NULL, NULL, ?1)",
+            [r#"{"rrule":"FREQ=DAILY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-01T00:00:00+00:00"}"#],
+        ).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", "i-1",
+            &serde_json::json!({"item_local_id": "i-1", "checklist_id": "l1", "targetDate": "2026-10-01"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the queued set_date op must replay");
+        assert_eq!(stats.conflicts, 0);
+        let row = crate::db::items::get(&conn, "i-1").unwrap().unwrap();
+        assert!(!row.completed, "row.completed == false after push_pending");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE state='pending'", [], |r| r.get(0)).unwrap();
+        assert!(n > 1, "the sweep's check op must ride behind the replayed set_date");
     }
 }
 

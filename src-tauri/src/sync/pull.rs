@@ -70,6 +70,17 @@ pub async fn pull_all(conn: &mut Connection, client: &JottyClient) -> AppResult<
     // failure — never zeroed.
     enrich_kanban_reminders(conn, client, &mut stats).await?;
 
+    // T3 (R-rec-5): recurrence sweep AFTER enrichment, BEFORE the last_sync
+    // write — server-checked recurring cards complete via the catalog
+    // reconcile up top and must roll before the pull reports done. Non-fatal:
+    // a sweep failure rides the SAME error channel the enrichment errors use
+    // (log::warn + stats.enrichment_errors); the pull NEVER aborts on it and
+    // last_sync_at is still written.
+    if let Err(e) = crate::db::recurrence::sweep(conn, Utc::now()) {
+        log::warn!("recurrence sweep: {e}");
+        stats.enrichment_errors += 1;
+    }
+
     // record last sync
     conn.execute(
         "INSERT INTO sync_state(key, value) VALUES ('last_sync_at', ?1)
@@ -507,5 +518,59 @@ mod tests {
         let row = crate::db::items::get(&conn, "it-1").unwrap().unwrap();
         assert_eq!(row.reminder_notified, Some(true), "notified true must map to 1");
         assert_eq!(row.reminder_datetime.as_deref(), Some("2026-10-01T09:00:00.000Z"));
+    }
+
+    // ------------------------------------------------------------------
+    // T3: recurrence sweep seat in pull_all (R-rec-5). The seat sits at the
+    // END of pull_all — AFTER enrich_kanban_reminders, BEFORE the last_sync
+    // write — and is non-fatal, riding the same error channel the
+    // enrichment errors use (log::warn + stats.enrichment_errors).
+    // NOTE: the brief's `(i64,)` tuple query_row shape does not compile
+    // (rusqlite 0.32 has no FromSql for (i64,) — Task 2 D2 precedent); the
+    // count assert below uses the repo-standard scalar i64 shape.
+
+    #[tokio::test]
+    async fn pull_sweep_runs_after_reconcile_server_checked_recurring_rolls() {
+        // Discriminates seat ORDER: the server carries completed=true for a locally
+        // recurring DUE row that is currently clean and completed=0. If sweep ran
+        // BEFORE reconcile, the row would complete (server flag) and stay completed
+        // with no ops. Only a post-reconcile sweep un-completes it and enqueues ops.
+        let s = server_with_notes_and_lists(
+            serde_json::json!({"notes": []}),
+            // catalog updatedAt 2026-10-05 is NEWER than the seeded local row's
+            // 2026-01-01, so the pull upserts and reconcile CLAIMS the row (arm
+            // A via server_item_id + matching text at stamped path '0') — this
+            // is why the seed carries server_path='0' AND server_item_id='sid-1';
+            // a pathless row would be deleted-and-reinserted unclaimed
+            // (recurrence lost, roll never fires). Real catalog envelope shape
+            // and item fields byte-mirror the exemplar enrichment fence above.
+            serde_json::json!({"checklists": [{
+                "id": "l1", "title": "L", "category": "Home", "type": "kanban",
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-10-05T00:00:00Z",
+                "items": [{ "id": "sid-1", "index": 0, "text": "Weekly report", "completed": true }]
+            }]}),
+        ).await;
+        Mock::given(method("GET")).and(path("/api/kanban/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(board_envelope("l1", serde_json::json!([
+                {"id": "sid-1", "index": 0, "text": "Weekly report", "status": "todo", "completed": true}
+            ]))))
+            .mount(&s).await;
+        let mut conn = crate::db::test_conn();
+        // seed checklist row + clean recurring item completed=0, due slot in the past
+        conn.execute(
+            "INSERT INTO checklists (id, title, list_type, created_at, updated_at) VALUES ('l1', 'L', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let local_id = "i-1";
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, text, completed, position, dirty, server_path, server_item_id, recurrence) VALUES ('i-1','l1','Weekly report',0,0,0,'0','sid-1',?1)",
+            [r#"{"rrule":"FREQ=WEEKLY;INTERVAL=1","dtstart":"2026-09-24T00:00:00+00:00","nextDue":"2026-10-01T00:00:00+00:00"}"#],
+        ).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        pull_all(&mut conn, &client).await.unwrap();
+        let row = crate::db::items::get(&conn, local_id).unwrap().unwrap();
+        assert!(!row.completed, "post-reconcile sweep must reset the just-completed recurring card");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE state='pending' AND op_type='check'", [], |r| r.get(0)).unwrap();
+        assert!(n >= 1, "roll must enqueue a check(false) op");
     }
 }

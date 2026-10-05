@@ -19,6 +19,19 @@ pub fn open(path: &Path) -> AppResult<rusqlite::Connection> {
     Ok(conn)
 }
 
+/// T3 shared test connection (controller pre-ruling 2026-10-05): tempdir +
+/// open + migrations, mirroring the per-file `db()` helper bodies exactly.
+/// The pull/push/commands recurrence-seat fences use this one helper; the
+/// per-file `db()` helpers stay untouched.
+#[cfg(test)]
+pub(crate) fn test_conn() -> rusqlite::Connection {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open(&dir.path().join("t.db")).unwrap();
+    std::mem::forget(dir);
+    migrations::run(&conn).unwrap();
+    conn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
