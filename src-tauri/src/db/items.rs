@@ -806,4 +806,52 @@ mod tests {
         assert_eq!(after.recurrence.as_deref(), Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}"));
         assert!(!after.dirty);
     }
+
+    // Task-2 rider (pre-ruled by the Task 1 review): the claimed-UPDATE write must
+    // leave the LOCAL-ONLY recurrence column intact in the DIRTY in-place claim
+    // arm as well — a mid-flight local edit claimed at its path keeps its own
+    // text, and recurrence is preserved by omission from the SET list.
+    #[test]
+    fn reconcile_dirty_claim_preserves_recurrence() {
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let row = items::insert_local(
+            &conn,
+            &NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "Groceries".into(), status: None, priority: None, target_date: None },
+        )
+        .unwrap();
+        items::set_recurrence_raw(&conn, &row.local_id, Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}")).unwrap();
+        // seed to exercise the dirty in-place claim arm (items.rs arm C): row DIRTY,
+        // still at its server path, id agreeing, text MISMATCHING the server item so
+        // the arm's `l.text != s.text` gate passes and the row is claimed while dirty.
+        conn.execute(
+            "UPDATE checklist_items SET dirty=1, server_path='0', server_item_id='sid-1', text='Groceries edited' WHERE local_id=?1",
+            [&row.local_id],
+        )
+        .unwrap();
+        let flat = items::ServerItemFlat {
+            path: "0".into(),
+            id: Some("sid-1".into()),
+            text: "Groceries".into(),
+            completed: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+        };
+        items::reconcile(&conn, "l1", &[flat]).unwrap();
+        let after = items::get(&conn, &row.local_id).unwrap().unwrap();
+        assert_eq!(after.recurrence.as_deref(), Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}"), "recurrence must survive the dirty in-place claim");
+        assert_eq!(after.text, "Groceries edited", "the dirty claim rides WITHOUT taking the server text");
+        // NOTE (disclosed delta vs the pre-ruled wording): the ruled assert read
+        // "dirty stays 1", but the claimed-UPDATE write (items.rs reconcile, the
+        // `dirty=0` SET member) clears dirty on EVERY claim, so no "claimed while
+        // dirty" seed can end dirty — this fence asserts the actual shape instead.
+        assert!(!after.dirty, "the claim write owns the row: dirty clears");
+    }
 }

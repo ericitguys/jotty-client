@@ -5,6 +5,7 @@ pub mod items;
 pub mod migrations;
 pub mod notes;
 pub mod outbox;
+pub mod recurrence;
 pub mod voice;
 
 use std::path::Path;

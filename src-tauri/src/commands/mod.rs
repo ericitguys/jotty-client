@@ -963,6 +963,23 @@ pub async fn set_item_reminder(
     set_item_reminder_inner(&mut conn, &checklist_id, &item_local_id, datetime).map_err(|e| e.to_string())
 }
 
+/// Set/clear a kanban card's repeat (recurrence T2): authors/clears the card's
+/// LOCAL-ONLY recurrence JSON via db::recurrence::set_item_recurrence_inner —
+/// kanban-family gate inside; dtstart anchors to the card date (UTC midnight)
+/// or now, nextDue = first slot strictly after now, and one set_date op is
+/// enqueued ONLY when the card had NO target date yet (R-rec-7). The frontend
+/// sends camelCase invoke keys: { checklistId, itemLocalId, preset }.
+#[tauri::command]
+pub async fn set_item_recurrence(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    preset: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    crate::db::recurrence::set_item_recurrence_inner(&mut conn, &checklist_id, &item_local_id, preset).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_item(
     state: tauri::State<'_, AppState>,

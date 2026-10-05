@@ -68,6 +68,7 @@ pub fn run() {
             commands::set_item_status,
             commands::set_item_target_date,
             commands::set_item_reminder,
+            commands::set_item_recurrence,
             commands::delete_item,
             commands::reorder_items,
             commands::list_categories,
