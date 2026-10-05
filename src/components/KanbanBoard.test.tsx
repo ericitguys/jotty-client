@@ -56,6 +56,10 @@ beforeEach(() => {
     if (cmd === 'get_board_columns') return Promise.resolve(board);
     if (cmd === 'fetch_task_board') return Promise.resolve(board);
     if (cmd === 'set_item_target_date') return Promise.resolve({});
+    // task 4 (recurrence): the base impl carries the new command TOO — a
+    // per-test mockImplementation override REPLACES this whole impl, so any
+    // command a flow touches must be listed again in the override.
+    if (cmd === 'set_item_recurrence') return Promise.resolve({});
     return Promise.resolve({});
   });
 });
@@ -508,5 +512,87 @@ describe('tier B board cards (task 3)', () => {
     expect(card).toHaveClass('dragging');
     fireEvent.dragEnd(card, { dataTransfer: dt });
     expect(card).not.toHaveClass('dragging');
+  });
+});
+
+// ---- Kanban recurrence (task 4): Repeat menu + chip ---------------------------
+// Mirrors the menu/menu-branch harness above (Move-to/reminder fences): same
+// board fixture, same Card-actions-first-card flow, same invoke assertions.
+
+describe('KanbanBoard recurrence (task 4)', () => {
+  it('repeat menu renders the six options', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Repeat'));
+    // the six presets + Back (same parity as the date/reminder editor branches)
+    expect(screen.getByText('None')).toBeInTheDocument();
+    expect(screen.getByText('Daily')).toBeInTheDocument();
+    expect(screen.getByText('Weekly')).toBeInTheDocument();
+    expect(screen.getByText('Bi-weekly')).toBeInTheDocument();
+    expect(screen.getByText('Monthly')).toBeInTheDocument();
+    expect(screen.getByText('Yearly')).toBeInTheDocument();
+    expect(screen.getByText('Back')).toBeInTheDocument();
+  });
+
+  it('picking Bi-weekly invokes set_item_recurrence with biweekly and reloads', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Repeat'));
+    fireEvent.click(screen.getByText('Bi-weekly'));
+    // preset key literal mirrors the rust engine's Preset::key (db/recurrence.rs)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_recurrence', { checklistId: 'b1', itemLocalId: 'i1', preset: 'biweekly' }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('picking None clears (preset null)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Repeat'));
+    fireEvent.click(screen.getByText('None'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_recurrence', { checklistId: 'b1', itemLocalId: 'i1', preset: null }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('card shows the repeat chip with label', async () => {
+    // fixture: the exact JSON shape the rust engine authors (Recurrence serde
+    // camelCase: rrule/dtstart/nextDue/lastCompleted/until) — weekly preset
+    const withRecurrence = [
+      { ...items[0], priority: null, targetDate: null, children: [], recurrence: JSON.stringify({ rrule: 'FREQ=WEEKLY;INTERVAL=1', dtstart: '2026-10-01T00:00:00Z', nextDue: '2026-10-08T00:00:00Z', lastCompleted: null, until: null }) },
+    ];
+    render(<KanbanBoard checklistId="b1" items={withRecurrence} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    // the chip's label is a wrapped text node (icon sibling) — assert via the
+    // badge wrapper, same pattern as the reminder-chip fences above
+    const chip = screen.getByText('Weekly').closest('.kanban-recurrence') as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip).toHaveClass('kanban-badge');
+    expect(chip.querySelector('svg')).not.toBeNull(); // repeat icon rides the chip
+  });
+
+  it('chip title announces the reset date when completed', async () => {
+    // completed + parseable nextDue -> the tooltip names the NEXT reset slot
+    // (UTC date part per R-rec-8), not the bare "Repeats" fallback
+    const withRecurrence = [
+      { ...items[0], priority: null, targetDate: null, children: [], completed: true, status: 'completed', recurrence: JSON.stringify({ rrule: 'FREQ=WEEKLY;INTERVAL=1', dtstart: '2026-10-01T00:00:00Z', nextDue: '2026-10-08T09:30:00Z', lastCompleted: '2026-10-01T09:00:00Z', until: null }) },
+    ];
+    render(<KanbanBoard checklistId="b1" items={withRecurrence} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    // getByTitle throws unless EXACTLY one element carries a /Resets/ title
+    const chip = screen.getByTitle(/Resets/);
+    expect(chip.getAttribute('title')).toBe(`Resets ${dateLabel('2026-10-08')}`);
+    expect(chip.className).toContain('kanban-recurrence');
+  });
+
+  it('no recurrence, no chip', async () => {
+    // base fixture (no recurrence field): badges carry no repeat chip at all
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    expect(screen.queryByText('Weekly')).toBeNull();
+    expect(document.querySelector('.kanban-recurrence')).toBeNull();
   });
 });

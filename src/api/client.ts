@@ -37,6 +37,16 @@ export const setItemTargetDate = (checklistId: string, itemLocalId: string, targ
 // server-side. Invoke keys mirror the Rust command params exactly
 // (checklist_id/item_local_id/datetime -> camelCase; NOT reminderDatetime).
 export const setItemReminder = (checklistId: string, itemLocalId: string, datetime: string | null) => invoke<void>('set_item_reminder', { checklistId, itemLocalId, datetime });
+// Client-side card recurrence (task 4): preset is one of the rust engine's
+// Preset::key literals ('daily'|'weekly'|'biweekly'|'monthly'|'yearly') or
+// null to clear. Invoke keys mirror the Rust command params exactly
+// (checklist_id/item_local_id/preset -> camelCase). LOCAL-ONLY: writes the
+// device-local recurrence column, never an outbox op.
+export const setItemRecurrence = (checklistId: string, itemLocalId: string, preset: string | null) =>
+  invoke<void>('set_item_recurrence', { checklistId, itemLocalId, preset });
+// Frontend sweep trigger (task 4): rolls every due recurring card; returns the
+// rolled top-level count. RecurrenceSweepTimer rides it (immediate + 60s).
+export const sweepRecurrence = () => invoke<number>('sweep_recurrence');
 // Appointments agenda: one entry per dated item across synced lists (pure
 // local read; the UI groups by date).
 export const listAgenda = () => invoke<T.AgendaEntry[]>('list_agenda');

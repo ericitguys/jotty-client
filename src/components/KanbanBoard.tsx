@@ -30,6 +30,29 @@ export const formatReminderTime = (iso: string | null | undefined): string => {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
+// Recurrence chip (task 4): the LOCAL-ONLY recurrence JSON ({rrule, dtstart,
+// nextDue, ...} — device-local, never synced) -> display label + next reset
+// date. Null when absent/unparseable (never a lying chip); an unrecognized
+// rrule still labels 'Repeat' (custom rules authored on the web stay visible).
+// Preset RRULEs are byte-verbatim from the rust engine (db/recurrence.rs).
+const RECURRENCE_LABELS: Record<string, string> = {
+  'FREQ=DAILY;INTERVAL=1': 'Daily',
+  'FREQ=WEEKLY;INTERVAL=1': 'Weekly',
+  'FREQ=WEEKLY;INTERVAL=2': 'Bi-weekly',
+  'FREQ=MONTHLY;INTERVAL=1': 'Monthly',
+  'FREQ=YEARLY;INTERVAL=1': 'Yearly',
+};
+const recurrenceMeta = (raw: string | null | undefined): { label: string; nextDueYmd: string | null } | null => {
+  if (!raw) return null;
+  let rec: { rrule?: unknown; nextDue?: unknown };
+  try { rec = JSON.parse(raw) as { rrule?: unknown; nextDue?: unknown }; } catch { return null; }
+  if (!rec || typeof rec.rrule !== 'string') return null;
+  const nextDue = typeof rec.nextDue === 'string' && !isNaN(new Date(rec.nextDue).getTime())
+    ? rec.nextDue.slice(0, 10) // UTC date part (R-rec-8: stamps use the UTC date)
+    : null;
+  return { label: RECURRENCE_LABELS[rec.rrule] ?? 'Repeat', nextDueYmd: nextDue };
+};
+
 export default function KanbanBoard({ checklistId, items, reload }: {
   checklistId: string; items: ItemDto[]; reload: () => Promise<void>;
 }) {
@@ -53,6 +76,9 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const [reminding, setReminding] = useState<string | null>(null);
   const [reminderDate, setReminderDate] = useState('');
   const [reminderTime, setReminderTime] = useState('');
+  // recurrence menu (task 4): which card's Repeat preset list is open —
+  // mirrors dating/reminding, cleared with them on the backdrop tap.
+  const [repeating, setRepeating] = useState<string | null>(null);
   const TIME_OPTIONS = timeDropdownOptions();
 
   useEffect(() => {
@@ -126,10 +152,19 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     await api.setItemReminder(checklistId, localId, null);
     await reload();
   };
+  // Recurrence picking (task 4): null clears the rule, a preset key authors
+  // the LOCAL-ONLY one (set_item_recurrence writes the recurrence column,
+  // never an outbox op); menu closes + reload mirrors move().
+  const pickRecurrence = async (localId: string, preset: string | null) => {
+    setRepeating(null);
+    setMenuFor(null);
+    await api.setItemRecurrence(checklistId, localId, preset);
+    await reload();
+  };
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
+      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setRepeating(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -175,6 +210,19 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                       <Icon name="bell" size={11}/> {formatReminderTime(item.reminderDatetime)}
                     </span>
                   )}
+                  {(() => {
+                    // Recurrence chip (task 4): LOCAL-ONLY rrule label; a
+                    // COMPLETED card announces its next reset date (R-rec-1
+                    // mirror-the-web: completed stays completed until its slot).
+                    const meta = recurrenceMeta(item.recurrence);
+                    if (!meta) return null;
+                    const title = item.completed && meta.nextDueYmd ? `Resets ${dateLabel(meta.nextDueYmd)}` : `Repeats ${meta.label}`;
+                    return (
+                      <span className="kanban-badge kanban-recurrence" title={title}>
+                        <Icon name="repeat" size={11}/> {meta.label}
+                      </span>
+                    );
+                  })()}
                   {item.children.length > 0 && <span className="kanban-badge">{item.children.length} subtask{item.children.length === 1 ? '' : 's'}</span>}
                 </span>
                 <button className="kanban-card-menu" aria-label="Card actions" title="Card actions"
@@ -213,6 +261,18 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                                 onClick={() => saveReminder(item.localId)}>Save</button>
                         <button onClick={() => setReminding(null)}>Back</button>
                       </div>
+                    ) : repeating === item.localId ? (
+                      <div className="kanban-recurrence-edit">
+                        {/* picking calls set_item_recurrence; preset keys match
+                            the rust engine's Preset::key (db/recurrence.rs) */}
+                        <button onClick={() => pickRecurrence(item.localId, null)}>None</button>
+                        <button onClick={() => pickRecurrence(item.localId, 'daily')}>Daily</button>
+                        <button onClick={() => pickRecurrence(item.localId, 'weekly')}>Weekly</button>
+                        <button onClick={() => pickRecurrence(item.localId, 'biweekly')}>Bi-weekly</button>
+                        <button onClick={() => pickRecurrence(item.localId, 'monthly')}>Monthly</button>
+                        <button onClick={() => pickRecurrence(item.localId, 'yearly')}>Yearly</button>
+                        <button onClick={() => setRepeating(null)}>Back</button>
+                      </div>
                     ) : (
                       <>
                         {cols.filter((c) => c.id !== col.id).map((c) => (
@@ -229,6 +289,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                           }
                           setReminding(item.localId);
                         }}>Set reminder</button>
+                        <button onClick={() => setRepeating(item.localId)}>Repeat</button>
                         {item.reminderDatetime && <button onClick={() => clearReminder(item.localId)}>Clear reminder</button>}
                         <button onClick={() => { setRenameText(item.text); setRenaming(item.localId); setMenuFor(null); }}>Rename</button>
                         <button className="kanban-danger" onClick={async () => { setMenuFor(null); await api.deleteItem(checklistId, item.localId); await reload(); }}>Delete</button>

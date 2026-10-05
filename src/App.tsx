@@ -8,6 +8,7 @@ import ChecklistView from './components/ChecklistView';
 import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
 import VoicePendingBadge from './components/VoicePendingBadge';
+import RecurrenceSweepTimer from './components/RecurrenceSweepTimer';
 import ConflictDialog from './components/ConflictDialog';
 import CommandBar from './components/CommandBar';
 import SettingsModal from './components/SettingsModal';
@@ -260,6 +261,10 @@ export default function App() {
           a SyncBadge child's own effect can only unmount itself, not the
           footer (root cause of the failed 1st implementation attempt). */}
       <VoicePendingBadge onOpenDraft={(recording) => setVoice({ mode: 'resume', recording })} />
+      {/* recurrence sweep (task 4): immediate on mount + every 60s, upstream
+          scanner parity — a null-rendering effect shell; failures stay silent
+          (the next tick and the rust-side sweep seats retry anyway). */}
+      <RecurrenceSweepTimer />
     </div>
   );
 }
