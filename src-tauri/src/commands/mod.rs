@@ -47,6 +47,18 @@ pub(crate) fn create_note_tx(
     Ok(row)
 }
 
+pub fn quick_capture_inner(conn: &mut Connection, text: &str) -> AppResult<NoteDto> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("empty capture: nothing to store".into()));
+    }
+    let title = crate::db::notes::capture_title(conn);
+    let tx = conn.transaction()?;
+    let row = create_note_tx(&tx, &title, trimmed, "!INBOX")?;
+    tx.commit()?;
+    Ok(NoteDto::from(row))
+}
+
 // Ruling H: enqueue the post-patch MERGED row values (full copy — push's update
 // arm keys on op.entity_id).
 pub(crate) fn update_note_inner(
@@ -831,6 +843,12 @@ pub async fn get_note(state: tauri::State<'_, AppState>, id: String) -> Result<N
 pub async fn create_note(state: tauri::State<'_, AppState>, title: String, category: String) -> Result<NoteDto, String> {
     let mut conn = state.db.lock().await;
     create_note_inner(&mut conn, &title, &category).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn quick_capture(state: tauri::State<'_, AppState>, text: String) -> Result<NoteDto, String> {
+    let mut conn = state.db.lock().await;
+    quick_capture_inner(&mut conn, &text).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3262,5 +3280,33 @@ mod tests {
         fetch_task_board_inner(&state, "l1").await.unwrap();
         let conn = state.db.lock().await;
         assert!(!crate::db::items::get(&conn, &id).unwrap().unwrap().completed);
+    }
+
+    #[test]
+    fn quick_capture_creates_inbox_note_and_outbox_op() {
+        let mut conn = db();
+        let dto = super::quick_capture_inner(&mut conn, "check disk on web-01")
+            .expect("capture");
+        assert_eq!(dto.category, "!INBOX");
+        assert_eq!(dto.content, "check disk on web-01");
+        assert!(dto.title.starts_with("cap_"), "entropy title, got {}", dto.title);
+        assert!(dto.dirty, "local capture is dirty until pushed");
+        // outbox op = ('create','note', temp_id, payload with !INBOX)
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        let op = &ops[0];
+        assert_eq!(op.op_type, "create");
+        assert_eq!(op.entity, "note");
+        let payload: serde_json::Value = serde_json::from_str(&op.payload).expect("payload json");
+        assert_eq!(payload["category"], "!INBOX");
+        assert_eq!(payload["content"], "check disk on web-01");
+    }
+
+    #[test]
+    fn quick_capture_rejects_empty_text() {
+        let mut conn = db();
+        let err = super::quick_capture_inner(&mut conn, "   ")
+            .expect_err("empty input rejected");
+        assert!(err.to_string().contains("empty"), "message mentions empty: {err}");
     }
 }

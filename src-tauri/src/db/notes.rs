@@ -95,6 +95,28 @@ pub fn upsert_from_server(conn: &Connection, n: &ServerNote) -> AppResult<bool> 
     Ok(true)
 }
 
+/// Entropy title for capture-zone notes (spec 2026-10-06 section 3): `cap_<epochms>_<rand4>`.
+/// Titles are filename-deriving upstream — uniqueness inside !INBOX is LOAD-BEARING
+/// (concurrent same-title creates lose data silently; probed 2026-10-06, see spec appendix).
+/// Uses uuid::Uuid bytes for the random part (no rand dep). Check-unique loop vs live !INBOX rows.
+pub fn capture_title(conn: &Connection) -> String {
+    loop {
+        let ms = Utc::now().timestamp_millis();
+        let b = uuid::Uuid::new_v4().into_bytes();
+        let title = format!("cap_{}_{:02x}{:02x}", ms, b[0], b[1]);
+        let taken: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE category = '!INBOX' AND title = ?1 AND deleted_at IS NULL",
+                [&title],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        if taken == 0 {
+            return title;
+        }
+    }
+}
+
 pub fn insert_local(conn: &Connection, n: &NewNote) -> AppResult<NoteRow> {
     let id = uuid::Uuid::new_v4().to_string();
     let ts = now();
@@ -269,5 +291,49 @@ mod tests {
             .query_row("SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'stale'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(stale_count, 0, "FTS must not retain replaced content");
+    }
+
+    #[test]
+    fn capture_title_matches_spec_format() {
+        let conn = db();
+        for _ in 0..20 {
+            let t = super::capture_title(&conn);
+            let parts: Vec<&str> = t.split('_').collect();
+            assert_eq!(parts.len(), 3, "format cap_<epochms>_<rand4>, got {t}");
+            assert_eq!(parts[0], "cap");
+            assert_eq!(parts[1].len(), 13, "epochms, got {t}");
+            assert!(parts[1].parse::<i64>().is_ok(), "epochms numeric, got {t}");
+            assert_eq!(parts[2].len(), 4, "rand4, got {t}");
+            assert!(
+                parts[2].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "rand4 lowercase hex, got {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_title_is_unique_under_same_millisecond() {
+        let conn = db();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            assert!(seen.insert(super::capture_title(&conn)), "duplicate title in 200 same-ms calls");
+        }
+    }
+
+    #[test]
+    fn capture_title_avoids_existing_inbox_titles() {
+        let conn = db();
+        let first = super::capture_title(&conn);
+        super::insert_local(
+            &conn,
+            &super::NewNote {
+                title: first.clone(),
+                content: "x".into(),
+                category: "!INBOX".into(),
+            },
+        )
+        .expect("seed inbox note");
+        let second = super::capture_title(&conn);
+        assert_ne!(first, second, "must not reuse a live !INBOX title");
     }
 }

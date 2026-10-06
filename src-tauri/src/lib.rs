@@ -57,6 +57,7 @@ pub fn run() {
             commands::list_notes,
             commands::get_note,
             commands::create_note,
+            commands::quick_capture,
             commands::update_note,
             commands::delete_note,
             commands::list_checklists,
