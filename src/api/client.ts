@@ -5,6 +5,8 @@ export const getConnection = () => invoke<T.ConnectInfo | null>('get_connection'
 export const listNotes = () => invoke<T.NoteDto[]>('list_notes');
 export const getNote = (id: string) => invoke<T.NoteDto>('get_note', { id });
 export const createNote = (title: string, category: string) => invoke<T.NoteDto>('create_note', { title, category });
+// Atomic capture (capture-foundation P1 T2): entropy-titled !INBOX note, Rust-side.
+export const quickCapture = (text: string) => invoke<T.NoteDto>('quick_capture', { text });
 export const updateNote = (id: string, title: string, content: string, category: string) => invoke<T.NoteDto>('update_note', { id, title, content, category });
 export const deleteNote = (id: string) => invoke<void>('delete_note', { id });
 export const listChecklists = () => invoke<T.ChecklistDto[]>('list_checklists');

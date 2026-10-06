@@ -36,6 +36,8 @@ interface AppState {
   setPendingHighlight: (id: string | null) => void;
   clearPendingHighlight: () => void;
   createNote: (title: string, category: string) => Promise<T.NoteDto>;
+  /** Quick capture (capture-foundation P1 T2): create an entropy-titled !INBOX note; store state unchanged except the lists refresh. */
+  quickCapture: (text: string) => Promise<T.NoteDto>;
   createChecklist: (title: string, category: string) => Promise<T.ChecklistDto>;
   createBoard: (title: string, category: string) => Promise<T.ChecklistDto>;
   /** Delete a note (soft-delete local + outbox "delete" op → DELETE /api/notes/{id} on push). */
@@ -161,6 +163,11 @@ export const useStore = create<AppState>((set, get) => ({
     const note = await api.createNote(title, category);
     await get().refreshAll();
     set({ selectedNoteId: note.id, selectedChecklistId: null, listMode: 'notes' });
+    return note;
+  },
+  quickCapture: async (text: string) => {
+    const note = await api.quickCapture(text);
+    await get().refreshAll();
     return note;
   },
   createChecklist: async (title, category) => {

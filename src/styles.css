@@ -1620,3 +1620,9 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   border: 1px solid var(--border-soft); color: var(--muted);
   background: var(--bg); white-space: nowrap;
 }
+
+/* quick-capture strip (capture-foundation P1 T2) — appended at file end,
+   OUTSIDE the card-wall block per the brief */
+.quick-capture { padding: 0 10px 10px; }
+.quick-capture input { width: 100%; box-sizing: border-box; }
+.quick-capture-error { color: var(--danger, #c0392b); font-size: 12px; padding: 4px 2px; }

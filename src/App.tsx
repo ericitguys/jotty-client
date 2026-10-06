@@ -11,6 +11,7 @@ import VoicePendingBadge from './components/VoicePendingBadge';
 import RecurrenceSweepTimer from './components/RecurrenceSweepTimer';
 import ConflictDialog from './components/ConflictDialog';
 import CommandBar from './components/CommandBar';
+import { QuickCapture } from './components/QuickCapture';
 import SettingsModal from './components/SettingsModal';
 import VoiceNoteReview from './components/VoiceNoteReview';
 import * as api from './api/client';
@@ -47,6 +48,9 @@ export default function App() {
   }, [title]);
   const [showSearch, setShowSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Quick capture (capture-foundation P1 T2): the hotkey bumps this nonce and
+  // QuickCapture focuses its input when the increment lands.
+  const [qcFocus, setQcFocus] = useState(0);
   // Mobile layout (Pixel 9 etc.): the sidebar becomes an off-canvas drawer and
   // the editor takes the full screen; the desktop grid is untouched (CSS gates
   // both behaviors behind a max-width media query).
@@ -171,6 +175,14 @@ export default function App() {
         e.preventDefault();
         setShowSearch(true);
       }
+      // capture hotkey (capture-foundation P1 T2): land on the notes wall and
+      // focus the capture input. setListMode is not React state — read it off
+      // the store singleton so the empty-deps listener never goes stale.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        useStore.getState().setListMode('notes');
+        setQcFocus((n) => n + 1);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -199,6 +211,11 @@ export default function App() {
     <Sidebar onOpenSettings={() => { setDrawerOpen(false); setShowSettings(true); }} />
     {/* Full swap (v0.27.0): an open editor/view REPLACES the wall — the list unmounts; back-btn returns. */}
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
+      {/* quick-capture strip (capture-foundation P1 T2): pinned above the notes
+          wall only — a sibling BEFORE the swap ternary, never inside it. */}
+      {!selectedNoteId && !selectedChecklistId && listMode === 'notes' && (
+        <QuickCapture focusSignal={qcFocus} onSubmit={(text) => useStore.getState().quickCapture(text)} />
+      )}
       {selectedNoteId ? (
         <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/>
       ) : selectedChecklistId ? (

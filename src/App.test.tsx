@@ -594,3 +594,31 @@ describe('web preference mirroring', () => {
     expect(invoke).toHaveBeenCalledWith('voice_retry_pending');
   });
 });
+
+describe('Quick capture (capture-foundation P1)', () => {
+  it('Ctrl+Shift+J focuses the capture input from anywhere in the app', async () => {
+    // seed + render App per the file's existing helper (beforeEach) — the notes
+    // wall is mounted with listMode 'notes' and no selection
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.keyDown(window, { key: 'J', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(screen.getByPlaceholderText(/capture/i)).toBeInTheDocument());
+    expect(document.activeElement?.getAttribute('placeholder')).toMatch(/capture/i);
+  });
+
+  it('submitting a capture posts quick_capture with the text and stays on the wall', async () => {
+    // the quick_capture response rides the shared fallthrough resolve(null):
+    // neither QuickCapture nor the store action reads the resolved NoteDto here
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    const input = screen.getByPlaceholderText(/capture/i);
+    fireEvent.change(input, { target: { value: 'renew vpn cert' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('quick_capture', { text: 'renew vpn cert' }));
+    // the wall still renders — no editor opened
+    expect(document.querySelector('main')).toHaveClass('list-only');
+    expect(screen.getByText('Groceries')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Note title')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/capture/i)).toBeInTheDocument();
+  });
+});
