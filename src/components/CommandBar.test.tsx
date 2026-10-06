@@ -130,3 +130,28 @@ describe('CommandBar — commands', () => {
     await waitFor(() => expect(useStore.getState().createBoard).toHaveBeenCalledWith('New board', 'Uncategorized'));
   });
 });
+
+describe('CommandBar — capture-zone exclusion (P1 T3)', () => {
+  it('search results exclude capture-zone notes', async () => {
+    // the search index returns BOTH hits; the palette resolves each hit's
+    // category through the store catalog and hides !INBOX rows
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'search')
+        return Promise.resolve({
+          notes: [{ id: 'n1', title: 'Normal', snippet: 'plain text' }, { id: 'inbox1', title: 'cap_1_bbbb', snippet: 'captured' }],
+          checklists: [],
+        });
+      return Promise.resolve(null);
+    });
+    useStore.setState({
+      notes: [
+        { id: 'n1', title: 'Normal', content: '', category: 'Work', updatedAt: null, createdAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+        { id: 'inbox1', title: 'cap_1_bbbb', content: '', category: '!INBOX', updatedAt: null, createdAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+      ],
+    } as never);
+    render(<CommandBar onClose={() => {}} onSelectNote={() => {}} onSelectChecklist={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('Search commands and notes…'), { target: { value: 'cap' } });
+    await waitFor(() => expect(screen.getByText('Normal')).toBeInTheDocument()); // non-capture hit stays
+    expect(screen.queryByText('cap_1_bbbb')).toBeNull(); // capture-zone hit excluded
+  });
+});

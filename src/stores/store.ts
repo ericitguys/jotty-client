@@ -3,6 +3,14 @@ import * as api from '../api/client';
 import { deriveCategories } from '../api/categories';
 import type * as T from '../api/types';
 
+// Quick capture (capture-foundation P1): captured notes land in the reserved
+// `!INBOX` category tree. One shared definition for the App filter (T3), route
+// validation (P2 triage) and AI flows (P3): a category IS a capture zone when
+// it is `!INBOX` or a descendant (`!INBOX/...`).
+export const INBOX_CATEGORY = '!INBOX';
+export const isCaptureZone = (category: string | null | undefined): boolean =>
+  !!category && (category === INBOX_CATEGORY || category.startsWith(`${INBOX_CATEGORY}/`));
+
 interface AppState {
   connection: T.ConnectInfo | null;
   notes: T.NoteDto[];

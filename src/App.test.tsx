@@ -622,3 +622,50 @@ describe('Quick capture (capture-foundation P1)', () => {
     expect(screen.getByPlaceholderText(/capture/i)).toBeInTheDocument();
   });
 });
+
+describe('!INBOX isolation (capture-foundation P1 T3)', () => {
+  it('capture-zone notes are hidden from the notes wall until the inbox category is selected', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'a1', title: 'work note', content: '', category: 'Work', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false },
+        { id: 'b1', title: 'cap_1_aaaa', content: '', category: '!INBOX', updatedAt: '2026-01-02T00:00:00.000Z', dirty: false },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      // live categories fetch fails offline-style → tree derives from the local rows
+      if (cmd === 'list_categories') return Promise.reject(new Error('network unreachable'));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('work note')).toBeInTheDocument());
+    expect(screen.queryByText('cap_1_aaaa')).toBeNull(); // capture-zone note hidden from the default wall
+    // select the inbox category: the capture surface becomes the ONLY wall
+    act(() => { useStore.getState().selectCategory({ type: 'notes', path: '!INBOX' }); });
+    await waitFor(() => expect(screen.getByText('cap_1_aaaa')).toBeInTheDocument());
+    expect(screen.queryByText('work note')).toBeNull();
+  });
+
+  it('inbox surface shows the capture count next to the category node', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: null });
+      if (cmd === 'list_notes') return Promise.resolve([
+        { id: 'c1', title: 'cap_2_xxxx', content: '', category: '!INBOX', updatedAt: '2026-01-02T00:00:00.000Z', dirty: false },
+        { id: 'c2', title: 'cap_2_yyyy', content: '', category: '!INBOX', updatedAt: '2026-01-03T00:00:00.000Z', dirty: false },
+        { id: 'a2', title: 'work note', content: '', category: 'Work', updatedAt: '2026-01-01T00:00:00.000Z', dirty: false },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      // live categories fetch fails → Sidebar derives the tree from the rows:
+      // 2 inbox notes + 1 other → the !INBOX node carries count 2
+      if (cmd === 'list_categories') return Promise.reject(new Error('network unreachable'));
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('work note')).toBeInTheDocument()); // wall mounted with the seeded rows
+    const nav = within(screen.getByRole('navigation'));
+    const li = nav.getByText('!INBOX').closest('li');
+    expect(li).not.toBeNull();
+    expect(li?.querySelector('.count')?.textContent).toBe('2'); // capture count chip next to the node
+  });
+});

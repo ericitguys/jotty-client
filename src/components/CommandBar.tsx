@@ -4,7 +4,7 @@ import type { SearchResultsDto, ThemeOverride } from '../api/types';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Icon } from './icons';
 import type { IconName } from './icons';
-import { useStore } from '../stores/store';
+import { useStore, isCaptureZone } from '../stores/store';
 
 // Unified command bar (tier B S1): commands + search in ONE ⌘K surface.
 // Empty query = the 7 pinned commands; typing filters commands (label
@@ -48,8 +48,18 @@ export default function CommandBar({ onClose, onSelectNote, onSelectChecklist, o
   const shownCmds = needle ? commands.filter((c) => c.label.toLowerCase().includes(needle)) : commands;
 
   type Ent = { kind: 'note' | 'checklist'; id: string; title: string; sub: string | null; board: boolean };
+  // Capture-zone exclusion (capture-foundation P1 T3): the search index may
+  // still surface just-captured `!INBOX` rows (they are real, synced notes).
+  // Hits carry no category — resolve each through the store catalog and hide
+  // capture-zone notes; UNKNOWN ids stay visible (a lagging store must never
+  // blank a real result the server already indexed).
+  const notesById = new Map((useStore.getState().notes ?? []).map((n) => [n.id, n] as const));
+  const noteHits = (results?.notes ?? []).filter((h) => {
+    const n = notesById.get(h.id);
+    return !n || !isCaptureZone(n.category);
+  });
   const ents: Ent[] = needle && results ? [
-    ...results.notes.map((n) => ({ kind: 'note' as const, id: n.id, title: n.title, sub: n.snippet, board: false })),
+    ...noteHits.map((n) => ({ kind: 'note' as const, id: n.id, title: n.title, sub: n.snippet, board: false })),
     ...results.checklists.map((c) => {
       const known = checklists.find((k) => k.id === c.id)?.listType;
       return { kind: 'checklist' as const, id: c.id, title: c.title, sub: c.itemText, board: known === 'kanban' || known === 'task' };

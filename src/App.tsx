@@ -16,7 +16,7 @@ import SettingsModal from './components/SettingsModal';
 import VoiceNoteReview from './components/VoiceNoteReview';
 import * as api from './api/client';
 import type { VoiceRecordingDto } from './api/types';
-import { useStore } from './stores/store';
+import { useStore, isCaptureZone } from './stores/store';
 import { Icon } from './components/icons';
 
 type VoiceFlow =
@@ -60,9 +60,20 @@ export default function App() {
   // Category filter: exact path match or a descendant (prefix) — clicking the
   // parent "Work" also shows notes in "Work/Projects".
   const inCategory = (cat: string, path: string) => cat === path || cat.startsWith(`${path}/`);
+  // Capture-zone isolation (capture-foundation P1 T3): `!INBOX` notes surface
+  // ONLY on the inbox category view — hidden from the default wall and from
+  // every other notes-category view; when the inbox IS selected, it shows ONLY
+  // capture-zone rows. The checklists branch has no capture zone and keeps the
+  // plain prefix match.
+  const inboxSelected =
+    selectedCategory?.type === 'notes' && isCaptureZone(selectedCategory.path);
   const filteredNotes = selectedCategory?.type === 'notes'
-    ? notes.filter((n) => inCategory(n.category, selectedCategory.path))
-    : notes;
+    ? (notes ?? []).filter((n) =>
+        inboxSelected
+          ? isCaptureZone(n.category)
+          : inCategory(n.category, selectedCategory.path) && !isCaptureZone(n.category),
+      )
+    : (notes ?? []).filter((n) => !isCaptureZone(n.category));
   const filteredChecklists = selectedCategory?.type === 'checklists'
     ? checklists.filter((c) => inCategory(c.category, selectedCategory.path))
     : checklists;
@@ -71,6 +82,10 @@ export default function App() {
   const noteFilter = prefs?.defaultNoteFilter ?? 'all';
   const listFilter = prefs?.defaultChecklistFilter ?? 'all';
   const visibleNotes = (() => {
+    // Inbox surface (capture-foundation P1 T3): the pinned/recent preference
+    // filters are BYPASSED inside !INBOX — a default 'pinned' pref must never
+    // swallow the just-captured card the user navigated here to triage.
+    if (inboxSelected) return filteredNotes;
     let list = filteredNotes;
     if (noteFilter === 'pinned' && prefs) list = list.filter((n) => prefs.pinnedNotes.includes(n.id));
     if (noteFilter === 'recent') list = [...list].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
