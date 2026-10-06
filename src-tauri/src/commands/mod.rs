@@ -1121,13 +1121,36 @@ fn best_effort_set_title(app: &tauri::AppHandle, name: &str) {
             // Android is also target_os=linux — the gtk block must exclude it
             // (the dep itself is target-gated out of android builds).
             #[cfg(all(target_os = "linux", not(target_os = "android")))]
-            if let Ok(gtk_win) = win.gtk_window() {
-                use gtk::prelude::*;
-                if let Some(titlebar) = gtk_win.titlebar() {
-                    if let Some(header) = find_headerbar(&titlebar) {
-                        header.set_title(Some(name));
+            {
+                // v0.28.1 field crash (Fedora SIGABRT, coredumpctl 2026-10-06,
+                // PID 8035/thread 15761): this fn runs in async commands, i.e.
+                // on tokio WORKER threads, and used to walk the titlebar right
+                // here — gtk_window().titlebar() → gtk_header_bar_set_title —
+                // while tao's GTK main loop was measuring the same header-bar
+                // label. GTK3 is main-thread-only: the race corrupted glib's
+                // heap (malloc_printerr → abort inside
+                // gdk_threads_add_timeout_full). The tauri set_title above is
+                // safe off-thread (tauri-runtime-wry dispatches SetTitle as a
+                // WindowMessage applied on the main thread), but direct GTK
+                // calls are not: marshal the whole walk onto the main thread.
+                let title = name.to_string();
+                let app2 = app.clone();
+                let app3 = app2.clone();
+                let _ = app2.run_on_main_thread(move || {
+                    // Test-only thread tap for the crash fences in tests below.
+                    #[cfg(test)]
+                    tests::note_gtk_title_touch();
+                    if let Some(win) = app3.get_webview_window("main") {
+                        if let Ok(gtk_win) = win.gtk_window() {
+                            use gtk::prelude::*;
+                            if let Some(titlebar) = gtk_win.titlebar() {
+                                if let Some(header) = find_headerbar(&titlebar) {
+                                    header.set_title(Some(&title));
+                                }
+                            }
+                        }
                     }
-                }
+                });
             }
         }
     }
@@ -1885,6 +1908,8 @@ mod tests {
     fn find_headerbar_updates_tao_wayland_header_title() {
         #[cfg(target_os = "linux")]
         {
+            // Serialize with the wry probe (see GTK_TEST_SEQUENCE).
+            let _seq = GTK_TEST_SEQUENCE.lock().expect("gtk test sequence lock");
             if gtk::init().is_err() {
                 eprintln!("skipped: no display for gtk::init");
                 return;
@@ -1914,6 +1939,218 @@ mod tests {
         #[cfg(not(target_os = "linux"))]
         {
             // The walk is Linux-only; nothing to pin on other hosts.
+        }
+    }
+
+    // Instrument for the v0.28.1 crash fences below.
+    // v0.28.0 field crash (Fedora SIGABRT, coredumpctl 2026-10-06, PID 8035 /
+    // thread 15761): get_branding is an async tauri command, so it runs on a
+    // tokio WORKER thread, and it mutated GTK directly from there
+    // (gtk_window().titlebar() → gtk_header_bar_set_title) while tao's GTK main
+    // loop was measuring the same header-bar label. GTK3 is main-thread-only;
+    // the race corrupted glib's heap (malloc_printerr → abort inside
+    // gdk_threads_add_timeout_full) and took the whole app down ~25s into a
+    // session. Fix: marshal the titlebar mutation through
+    // WebviewWindow::run_on_main_thread. These fences pin that mechanism —
+    // a source-shape fence for a deterministic RED + a real-wry probe that
+    // asserts the GTK mutation runs on the runtime main thread.
+    static GTK_TITLE_TOUCH_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
+        std::sync::Mutex::new(None);
+
+    // Serializes the two GTK-owning tests (the Xvfb headerbar fence and the
+    // wry probe below): GTK has ONE process-wide main-context owner, so two
+    // tests racing gtk::init across harness threads is the exact bug class
+    // this file fences against. Whichever holds it owns GTK for its duration.
+    static GTK_TEST_SEQUENCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // pub(super): the cfg(test) tap inside best_effort_set_title (parent
+    // module) calls this; the static stays private to the tests module.
+    pub(super) fn note_gtk_title_touch() {
+        if let Ok(mut slot) = GTK_TITLE_TOUCH_THREAD.lock() {
+            *slot = Some(std::thread::current().id());
+        }
+    }
+
+    // The HeaderBar mechanics are covered headlessly by
+    // find_headerbar_updates_tao_wayland_header_title, but a mock tauri
+    // runtime has no gtk_window() and a real-runtime behavioral test cannot
+    // fail on old code on X11 (tao ships no CSD titlebar there, so the GTK arm
+    // never fires — the field race needs a Wayland session). So this fence
+    // pins the MECHANISM shape directly: within best_effort_set_title, every
+    // GTK access must be lexically inside the run_on_main_thread closure, and
+    // nothing GTK-ish may run on the caller's (worker) thread.
+    #[test]
+    fn best_effort_set_title_marshals_gtk_onto_main_thread_shape_fence() {
+        let src = include_str!("mod.rs");
+        let start = src.find("fn best_effort_set_title").expect("fn exists");
+        let end = src[start..]
+            .find("fn find_headerbar")
+            .map(|off| start + off)
+            .unwrap_or(src.len());
+        // Strip // comments BEFORE positional matching — the body carries a
+        // root-cause comment that literally contains "gtk_window()" and
+        // "titlebar()" mentions (same trap as the CSS rule() comment fence):
+        // only CODE occurrences must govern the asserts.
+        let body: String = src[start..end]
+            .lines()
+            .map(|l| {
+                let cut = l.find("//").unwrap_or(l.len());
+                l[..cut].to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
+        let rmt = body
+            .find("run_on_main_thread")
+            .expect("titlebar mutation must be marshaled via run_on_main_thread");
+        assert!(
+            !body[..rmt].contains("gtk_window"),
+            "no gtk_window() access may precede the marshal (worker-thread GTK)"
+        );
+        assert!(
+            !body[..rmt].contains("titlebar"),
+            "no titlebar() access may precede the marshal (worker-thread GTK)"
+        );
+        let gtkw = body
+            .find(".gtk_window()")
+            .expect("the titlebar walk must still exist");
+        assert!(
+            gtkw > rmt,
+            "gtk_window() must run inside the run_on_main_thread closure"
+        );
+        let hdr = body
+            .find("header.set_title(")
+            .expect("the HeaderBar title set must remain");
+        assert!(
+            hdr > rmt,
+            "header.set_title must run inside the run_on_main_thread closure"
+        );
+        let tap = body
+            .find("note_gtk_title_touch()")
+            .expect("main-thread tap must be present under cfg(test)");
+        assert!(
+            tap > rmt,
+            "the tap must fire inside the run_on_main_thread closure"
+        );
+    }
+
+    // REAL-routine guard (not a gate-RED: on X11 old code passes because the
+    // CSD arm no-ops — see the shape fence above for the deterministic RED).
+    // Drives the PRODUCTION best_effort_set_title from a plain std thread (the
+    // exact context of an async command body) against a REAL wry runtime, then
+    // asserts the GTK mutation executed on the runtime MAIN thread and the
+    // title lands on the GtkWindow. Skips (never fails) without a display.
+    #[test]
+    fn best_effort_set_title_runs_gtk_on_main_thread_when_called_off_thread() {
+        #[cfg(all(target_os = "linux", not(target_os = "android")))]
+        {
+            // OPT-IN probe (JOTTY_GTK_WRY_PROBE=1): the real wry runtime owns
+            // the process-wide GTK main context, and this test must BE the
+            // GTK initiator — running the event loop on a thread that doesn't
+            // own the context would recreate the exact cross-thread GTK class
+            // this file fences against. Opt-in keeps normal gate runs
+            // (cargo test --lib / DISPLAY=:99) free of that coupling: the
+            // headerbar fence stays the sole GTK user there. Verify with:
+            //   DISPLAY=:99 JOTTY_GTK_WRY_PROBE=1 \
+            //   cargo test --lib -- --exact commands::tests::best_effort_set_title_runs_gtk_on_main_thread_when_called_off_thread --test-threads=1
+            if std::env::var("DISPLAY").is_err() {
+                eprintln!("skipped: no display for a real wry window");
+                return;
+            }
+            if std::env::var("JOTTY_GTK_WRY_PROBE").is_err() {
+                eprintln!("skipped: set JOTTY_GTK_WRY_PROBE=1 to run the wry GTK probe");
+                return;
+            }
+            // Serialize with the headerbar fence (see GTK_TEST_SEQUENCE) —
+            // belt and braces for a filtered-run corner where both were
+            // selected at once. The env gate keeps normal suite runs clean.
+            let _seq = GTK_TEST_SEQUENCE.lock().expect("gtk test sequence lock");
+
+            use tauri::test::{mock_context, noop_assets};
+            use tauri::{WebviewUrl, WebviewWindowBuilder, Wry};
+
+            if let Ok(mut slot) = GTK_TITLE_TOUCH_THREAD.lock() {
+                *slot = None;
+            }
+
+            use gtk::prelude::GtkWindowExt as _;
+            let app = tauri::Builder::<Wry>::default()
+                // Tests run on harness pool threads, not the process main
+                // thread — tao panics on event-loop init there unless the
+                // any-thread path is used (probes only; production keeps the
+                // default main-thread loop).
+                .any_thread()
+                .build(mock_context(noop_assets()))
+                .expect("real wry runtime builds under a display");
+            let win = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+                .build()
+                .expect("main window builds");
+
+            let main_thread = std::thread::current().id();
+            let handle = app.handle().clone();
+            let worker = std::thread::spawn(move || {
+                // Exact production call in the exact worker-thread context an
+                // async tauri command body has.
+                best_effort_set_title(&handle, "OFF-THREAD-BRAND");
+            });
+            // Watchdog: exit the loop if the marshaled job never lands so the
+            // suite can't hang; the exit code then proves the timeout path.
+            let watchdog = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                watchdog.exit(9);
+            });
+
+            let tap_out: std::sync::Arc<std::sync::Mutex<bool>> = Default::default();
+            let title_out: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
+            let tap_out2 = tap_out.clone();
+            let title_out2 = title_out.clone();
+            let win_for_loop = win.clone();
+            let main_thread_for_loop = main_thread;
+            let code = app.run_return(move |app, _event| {
+                // This callback runs ON the runtime main thread.
+                let tapped = GTK_TITLE_TOUCH_THREAD
+                    .lock()
+                    .ok()
+                    .and_then(|s| *s)
+                    .map(|t| t == main_thread_for_loop)
+                    .unwrap_or(false);
+                if !tapped || *tap_out2.lock().unwrap() {
+                    return;
+                }
+                let title = win_for_loop
+                    .gtk_window()
+                    .ok()
+                    .and_then(|g| g.title().map(|t| t.to_string()));
+                if title.as_deref() == Some("OFF-THREAD-BRAND") {
+                    *tap_out2.lock().unwrap() = true;
+                    *title_out2.lock().unwrap() = title;
+                    app.exit(0);
+                }
+            });
+            worker
+                .join()
+                .expect("worker must survive: no direct GTK access off the main thread");
+
+            assert_eq!(
+                code, 0,
+                "loop must exit cleanly; code 9 = the marshaled job never landed (watchdog)"
+            );
+            assert!(
+                *tap_out.lock().unwrap(),
+                "the marshaled GTK job must have executed on the runtime main thread (tap)"
+            );
+            assert_eq!(
+                title_out.lock().unwrap().as_deref(),
+                Some("OFF-THREAD-BRAND"),
+                "marshaled title must land on the GtkWindow"
+            );
+        }
+        #[cfg(not(all(target_os = "linux", not(target_os = "android"))))]
+        {
+            // wry/GTK probe is desktop-Linux only; the android runtime has no
+            // gtk arm and other desktops are not exercised on this box.
         }
     }
 

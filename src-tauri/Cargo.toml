@@ -31,6 +31,9 @@ tauri-plugin-opener = "^2"
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
+# test-only: tauri::test mock_context feeds a REAL Wry runtime in the crash
+# fence probes (commands/mod.rs tests) — release builds never see it.
+tauri = { version = "2", features = ["test"] }
 
 # Desktop-Linux only: the branding title mirror reaches tao's Wayland
 # GtkHeaderBar through gtk-rs. Android is also target_os=linux, so the gate
