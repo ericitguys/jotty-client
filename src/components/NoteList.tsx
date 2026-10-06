@@ -23,34 +23,33 @@ export default function NoteList({ notes, onStartVoiceNote, onOpenSettings }: {
           <button className="new-btn" onClick={() => createNote('Untitled note', 'Uncategorized')}><Icon name="plus" size={12}/> New note</button>
         </div>
       </div>
-      <ul>
+      <ul className="card-wall">
         {notes.map((n) => {
           const snippet = snippetFromHtml(n.content || '');
           return (
           <li key={n.id} className={n.id === selectedNoteId ? 'selected' : ''} onClick={() => selectNote(n.id)}>
-            <span className="item-title">{n.title}{n.dirty ? ' •' : ''}</span>
-            {n.audioPath && n.content === '' && (
-              <span className="mic-badge" title="Pending transcription — retries after sync"><Icon name="mic" size={12}/></span>
-            )}
-            <span className="chip">{n.category}</span>
-            {/* Delete affordance (portal SidebarItem ⋯→Delete parity, desktop ✕
-                row-button precedent): stopPropagation keeps the row click from
-                selecting; the confirm modal guards the destructive op. */}
-            <button
-              className="row-del"
-              aria-label={`Delete ${n.title}`}
-              title="Delete"
-              onClick={(e) => { e.stopPropagation(); setPendingDelete(n); }}
-            ><Icon name="x" size={12}/></button>
-            {/* Meta line (spec L7): last flex child — flex-basis 100% wraps it to
-                the row's second line under title+chip. Snippet span renders ONLY
-                for non-empty stripped content (RTL text-node discipline:
-                element-scoped, never a joined string). .row-age always rides the
-                row: relativeAge(null) renders the 'never synced' arm. */}
-            <div className="row-meta meta-line">
-              {snippet !== '' && <span className="row-snippet">{snippet}</span>}
-              <span className="row-age">{relativeAge(n.updatedAt)}</span>
+            <div className="card-head">
+              <span className="item-title">{n.title}{n.dirty ? ' •' : ''}</span>
+              {n.audioPath && n.content === '' && (
+                <span className="mic-badge" title="Pending transcription — retries after sync"><Icon name="mic" size={12}/></span>
+              )}
+              <span className="chip">{n.category}</span>
+              {/* Delete affordance (portal SidebarItem ⋯→Delete parity, desktop ✕
+                  row-button precedent): stopPropagation keeps the card click from
+                  selecting; the confirm modal guards the destructive op. */}
+              <button
+                className="row-del"
+                aria-label={`Delete ${n.title}`}
+                title="Delete"
+                onClick={(e) => { e.stopPropagation(); setPendingDelete(n); }}
+              ><Icon name="x" size={12}/></button>
             </div>
+            {/* Card body (spec §3.4): snippet preview, 4-line clamp. Renders ONLY
+                for non-empty stripped content (RTL text-node discipline:
+                element-scoped, never a joined string). */}
+            {snippet !== '' && <div className="card-body"><span className="row-snippet">{snippet}</span></div>}
+            {/* Card foot: relative age (relativeAge(null) renders the 'never synced' arm). */}
+            <div className="card-foot"><span className="row-age">{relativeAge(n.updatedAt)}</span></div>
           </li>
           );
         })}

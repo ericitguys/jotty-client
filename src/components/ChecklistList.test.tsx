@@ -25,6 +25,7 @@ const RULE = (sel: string) => {
   const end = noComments.indexOf('}', braces);
   return noComments.slice(braces + 1, end);
 };
+const noCommentsCss = () => css.replace(/\/\*[\s\S]*?\*\//g, ''); // same strip as RULE
 
 beforeEach(() => {
   invoke.mockReset();
@@ -146,5 +147,58 @@ describe('selected-chip contrast (tier B task 4, rider c)', () => {
     expect(RULE(':root')).toContain('--accent-contrast: #fff');
     expect(RULE("#app[data-theme='light']")).toContain('--accent-contrast: #1b1b1f');
     expect(RULE("#app[data-theme='rwmarkable-dark']")).toContain('--accent-contrast: #fff');
+  });
+});
+
+describe('ChecklistList card wall (v0.27.0)', () => {
+  it('cards carry a completion progress bar: fill width + pct text from store counts', () => {
+    const iso = new Date(Date.now() - 3_600_000).toISOString();
+    render(<ChecklistList checklists={[
+      { id: 'l1', title: 'Groceries', category: 'Home', updatedAt: iso, dirty: false, completed: false,
+        listType: 'simple', itemCount: 4, doneCount: 1, createdAt: null, deletedAt: null, items: [] },
+    ] as never[]} />);
+    const li = screen.getByText('Groceries').closest('li')!;
+    expect(li.querySelector('.card-progress')!.classList.contains('card-progress')).toBe(true);
+    expect(li.querySelector('.progress-pct')!.textContent).toBe('25%');
+    const fill = li.querySelector('.cl-progress-fill') as HTMLElement;
+    expect(fill.style.width).toBe('25%');
+    expect(li.querySelector('.cl-progress')).not.toBeNull(); // REUSES the checklist-view bar classes
+  });
+
+  it('zero-progress list shows 0% and an empty fill (never NaN/negative)', () => {
+    render(<ChecklistList checklists={[
+      { id: 'l2', title: 'Zero', category: '', updatedAt: null, dirty: false, completed: false,
+        listType: 'simple', itemCount: 3, doneCount: 0, createdAt: null, deletedAt: null, items: [] },
+    ] as never[]} />);
+    const li = screen.getByText('Zero').closest('li')!;
+    expect(li.querySelector('.progress-pct')!.textContent).toBe('0%');
+    expect((li.querySelector('.cl-progress-fill') as HTMLElement).style.width).toBe('0%');
+  });
+
+  it('old fixtures without counts render neither progress row nor count footer', () => {
+    render(<ChecklistList checklists={[
+      { id: 'l3', title: 'Bare', category: '', createdAt: null, updatedAt: null, deletedAt: null,
+        dirty: false, completed: false, listType: 'simple', items: [] },
+    ] as never[]} />);
+    const li = screen.getByText('Bare').closest('li')!;
+    expect(li.querySelector('.card-progress')).toBeNull();
+    expect(li.querySelector('.card-foot')).toBeNull();
+  });
+
+  it('card wall css: checklists = uniform grid (4 base, 3 @1440-, 2 @1024-, 1 @700-)', () => {
+    expect(noCommentsCss()).toContain('#checklists ul {\n  display: grid;\n  gap: 14px;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n}');
+    expect(noCommentsCss()).toContain('@media (max-width: 1440px) {\n  #checklists ul {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}');
+    expect(noCommentsCss()).toContain('@media (max-width: 1024px) {\n  #checklists ul {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }\n}');
+    expect(noCommentsCss()).toContain('#checklists ul {\n    grid-template-columns: 1fr;\n  }');
+  });
+
+  it('cards keep the pinned meta classes on the wall: row-meta meta-line count footer', () => {
+    const iso = new Date(Date.now() - 7_200_000).toISOString();
+    render(<ChecklistList checklists={[
+      { id: 'b1', title: 'Sprint', category: 'Work', updatedAt: iso, dirty: false, completed: false,
+        listType: 'kanban', itemCount: 7, doneCount: 7, createdAt: null, deletedAt: null, items: [] },
+    ] as never[]} />);
+    const li = screen.getByText('Sprint').closest('li')!;
+    expect(li.querySelector('.card-foot .row-meta')!.classList.contains('meta-line')).toBe(true);
   });
 });

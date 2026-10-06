@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const cssText = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'), 'utf8');
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
@@ -120,5 +124,38 @@ describe('NoteList row metadata', () => {
     const row = screen.getByText('C').closest('li')!;
     expect(row.querySelector('.row-snippet')).toBeNull();
     expect(row.querySelector('.row-age')!.textContent).toBe('never synced');
+  });
+});
+
+describe('NoteList card wall (v0.27.0)', () => {
+  const base = { createdAt: null, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null };
+
+  it('renders as a card wall: ul.card-wall with head/body/foot card regions', () => {
+    const iso = new Date(Date.now() - 7_200_000).toISOString();
+    const notes = [{ id: 'n1', title: 'Groceries', content: '<p>oat milk</p>', category: 'Home', updatedAt: iso, ...base }];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    const ul = document.querySelector('#notes ul')!;
+    expect(ul.classList.contains('card-wall')).toBe(true);
+    const li = screen.getByText('Groceries').closest('li')!;
+    expect(li.querySelector('.card-head .item-title')!.textContent).toBe('Groceries');
+    expect(li.querySelector('.card-head .chip')!.textContent).toBe('Home');
+    expect(li.querySelector('.card-body .row-snippet')!.textContent).toBe('oat milk');
+    expect(li.querySelector('.card-foot .row-age')).not.toBeNull();
+  });
+
+  it('empty-content note card: no card-body, footer still rides', () => {
+    const notes = [{ id: 'n2', title: 'C', content: '', category: '', updatedAt: null, ...base }];
+    render(<NoteList notes={notes as never[]} onStartVoiceNote={vi.fn()} onOpenSettings={vi.fn()} />);
+    const li = screen.getByText('C').closest('li')!;
+    expect(li.querySelector('.card-body')).toBeNull();
+    expect(li.querySelector('.card-foot .row-age')!.textContent).toBe('never synced');
+  });
+
+  it('card wall css: notes = masonry columns (3 base, 4 @1600+, 2 @1024-, 1 @700-)', () => {
+    const noComments = cssText().replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(noComments).toContain('#notes ul {\n  column-gap: 14px;\n  column-count: 3;\n}');
+    expect(noComments).toContain('@media (min-width: 1600px) {\n  #notes ul {\n    column-count: 4;\n  }\n}');
+    expect(noComments).toContain('@media (max-width: 1024px) {\n  #notes ul {\n    column-count: 2;\n  }\n}');
+    expect(noComments).toContain('#notes ul {\n    column-count: 1;\n  }');
   });
 });

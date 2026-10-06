@@ -304,24 +304,63 @@ li.selected .count { color: var(--accent-strong-text); }
 #sidebar .sidebar-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 12px; }
 #sidebar .sidebar-actions button { flex: 1; font-size: 13px; }
 
-/* ---------- list rows (notes / checklists) ---------- */
-#notes ul, #checklists ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+/* ---------- card wall (notes / checklists main view, v0.27.0) ----------
+   Upstream card mode: notes = react-masonry-css ({default:3, 1600:4, 1280:2,
+   768:1} net), checklists = uniform grid (grid-cols-1 sm:2 lg:3 xl:4).
+   Client: CSS multi-column masonry (no new dependency) + the same grid.
+   Column order flows DOWN each column (CSS multicol) — disclosed in the
+   spec (§3.2); upstream round-robins. Look is the contract, not item order. */
+#notes ul, #checklists ul { list-style: none; padding: 0; margin: 0; }
+#notes ul {
+  column-gap: 14px;
+  column-count: 3;
+}
+@media (min-width: 1600px) {
+  #notes ul {
+    column-count: 4;
+  }
+}
+@media (max-width: 1024px) {
+  #notes ul {
+    column-count: 2;
+  }
+}
+#checklists ul {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1440px) {
+  #checklists ul {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1024px) {
+  #checklists ul {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 #notes li, #checklists li {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px; /* spec L9: 9px → 10px vertical (aligns with the 412px rail) */
-  flex-wrap: wrap; /* the meta line wraps to the row's second line */
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
   background: var(--row);
-  border: 1px solid transparent;
-  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
   cursor: pointer;
   position: relative;
-  transition: background 0.12s, border-color 0.12s;
+  break-inside: avoid; /* masonry column guard */
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
-#notes li:hover, #checklists li:hover { background: var(--row-hover); }
-/* selected rows: the accent BORDER is gone — selection reads as a tint + a
-   2px inset accent bar (::before rule below; later tasks style against it). */
+#notes li:hover, #checklists li:hover {
+  background: var(--row-hover);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+/* selected-row rules (line 325 block + li.selected .chip) STAY untouched —
+   byte-frozen rider-c fence; a selected row can no longer paint (full swap). */
 #notes li.selected, #checklists li.selected {
   background: var(--accent-soft);
   border-color: var(--border-soft);
@@ -333,10 +372,36 @@ li.selected .count { color: var(--accent-strong-text); }
   position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px;
   border-radius: 1px; background: var(--accent);
 }
-.item-title {
+.card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card-head .item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; /* upstream line-clamp-2 */
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.card-body { min-width: 0; }
+.card-body .row-snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4; /* upstream content preview cap */
+  overflow: hidden;
+  min-width: 0;
+  white-space: normal;   /* was nowrap+ellipsis in the row layout */
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.card-foot { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.card-foot .row-age { margin-left: auto; flex-shrink: 0; }
+.card-progress { display: flex; align-items: center; gap: 8px; }
+.card-progress .cl-progress { flex: 1 1 auto; }
+.progress-pct {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 /* Row meta line (spec L7): snippet + relative age. Typography rides T1's
    .meta-line class (muted 11.5px tabular-nums) via className="row-meta meta-line". */
@@ -346,12 +411,6 @@ li.selected .count { color: var(--accent-strong-text); }
   align-items: baseline;
   gap: 6px;
   overflow: hidden;
-}
-.row-snippet {
-  overflow: hidden;
-  text-overflow: ellipsis; /* cap-at-70 already applied; long words still clip */
-  white-space: nowrap;
-  min-width: 0;
 }
 /* R4 (T2-review): the age right-aligns (Linear parity) — last meta child */
 .row-age {
@@ -1226,6 +1285,14 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   /* touch targets (wrap rides the base .section-head/.head-actions rules now) */
   .new-btn { padding: 8px 10px; }
   li { padding-top: 10px; padding-bottom: 10px; }
+
+  /* card wall collapses (v0.27.0): notes masonry + checklist grid to 1 column */
+  #notes ul {
+    column-count: 1;
+  }
+  #checklists ul {
+    grid-template-columns: 1fr;
+  }
 
   /* keep sync badge clear of Android gesture navigation */
   #sync-badge { bottom: 20px; right: 12px; max-width: calc(100vw - 70px); }
