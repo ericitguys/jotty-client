@@ -173,14 +173,17 @@ input::placeholder { color: var(--muted); }
 #app > p { grid-column: 1 / -1; place-self: center; color: var(--muted); font-size: 15px; }
 #app > main {
   display: grid;
-  grid-template-columns: minmax(260px, 340px) 1fr;
+  grid-template-columns: 1fr;
   gap: 14px;
   padding: 16px;
   overflow: auto;
   align-content: start;
 }
-/* nothing open: the single active list spans the full width */
-#app > main.list-only { grid-template-columns: 1fr; }
+/* open editor/view = the wall is unmounted; give the fixed back button a clear
+   strip so it never overlays editor/view controls (probe-checked at 1280+412) */
+#app > main:not(.list-only) {
+  padding-top: 54px;
+}
 #app > main > section {
   background: var(--panel);
   border: 1px solid var(--border-soft);
@@ -1205,10 +1208,27 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 
 /* ---------- mobile (phones, e.g. Pixel 9: 412×916 CSS px) ---------- */
 /* Desktop is untouched: everything below applies only at narrow widths.
-   The drawer/backdrop/menu/back buttons are rendered by App at all sizes and
-   shown/hidden here. */
-.menu-btn, .back-btn { display: none; }
+   The drawer/backdrop and the menu button are rendered by App at all sizes
+   and shown/hidden here (v0.27.0: the back button moved UP to a base rule —
+   it is the return path at every width now, so nothing to hide here). */
+.menu-btn { display: none; }
 .topbar { display: none; }
+
+/* back button (v0.27.0 full swap): the return path at EVERY width — desktop
+   no longer keeps the list beside the editor. Same treatment the phone had. */
+.back-btn {
+  display: inline-flex;
+  position: fixed;
+  top: 10px; right: 10px;
+  z-index: 70;
+  width: 38px; height: 38px;
+  align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  color: var(--fg);
+  font-size: 17px;
+}
 
 @media (max-width: 700px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: 100dvh; }
@@ -1260,25 +1280,14 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
     font-size: 17px;
     flex: 0 0 auto;
   }
-  .back-btn {
-    display: inline-flex;
-    position: fixed;
-    top: 10px; right: 10px;
-    z-index: 70;
-    width: 38px; height: 38px;
-    align-items: center; justify-content: center;
-    border-radius: 10px;
-    background: var(--panel);
-    border: 1px solid var(--border-soft);
-    color: var(--fg);
-    font-size: 17px;
-  }
-
   /* single column: topbar row, then list OR editor */
-  #app > main { grid-template-columns: 1fr; padding: 12px; gap: 12px; grid-row: 2; min-height: 0; }
-  /* an editor/checklist view is open -> hide the list behind it */
-  #app > main:not(.list-only) > section { display: none; }
-  /* when the list is hidden, give the editor the full column */
+  #app > main { padding: 12px; gap: 12px; grid-row: 2; min-height: 0; }
+  /* v0.27.0: the desktop 54px back-btn strip must NOT leak into the phone column
+     (:not(.list-only) out-specifies this media's #app > main, so source order
+     alone would not do it) — the phone re-asserts its own 12px, back-btn floats
+     over the open editor/view exactly as shipped (probe-checked) */
+  #app > main:not(.list-only) { padding-top: 12px; }
+  /* the single child (wall OR editor/view) gets the full column width */
   #app > main > * { min-width: 0; }
   #note-editor, #checklist-view { max-width: 100%; }
 

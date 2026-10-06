@@ -9,6 +9,11 @@ import App from './App';
 import { useStore } from './stores/store';
 import { listen } from '@tauri-apps/api/event';
 
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const cssTextApp = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'styles.css'), 'utf8');
+
 beforeEach(() => {
   invoke.mockReset();
   // the store is a module singleton — UI state leaks between tests without a reset
@@ -39,13 +44,36 @@ describe('App shell', () => {
     expect(screen.queryByText('Groceries')).not.toBeInTheDocument();
   });
 
-  it('opening an item narrows the list beside its editor', async () => {
+  it('opening an item replaces the list with its editor (v0.27.0 full swap)', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Groceries'));
     await waitFor(() => expect(screen.getByPlaceholderText('Note title')).toBeInTheDocument());
     expect(document.querySelector('main')).not.toHaveClass('list-only');
-    expect(screen.getByText('Groceries')).toBeInTheDocument(); // the list stays visible beside the editor
+    expect(screen.queryByText('Groceries')).not.toBeInTheDocument(); // the wall is GONE — not merely narrowed
+    expect(document.querySelectorAll('main > section')).toHaveLength(0); // no list section rides along
+  });
+
+  it('opening a checklist view also swaps (wall unmounts), back restores the checklists wall', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name: 'Checklists' }));
+    await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Errands'));
+    await waitFor(() => expect(document.getElementById('checklist-view')).toBeInTheDocument());
+    expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // list gone while open
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }));
+    await waitFor(() => expect(document.getElementById('checklist-view')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Errands')).toBeInTheDocument()); // wall restored
+  });
+
+  it('back button is a real return path at every width: base css, fixed top-right', () => {
+    // static css fences (jsdom applies no layout; RULE copied per the ChecklistList pattern)
+    const noComments = cssTextApp().replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(noComments).toContain('.back-btn {\n  display: inline-flex;\n  position: fixed;\n  top: 10px; right: 10px;');
+    expect(noComments).toContain('.menu-btn { display: none; }'); // menu-btn alone in the hide rule now
+    expect(noComments).toContain('#app > main {\n  display: grid;\n  grid-template-columns: 1fr;');
+    expect(noComments).toContain('#app > main:not(.list-only) {\n  padding-top: 54px;\n}');
   });
 
   it('not-connected screen auto-opens onboarding modal', async () => {
@@ -222,6 +250,9 @@ describe('App shell', () => {
     // board renders with its columns; the plain checkbox list does NOT
     await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
     expect(requested).toBe('kb');
+    // v0.27.0 full swap: the open board REPLACED the wall — back out of the
+    // board first, the Plain card is gone while the board is open
+    fireEvent.click(screen.getByRole('button', { name: 'Back to list' }));
     // open the plain list: checklist view with checkboxes
     fireEvent.click(await screen.findByText('Plain'));
     await waitFor(() => expect(screen.getByText('t')).toBeInTheDocument());
@@ -503,7 +534,7 @@ describe('web preference mirroring', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
   });
 
-  it('back button clears the open editor (mobile)', async () => {
+  it('back button clears the open editor (now the only return path — rename only)', async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Groceries')); // open the editor

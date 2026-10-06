@@ -197,14 +197,20 @@ export default function App() {
     </header>
     {drawerOpen && <div className="drawer-backdrop" onClick={() => setDrawerOpen(false)} />}
     <Sidebar onOpenSettings={() => { setDrawerOpen(false); setShowSettings(true); }} />
+    {/* Full swap (v0.27.0): an open editor/view REPLACES the wall — the list unmounts; back-btn returns. */}
     <main className={selectedNoteId || selectedChecklistId ? '' : 'list-only'}>
-      {listMode === 'agenda'
-        ? <AgendaView />
-        : listMode === 'notes'
-          ? <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
-          : <ChecklistList checklists={visibleChecklists} />}
-        {selectedNoteId ? <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/> : selectedChecklistId ? <ChecklistView checklistId={selectedChecklistId}/> : null}
-      </main>
+      {selectedNoteId ? (
+        <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/>
+      ) : selectedChecklistId ? (
+        <ChecklistView checklistId={selectedChecklistId}/>
+      ) : listMode === 'agenda' ? (
+        <AgendaView />
+      ) : listMode === 'notes' ? (
+        <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
+      ) : (
+        <ChecklistList checklists={visibleChecklists} />
+      )}
+    </main>
       {(selectedNoteId || selectedChecklistId) && (
         <button
           className="back-btn"
