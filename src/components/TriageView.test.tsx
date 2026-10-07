@@ -361,4 +361,28 @@ describe('TriageView action flows (Task 4 wiring)', () => {
     expect(document.querySelector('li.triage-card.selected')).toBeNull(); // selection cleared
     expect(invoke).not.toHaveBeenCalled();
   });
+
+  // Task-4 review F2 rider: the TriageMoveModal carries no in-dialog error
+  // affordance, so a failed move apply CLOSES the dialog and lets the
+  // section-level .triage-error line surface (same asymmetry as the accepted
+  // discard flow) instead of hiding the error behind the fixed backdrop.
+  it('a failed move apply closes the dialog and surfaces the error line section-level', async () => {
+    invoke.mockReset();
+    invoke.mockImplementation((cmd: string) =>
+      cmd === 'update_note'
+        ? Promise.reject(new Error('stale: note no longer exists'))
+        : Promise.resolve(null),
+    );
+    const seed = note('n-move-err', 'cap_mv_ab', 'boom body', isoAgo(HOUR));
+    useStore.setState({ notes: [seed], checklists: [] } as never);
+    render(<TriageView notes={[seed]} />);
+    pressKey('m');
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' })); // default category prefilled
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull()); // failure CLOSES the dialog
+    await waitFor(() => {
+      expect(screen.getByText('stale: note no longer exists')).toHaveClass('triage-error');
+    });
+    expect(invoke.mock.calls.filter((c) => c[0] === 'update_note')).toHaveLength(1);
+  });
 });

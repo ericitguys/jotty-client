@@ -122,6 +122,12 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
       await useStore.getState().refreshAll();
       clearAfterApply();
     } catch (e) {
+      // Close-on-failure (task-4 review F2 rider): TriageMoveModal carries no
+      // in-dialog error affordance, so a failure leaves the dialog and lets
+      // the section-level .triage-error line surface — same accepted asymmetry
+      // as discard (ConfirmModal self-closes). setErr AFTER closeModal, whose
+      // own reset would swallow it otherwise.
+      closeModal();
       setErr(fmtError(e));
     } finally {
       busyRef.current = false;
