@@ -9,6 +9,12 @@ export const createNote = (title: string, category: string) => invoke<T.NoteDto>
 export const quickCapture = (text: string) => invoke<T.NoteDto>('quick_capture', { text });
 export const updateNote = (id: string, title: string, content: string, category: string) => invoke<T.NoteDto>('update_note', { id, title, content, category });
 export const deleteNote = (id: string) => invoke<void>('delete_note', { id });
+// Triage promote (2026-10-07-triage-view-p2 Task 2 command): ONE Rust tx
+// inserts the board card AND moves the note to PROCESSED with a provenance
+// line; both outbox ops replay together. Invoke keys mirror the Rust command
+// params exactly (note_id/board_id/card_text/new_title → camelCase).
+export const promoteNoteToBoard = (noteId: string, boardId: string, cardText: string, newTitle: string) =>
+  invoke<T.NoteDto>('promote_note_to_board', { noteId, boardId, cardText, newTitle });
 export const listChecklists = () => invoke<T.ChecklistDto[]>('list_checklists');
 export const getChecklist = (id: string) => invoke<T.ChecklistDto>('get_checklist', { id });
 export const createChecklist = (title: string, category: string) => invoke<T.ChecklistDto>('create_checklist', { title, category });

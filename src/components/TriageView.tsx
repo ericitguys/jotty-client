@@ -1,13 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import * as api from '../api/client';
 import type { NoteDto } from '../api/types';
-import { isCaptureZone } from '../stores/store';
+import { isCaptureZone, useStore } from '../stores/store';
 import { relativeAge } from '../util/relativeTime';
+import { TRIAGE_MOVE_PRESET } from '../triage/routes';
+import { titleFromText } from '../triage/titles';
+import ConfirmModal from './modals/ConfirmModal';
+import TriageMoveModal from './TriageMoveModal';
+import TriagePromoteModal from './TriagePromoteModal';
 
 // Single action mapping (plan T3 interface): the three buttons AND the a/m/x
-// keys already route every entry point through here. Task 4 replaces ONLY this
-// body (promote/move modals + discard confirm); the keyboard/button plumbing
-// stays byte-stable.
+// keys already route every entry point through here. Task 4 wired the bodies:
+// promote = TriagePromoteModal → promote_note_to_board; move = TriageMoveModal
+// → update_note (originalCategory attached Rust-side when it changes);
+// discard = ConfirmModal (destructive) → store deleteNote (refreshes itself).
+// The keyboard/button plumbing stays byte-stable.
 export type TriageAction = 'promote' | 'move' | 'discard';
+
+// Error-line text (facts §16 strip style — mirrors VoiceNoteReview.tsx / fmt):
+// tauri rejections carry the inner error text; an Error object's class wrapper
+// is stripped so the line reads like the Rust message.
+const fmtError = (e: unknown): string => String(e).replace(/^.*Error: /, '');
+
+// Promote card-text default: first non-empty line of the content, hard-capped
+// at 120 chars (plan Task 4 interface, verbatim).
+const firstCardTextLine = (content: string): string =>
+  content.split('\n').map((s) => s.trim()).find(Boolean)?.slice(0, 120) ?? '';
 
 // Snippet: content squashed to one line, hard-capped at 160 chars (plan T3).
 const squash = (content: string): string =>
@@ -31,38 +49,134 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
     [notes],
   );
   const [activeIndex, setActiveIndex] = useState(0);
-  // Modal-open guard stays false in Task 3 (no modals yet); Task 4 drives the
-  // real modal state + this setter around its mounts.
-  const [modalOpen] = useState(false);
+  // Wired action state (Task 4): the open dialog's route + the note it works
+  // on + the last apply's error line. modalOpen is DERIVED (never stored) so
+  // modalOpenRef can stay a plain per-render mirror.
+  const [modal, setModal] = useState<TriageAction | null>(null);
+  const [activeNote, setActiveNote] = useState<NoteDto | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const activeNoteRef = useRef<NoteDto | null>(null);
+  // Single-invoke law: re-entry while an apply is awaiting is ignored, so a
+  // double-Confirm click cannot enqueue a op twice.
+  const busyRef = useRef(false);
 
-  // Placeholder action mapping (brief): Task 4 (promote/move/discard flows)
-  // rewires ONLY this body; the buttons and a/m/x keys already converge here.
+  const checklists = useStore((s) => s.checklists);
+  // Promote picker (brief): checklists filtered to the BOARD types, mapped to
+  // {id,title}, sorted title asc. STOP-CONTRACT verified: ChecklistDto
+  // listType values in-repo are 'kanban' + the deprecated 'task' alias
+  // (push.rs is_kanban gate; 'simple' = plain checklists).
+  const boardsForPicker = useMemo(
+    () => (checklists ?? [])
+      .filter((c) => c.listType === 'kanban' || c.listType === 'task')
+      .map((c) => ({ id: c.id, title: c.title }))
+      .sort((a, b) => a.title.localeCompare(b.title)),
+    [checklists],
+  );
+
   const onAction = (action: TriageAction, note: NoteDto): void => {
-    void action;
-    void note;
+    // Defensive double-guard (brief): the Rust apply revalidates server-side
+    // ("stale: note no longer exists" → zero enqueues); the view additionally
+    // refuses to open ANY modal when the note is already gone from the live
+    // catalog — clear the selection instead.
+    if (!(useStore.getState().notes ?? []).some((m) => m.id === note.id)) {
+      setActiveIndex(-1);
+      return;
+    }
+    setErr(null);
+    setActiveNote(note);
+    setModal(action);
   };
+
+  const closeModal = (): void => {
+    setModal(null);
+    setActiveNote(null);
+    setErr(null);
+  };
+
+  const clearAfterApply = closeModal;
+
+  const applyPromote = async (boardId: string, cardText: string, newTitle: string): Promise<void> => {
+    const note = activeNoteRef.current;
+    if (!note || busyRef.current) return;
+    busyRef.current = true;
+    try {
+      await api.promoteNoteToBoard(note.id, boardId, cardText, newTitle);
+      await useStore.getState().refreshAll();
+      clearAfterApply();
+    } catch (e) {
+      setErr(fmtError(e));
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const applyMove = async (newCategory: string, newTitle: string): Promise<void> => {
+    const note = activeNoteRef.current;
+    if (!note || busyRef.current) return;
+    busyRef.current = true;
+    try {
+      // Rename-input fallback per brief: blank keeps the current title.
+      // updateNote stays the 4-key wire primitive; the Rust attach layer adds
+      // originalCategory when (and only when) the category actually changes.
+      await api.updateNote(note.id, newTitle.trim() || note.title, note.content, newCategory.trim());
+      await useStore.getState().refreshAll();
+      clearAfterApply();
+    } catch (e) {
+      setErr(fmtError(e));
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const applyDiscard = async (): Promise<void> => {
+    const note = activeNoteRef.current;
+    if (!note || busyRef.current) return;
+    busyRef.current = true;
+    try {
+      // deleteNote already refreshes all (store law) — NO extra refresh here.
+      await useStore.getState().deleteNote(note.id);
+      clearAfterApply();
+    } catch (e) {
+      setErr(fmtError(e));
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  // Keep the selected card visible after j/k. jsdom has no scrollIntoView —
+  // guard before calling (plan test conventions).
+  const selectedRef = useRef<HTMLLIElement | null>(null);
 
   // Stale-closure law (facts §10, App window-listener precedent): the keydown
   // listener below registers ONCE with empty deps, so every value it reads is
   // mirrored into a ref on every render — including the CURRENT mapping.
   const cardsRef = useRef(cards);
   const activeIndexRef = useRef(activeIndex);
-  const modalOpenRef = useRef(modalOpen);
+  const modalOpenRef = useRef(modal !== null);
   const actionRef = useRef(onAction);
+  const selectedIdxRef = useRef(selectedRef);
   cardsRef.current = cards;
   activeIndexRef.current = activeIndex;
-  modalOpenRef.current = modalOpen;
+  modalOpenRef.current = modal !== null;
   actionRef.current = onAction;
+  selectedIdxRef.current = selectedRef;
+  activeNoteRef.current = activeNote;
 
-  // Keep the selected card visible after j/k. jsdom has no scrollIntoView —
-  // guard before calling (plan test conventions).
-  const selectedRef = useRef<HTMLLIElement | null>(null);
   useEffect(() => {
     const el = selectedRef.current;
     if (el && typeof el.scrollIntoView === 'function') {
       el.scrollIntoView({ block: 'nearest' });
     }
   }, [activeIndex]);
+
+  // After any successful apply (or a background refresh) the list can shrink:
+  // clamp the active index onto the new list length (brief law; a -1 "cleared"
+  // selection from the stale-guard is left alone).
+  useEffect(() => {
+    if (activeIndex > cards.length - 1) {
+      setActiveIndex(Math.max(cards.length - 1, 0));
+    }
+  }, [cards.length, activeIndex]);
 
   // Window keydown (facts §10): guards in order — skip events another surface
   // already consumed (e.g. App's capture hotkey preventDefaults), skip text
@@ -89,8 +203,8 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
       }
       const selected = list[idx];
       if (!selected) return;
-      // THE mapping call (brief): Task 4 changes the mapping body, never this
-      // listener — onAction is mirrored to stay current despite empty deps.
+      // THE mapping call (brief): onAction is mirrored to stay current despite
+      // empty deps.
       if (e.key === 'a') actionRef.current('promote', selected);
       else if (e.key === 'm') actionRef.current('move', selected);
       else if (e.key === 'x') actionRef.current('discard', selected);
@@ -129,6 +243,39 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
           </li>
         ))}
       </ul>
+      {err && modal !== 'promote' && <div className="triage-error">{err}</div>}
+      {modal === 'promote' && activeNote && (
+        <TriagePromoteModal
+          isOpen
+          onClose={closeModal}
+          onConfirm={applyPromote}
+          boards={boardsForPicker}
+          defaultText={firstCardTextLine(activeNote.content)}
+          defaultTitle={titleFromText(activeNote.content)}
+          error={err ?? undefined}
+        />
+      )}
+      {modal === 'move' && activeNote && (
+        <TriageMoveModal
+          isOpen
+          onClose={closeModal}
+          onConfirm={applyMove}
+          presets={[TRIAGE_MOVE_PRESET.COMMANDS, TRIAGE_MOVE_PRESET.DOCS]}
+          defaultCategory={activeNote.category ?? ''}
+          defaultTitle={activeNote.title}
+        />
+      )}
+      {modal === 'discard' && activeNote && (
+        <ConfirmModal
+          isOpen
+          onClose={closeModal}
+          onConfirm={applyDiscard}
+          title="Discard capture"
+          message={`Are you sure you want to discard "${activeNote.title}"?`}
+          confirmText="Discard"
+          destructive
+        />
+      )}
     </section>
   );
 }
