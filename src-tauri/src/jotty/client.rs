@@ -180,10 +180,17 @@ impl JottyClient {
         created.data.ok_or_else(|| AppError::Other("create_note: missing data".into()))
     }
 
-    pub async fn update_note(&self, id: &str, title: &str, content: &str, category: &str) -> AppResult<ServerNote> {
+    pub async fn update_note(&self, id: &str, title: &str, content: &str, category: &str, original_category: Option<&str>) -> AppResult<ServerNote> {
+        // originalCategory = the move/rename primitive (spec §2/§6): the server needs
+        // the PRE-move category to locate the file. Sent ONLY when Some — plain
+        // autosave edits keep the byte-stable 3-key body.
+        let mut body = serde_json::json!({"title": title, "content": content, "category": category});
+        if let Some(original) = original_category {
+            body["originalCategory"] = serde_json::Value::String(original.to_string());
+        }
         let created: Created<ServerNote> = self.api_send(
             reqwest::Method::PUT, &format!("/api/notes/{id}"),
-            serde_json::json!({"title": title, "content": content, "category": category}),
+            body,
         ).await?;
         created.data.ok_or_else(|| AppError::Other("update_note: missing data".into()))
     }
@@ -516,6 +523,47 @@ mod tests {
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         let n = c.create_note("New", "x", "Personal").await.unwrap();
         assert_eq!(n.id, "note-123");
+    }
+
+    #[tokio::test]
+    async fn update_note_with_original_category_sends_key() {
+        // move+rename primitive (spec §2/§6, live-probed): PUT /api/notes/{id} carries
+        // originalCategory so the server can locate the file across a category change.
+        // Body = 3 base keys + originalCategory ONLY when Some.
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/notes/n1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"n1","title":"T","content":"c","category":"WORK","createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-02T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let n = c.update_note("n1", "T", "c", "WORK", Some("HOME")).await.unwrap();
+        assert_eq!(n.id, "n1");
+        let reqs = s.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["originalCategory"], "HOME", "body: {body}");
+        assert_eq!(body.as_object().unwrap().len(), 4, "3 base keys + originalCategory, body: {body}");
+    }
+
+    #[tokio::test]
+    async fn update_note_without_original_category_omits_key() {
+        // None = plain autosave edit → byte-stable 3-key body; the server must never
+        // see originalCategory on title/content/category-in-place saves.
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/notes/n1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"n1","title":"T","content":"c","category":"WORK","createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-02T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let n = c.update_note("n1", "T", "c", "WORK", None).await.unwrap();
+        assert_eq!(n.id, "n1");
+        let reqs = s.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"title":"T","content":"c","category":"WORK"}), "body: {body}");
+        assert_eq!(body.as_object().unwrap().len(), 3);
     }
 
     #[tokio::test]

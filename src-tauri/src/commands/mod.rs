@@ -70,10 +70,22 @@ pub(crate) fn update_note_inner(
 ) -> AppResult<NoteDto> {
     let tx = conn.transaction()?;
     let patch = notes::NotePatch { title, content, category };
+    // originalCategory law (plan): stamp the PRE-patch row category ONLY when the
+    // patch actually moves the note — captured BEFORE update_local merges the patch.
+    // A pure autosave edit keeps the queued op byte-stable 3-key.
+    let pre = notes::get(&tx, id)?;
+    let original_category: Option<String> = match (&patch.category, pre) {
+        (Some(next), Some(row)) if row.category != *next => Some(row.category),
+        _ => None,
+    };
     let row = notes::update_local(&tx, id, &patch)?;
-    outbox::enqueue(&tx, "update", "note", id, &serde_json::json!({
+    let mut payload = serde_json::json!({
         "title": &row.title, "content": &row.content, "category": &row.category
-    }))?;
+    });
+    if let Some(original) = original_category {
+        payload["originalCategory"] = serde_json::Value::String(original);
+    }
+    outbox::enqueue(&tx, "update", "note", id, &payload)?;
     tx.commit()?;
     Ok(NoteDto::from(row))
 }
@@ -2228,6 +2240,47 @@ mod tests {
         let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert_eq!(ops[1].op_type, "update");
         assert_eq!(p2["content"], "body");
+    }
+
+    #[tokio::test]
+    async fn update_note_inner_stamps_original_category_when_category_changes() {
+        // originalCategory law (plan Global Constraints): stamp = PRE-patch row category,
+        // only when patch.category is Some and ≠ pre-patch. Payload otherwise stays the
+        // post-patch MERGED full copy (Ruling H) — push keys on op.entity_id.
+        let mut conn = db();
+        let note = create_note_inner(&mut conn, "T", "HOME").unwrap();
+        let moved = update_note_inner(&mut conn, &note.id, Some("T moved".into()), Some("body".into()), Some("WORK".into())).unwrap();
+        assert_eq!(moved.category, "WORK");
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[1].op_type, "update");
+        let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert_eq!(p2["category"], "WORK", "payload: {p2}");
+        assert_eq!(p2["originalCategory"], "HOME", "payload: {p2}");
+        assert_eq!(p2["title"], "T moved", "payload: {p2}");
+        assert_eq!(p2["content"], "body", "payload: {p2}");
+    }
+
+    #[tokio::test]
+    async fn update_note_inner_omits_original_category_when_category_unchanged() {
+        // byte-stable 3-key payload while the category stays put — covers BOTH the
+        // Some(same-category) arm and the None (title/content-only) autosave arm.
+        let mut conn = db();
+        let note = create_note_inner(&mut conn, "T", "HOME").unwrap();
+        update_note_inner(&mut conn, &note.id, None, Some("content v2".into()), Some("HOME".into())).unwrap();
+        update_note_inner(&mut conn, &note.id, Some("T2".into()), None, None).unwrap();
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 3, "create + 2 updates");
+        // Some("HOME") == pre-patch category → NO stamp
+        let p1: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert_eq!(ops[1].op_type, "update");
+        assert_eq!(p1, serde_json::json!({"title":"T","content":"content v2","category":"HOME"}), "payload: {p1}");
+        assert_eq!(p1.as_object().unwrap().len(), 3);
+        // None category patch (title/content-only edit) → NO stamp
+        let p2: serde_json::Value = serde_json::from_str(&ops[2].payload).unwrap();
+        assert_eq!(ops[2].op_type, "update");
+        assert_eq!(p2, serde_json::json!({"title":"T2","content":"content v2","category":"HOME"}), "payload: {p2}");
+        assert_eq!(p2.as_object().unwrap().len(), 3);
     }
 
     #[tokio::test]

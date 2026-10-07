@@ -92,6 +92,9 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     payload["title"].as_str().unwrap_or(""),
                     payload["content"].as_str().unwrap_or(""),
                     payload["category"].as_str().unwrap_or("Uncategorized"),
+                    // move/rename primitive: originalCategory stamped by update_note_inner
+                    // ONLY on category changes — absent on pre-existing 3-key payloads.
+                    payload.get("originalCategory").and_then(serde_json::Value::as_str),
                 ).await {
                     Ok(updated) => {
                         let tx = conn.transaction()?;
@@ -803,6 +806,58 @@ mod tests {
         assert_eq!(stats.conflicts, 1);
         assert_eq!(stats.pushed, 1);
         assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn note_update_arm_passes_original_category() {
+        // originalCategory passthrough: the update-arm payload may stamp the PRE-patch
+        // category (update_note_inner) — the PUT body must carry it verbatim.
+        let s = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/api/notes/n1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"n1","title":"T","content":"c","category":"WORK","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-02T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        notes::insert_local(&conn, &notes::NewNote { title: "T".into(), content: "c".into(), category: "HOME".into() }).unwrap();
+        outbox::enqueue(&conn, "update", "note", "n1",
+            &serde_json::json!({"title":"T","content":"c","category":"WORK","originalCategory":"HOME"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        // wiremock pitfall: an unmatched PUT would 404 → conflict; conflicts==0 pins the match.
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        let reqs = s.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["originalCategory"], "HOME", "update arm must pass originalCategory through, body: {body}");
+        assert_eq!(body.as_object().unwrap().len(), 4, "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn note_update_arm_without_original_category_omits_key() {
+        // payload without originalCategory (pre-existing 3-key ops, e.g. queued before
+        // this upgrade) → PUT body stays exactly the 3 base keys.
+        let s = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/api/notes/n1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "success": true,
+                "data": {"id":"n1","title":"T","content":"c","category":"WORK","createdAt":"2026-01-01T00:00:00.000Z","updatedAt":"2026-01-02T00:00:00.000Z","owner":"u"}
+            })))
+            .mount(&s).await;
+        let mut conn = db();
+        notes::insert_local(&conn, &notes::NewNote { title: "T".into(), content: "c".into(), category: "WORK".into() }).unwrap();
+        outbox::enqueue(&conn, "update", "note", "n1",
+            &serde_json::json!({"title":"T","content":"c","category":"WORK"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1);
+        assert_eq!(stats.conflicts, 0);
+        let reqs = s.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"title":"T","content":"c","category":"WORK"}), "body: {body}");
+        assert_eq!(body.as_object().unwrap().len(), 3);
     }
 
     #[tokio::test]
