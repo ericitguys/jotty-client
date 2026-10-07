@@ -110,6 +110,17 @@ describe('TriageView list', () => {
     expect(snippet).toBe(`alpha beta gamma ${'x'.repeat(200)}`.slice(0, 160));
     expect(snippet.length).toBe(160);
   });
+
+  // T5 real-engine probe catch (WebkitGTK still showed literal `<p>…</p>` in
+  // the snippet): content is TipTap HTML — tags must never reach the UI.
+  it('strips HTML tags from the snippet', () => {
+    render(
+      <TriageView
+        notes={[note('n-html', 'cap_html_ab', '<p>Renew the vpn <strong>cert</strong> this week</p>', isoAgo(HOUR))]}
+      />,
+    );
+    expect(document.querySelector('.triage-snippet')!.textContent).toBe('Renew the vpn cert this week');
+  });
 });
 
 describe('TriageView keyboard', () => {

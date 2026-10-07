@@ -28,8 +28,11 @@ const firstCardTextLine = (content: string): string =>
   content.split('\n').map((s) => s.trim()).find(Boolean)?.slice(0, 120) ?? '';
 
 // Snippet: content squashed to one line, hard-capped at 160 chars (plan T3).
+// HTML STRIP (T5 real-engine probe catch — the WebKitGTK still rendered the
+// literal `<p>…</p>`): content is TipTap HTML; tags become spaces so the flat
+// text never carries markup, THEN whitespace collapses and the cap applies.
 const squash = (content: string): string =>
-  content.replace(/\s+/g, ' ').trim().slice(0, 160);
+  content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
 
 // Internal sort: createdAt desc with id tiebreak on a COPY (never mutate props).
 const sortByCreatedDesc = (notes: NoteDto[]): NoteDto[] =>
