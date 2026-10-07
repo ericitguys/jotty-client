@@ -91,4 +91,59 @@ describe('TriagePromoteModal', () => {
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('stale: note no longer exists')).toHaveClass('triage-error');
   });
+
+  // Task-4 review F1 (FIX-NOW): refreshAll re-sets `checklists` on every
+  // sync-updated event and every 60s scheduler tick, so an open dialog can see
+  // a boards-identity change at any moment — in-progress drafts must survive.
+  it('a boards-identity change mid-dialog does NOT reset the drafts', () => {
+    const onClose = vi.fn();
+    const onConfirm = vi.fn();
+    const props = { isOpen: true, onClose, onConfirm };
+    const { rerender } = render(
+      <TriagePromoteModal {...props} boards={boards} defaultText="grab bulbs" defaultTitle="Grab bulbs" />,
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: 'Card text' }), {
+      target: { value: 'Fix the fuse box' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Card title' }), {
+      target: { value: 'Fuse box' },
+    });
+    // a background pull lands: fresh checklists array → fresh boards identity,
+    // dialog stays open (isOpen unchanged)
+    rerender(
+      <TriagePromoteModal
+        {...props}
+        boards={[...boards, { id: 'b3', title: 'New board' }]}
+        defaultText="grab bulbs"
+        defaultTitle="Grab bulbs"
+      />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Card text' })).toHaveValue('Fix the fuse box');
+    expect(screen.getByRole('textbox', { name: 'Card title' })).toHaveValue('Fuse box');
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  // the OTHER half of the F1 edge contract: close → reopen still re-seeds the
+  // drafts from the defaults (guard against an over-broad never-re-seed fix)
+  it('closing and reopening re-seeds the drafts from the defaults', () => {
+    const { rerender } = render(
+      <TriagePromoteModal
+        isOpen
+        onClose={() => {}}
+        onConfirm={() => {}}
+        boards={boards}
+        defaultText="grab bulbs"
+        defaultTitle="Grab bulbs"
+      />,
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: 'Card text' }), {
+      target: { value: 'user typed this' },
+    });
+    rerender(<TriagePromoteModal isOpen={false} onClose={() => {}} onConfirm={() => {}} boards={boards} />);
+    rerender(
+      <TriagePromoteModal isOpen onClose={() => {}} onConfirm={() => {}} boards={boards} defaultText="grab bulbs" defaultTitle="Grab bulbs" />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Card text' })).toHaveValue('grab bulbs');
+    expect(screen.getByRole('textbox', { name: 'Card title' })).toHaveValue('Grab bulbs');
+  });
 });

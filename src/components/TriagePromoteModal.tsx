@@ -22,14 +22,20 @@ export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards,
   const [newTitle, setNewTitle] = useState('');
   const cardRef = useRef<HTMLInputElement>(null);
 
-  // Re-seed the drafts and focus the card-text input on every open.
+  // Re-seed the drafts and focus the card-text input on every open. EDGE-GATED
+  // (task-4 review F1): only the isOpen false→true edge re-seeds — `boards`
+  // identity changes mid-dialog (refreshAll re-sets checklists on every
+  // sync-updated event + 60s scheduler tick) must NOT wipe in-progress drafts.
+  // The mount edge (isOpen=true on first render) still seeds.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpen.current) {
       setBoardId(boards[0]?.id ?? '');
       setCardText(defaultText ?? '');
       setNewTitle(defaultTitle ?? '');
       cardRef.current?.focus();
     }
+    wasOpen.current = isOpen;
   }, [isOpen, defaultText, defaultTitle, boards]);
 
   // Escape closes wherever the focus sits — listen on window (PromptModal law).
