@@ -124,16 +124,20 @@ describe('TriageView keyboard', () => {
     pressKey('j'); // window-level keys still work
     expect(cards()[1]!.classList.contains('selected')).toBe(true);
 
+    // Per-key stepwise asserts (T3 review F1 fix): every target key must
+    // leave the selection UNCHANGED immediately after its own firing — a
+    // single end-of-burst assert lets a j+k pair self-cancel (1→2→1) and
+    // hide a deleted guard arm. a/m/x carry no per-key signal in T3: their
+    // only effect is the no-op onAction placeholder (internal, no
+    // prop/store/invoke seam) — they stay pinned in T4 per the plan split.
     for (const target of [
       screen.getByTestId('guard-input'),
       screen.getByTestId('guard-area'),
     ]) {
-      pressKey('j', target);
-      pressKey('k', target);
-      pressKey('a', target);
-      pressKey('m', target);
-      pressKey('x', target);
-      expect(cards()[1]!.classList.contains('selected')).toBe(true);
+      for (const key of ['j', 'k', 'a', 'm', 'x'] as const) {
+        pressKey(key, target);
+        expect(cards()[1]!.classList.contains('selected')).toBe(true);
+      }
     }
   });
 
