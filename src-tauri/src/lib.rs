@@ -70,6 +70,7 @@ pub fn run() {
             commands::get_board_columns,
             commands::create_task_board,
             commands::add_item,
+            commands::promote_note_to_board,
             commands::set_item_text,
             commands::set_item_checked,
             commands::set_item_status,

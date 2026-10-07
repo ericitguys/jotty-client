@@ -303,6 +303,86 @@ pub(crate) fn add_item_inner(
     Ok(ItemDto::from(row))
 }
 
+// ---- promote (2026-10-07-triage-view-p2 Task 2): inbox note -> board card ----
+// ONE tx per the one-mutation law: item insert + item-create op + note move to
+// PROCESSED (provenance line) + note-update op, all-or-nothing. promote cannot
+// reuse add_item_inner (it opens its OWN transaction; rusqlite has no nested
+// transactions) — its EXACT enqueue shape is replicated inside this tx.
+// Every guard below fails BEFORE any write/op: nothing is ever half-enqueued.
+pub(crate) fn promote_note_to_board_inner(
+    conn: &mut Connection,
+    note_id: &str,
+    board_id: &str,
+    card_text: &str,
+    new_title: &str,
+) -> AppResult<NoteDto> {
+    let tx = conn.transaction()?;
+    // (1) stale-guard law (plan): revalidate INSIDE the tx — a note deleted
+    // from another surface must fail safe with ZERO outbox enqueues.
+    let pre = notes::get(&tx, note_id)?
+        .ok_or_else(|| AppError::Other("stale: note no longer exists".into()))?;
+    if pre.deleted_at.is_some() {
+        return Err(AppError::Other("stale: note no longer exists".into()));
+    }
+    // (2) board row must exist — its title feeds the provenance line. The
+    // checklist_items FK (foreign_keys=ON) would also reject the insert, but
+    // the explicit check fails before ANY write.
+    let board = checklists::get_checklist(&tx, board_id)?
+        .ok_or_else(|| AppError::Other("board not found".into()))?;
+    // (3) trimmed card text is both the item text and the payload text
+    let trimmed = card_text.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("empty card text".into()));
+    }
+    // (4) plain-list insert (parent null, no status/date): the promote lands a
+    // TODO-zone card like the voice-existing-board flow does.
+    let item = items::insert_local(&tx, &items::NewItem {
+        checklist_id: board_id.into(),
+        parent_local_id: None,
+        text: trimmed.into(),
+        status: None,
+        priority: None,
+        target_date: None,
+    })?;
+    // (5) item-create op — add_item_inner's EXACT payload (Ruling D): 4 keys,
+    // parent null, NO status key when None, NO set_date op when target None
+    // (plain-list payload byte-stability law, pinned by tests).
+    let payload = serde_json::json!({
+        "checklist_id": board_id, "item_local_id": &item.local_id, "text": &item.text,
+        "parent_local_id": serde_json::Value::Null
+    });
+    outbox::enqueue(&tx, "create", "checklist_item", &item.local_id, &payload)?;
+    // (6) provenance line (spec §6, greppable) appended after a blank line
+    let line = format!(
+        "↳ {} → Board \"{}\" / item \"{}\"",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        board.title,
+        trimmed
+    );
+    let new_content = format!("{}\n\n{}", pre.content.trim_end(), line);
+    // (7) move to PROCESSED; blank new_title keeps the entropy capture title
+    let title: String = if new_title.trim().is_empty() {
+        pre.title.clone()
+    } else {
+        new_title.trim().to_string()
+    };
+    let row = notes::update_local(&tx, note_id, &notes::NotePatch {
+        title: Some(title),
+        content: Some(new_content),
+        category: Some("PROCESSED".into()),
+    })?;
+    // (8) note-update op: post-patch MERGED full copy (Ruling H). Promotion
+    // ALWAYS moves the category (!INBOX -> PROCESSED), so originalCategory
+    // rides unconditionally (plan semantics step 8).
+    let mut op = serde_json::json!({
+        "title": &row.title, "content": &row.content, "category": &row.category
+    });
+    op["originalCategory"] = serde_json::Value::String(pre.category);
+    outbox::enqueue(&tx, "update", "note", note_id, &op)?;
+    tx.commit()?;
+    Ok(NoteDto::from(row))
+}
+
 pub(crate) fn set_item_text_inner(
     conn: &mut Connection,
     checklist_id: &str,
@@ -940,6 +1020,21 @@ pub async fn add_item(
 ) -> Result<ItemDto, String> {
     let mut conn = state.db.lock().await;
     add_item_inner(&mut conn, &checklist_id, &text, parent_local_id, status, target_date).map_err(|e| e.to_string())
+}
+
+/// Promote a captured note to a board card (Task 2): ONE tx inserts the card
+/// item and moves the note to PROCESSED with a provenance line; both outbox
+/// ops enqueue together (atomic — any failure leaves the outbox untouched).
+#[tauri::command]
+pub async fn promote_note_to_board(
+    state: tauri::State<'_, AppState>,
+    note_id: String,
+    board_id: String,
+    card_text: String,
+    new_title: String,
+) -> Result<NoteDto, String> {
+    let mut conn = state.db.lock().await;
+    promote_note_to_board_inner(&mut conn, &note_id, &board_id, &card_text, &new_title).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2281,6 +2376,250 @@ mod tests {
         assert_eq!(ops[2].op_type, "update");
         assert_eq!(p2, serde_json::json!({"title":"T2","content":"content v2","category":"HOME"}), "payload: {p2}");
         assert_eq!(p2.as_object().unwrap().len(), 3);
+    }
+
+    // ---- Task 2 (2026-10-07-triage-view-p2): promote_note_to_board ----
+    // Promotion composes item insert + item-create op + note move to PROCESSED
+    // (provenance line) + note-update op inside ONE tx. Seeding is RAW
+    // (notes::insert_local + seed_checklist_row — both op-free) so the outbox
+    // starts EMPTY and exact row-count asserts pin the promote's OWN enqueues.
+
+    #[tokio::test]
+    async fn promote_happy_path_atomic() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "grab bulbs\ncheck the fuse box".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-1", "Maintenance");
+        let dto = promote_note_to_board_inner(
+            &mut conn,
+            &note.id,
+            "board-1",
+            "  Fix Nginx SSL  ",
+            "Fresh Card Title",
+        )
+        .unwrap();
+
+        // note row: PROCESSED + new title + content ends with the provenance line
+        let row = notes::get(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(row.category, "PROCESSED");
+        assert_eq!(row.title, "Fresh Card Title");
+        assert!(row.dirty);
+        assert!(row.content.starts_with("grab bulbs\ncheck the fuse box"));
+        assert!(row.content.contains("\n\n↳ "), "content: {}", row.content);
+        assert!(
+            row.content.ends_with(" / item \"Fix Nginx SSL\""),
+            "content: {}",
+            row.content
+        );
+        // returned DTO mirrors the stored row
+        assert_eq!(dto.id, note.id);
+        assert_eq!(dto.title, "Fresh Card Title");
+        assert_eq!(dto.category, "PROCESSED");
+        assert_eq!(dto.content, row.content);
+
+        // ONE item row on the board, trimmed text, plain-list shape
+        let flat = items::list_for_checklist(&conn, "board-1").unwrap();
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].text, "Fix Nginx SSL");
+        assert_eq!(flat[0].checklist_id, "board-1");
+        assert_eq!(flat[0].parent_id, None);
+        assert_eq!(flat[0].status, None);
+
+        // outbox EXACTLY 2 rows, FIFO: seq1 item create (4-key payload),
+        // seq2 note update (3 merged keys + originalCategory)
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2, "ops: {ops:?}");
+        assert_eq!(ops[0].op_type, "create");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, flat[0].local_id);
+        let p1: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(
+            p1,
+            serde_json::json!({
+                "checklist_id": "board-1",
+                "item_local_id": &flat[0].local_id,
+                "text": "Fix Nginx SSL",
+                "parent_local_id": null
+            }),
+            "payload: {p1}"
+        );
+        assert_eq!(
+            p1.as_object().unwrap().len(),
+            4,
+            "item create payload is exactly 4 keys (no status/date)"
+        );
+        assert_eq!(ops[1].op_type, "update");
+        assert_eq!(ops[1].entity, "note");
+        assert_eq!(ops[1].entity_id, note.id);
+        let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert_eq!(p2["title"], "Fresh Card Title", "payload: {p2}");
+        assert_eq!(p2["content"], row.content, "payload: {p2}");
+        assert_eq!(p2["category"], "PROCESSED", "payload: {p2}");
+        assert_eq!(p2["originalCategory"], "!INBOX", "payload: {p2}");
+        assert_eq!(
+            p2.as_object().unwrap().len(),
+            4,
+            "note update payload = merged 3 keys + originalCategory"
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_stale_note_fails_without_enqueues() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "stale body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-1", "Maintenance");
+        notes::soft_delete_local(&conn, &note.id).unwrap();
+
+        let err = promote_note_to_board_inner(&mut conn, &note.id, "board-1", "card", "t").unwrap_err();
+        assert_eq!(err.to_string(), "stale: note no longer exists");
+        // ZERO side effects: nothing enqueued, no item row, row not resurrected
+        assert!(
+            outbox::next_batch(&conn, 10).unwrap().is_empty(),
+            "stale promote must not enqueue"
+        );
+        assert!(items::list_for_checklist(&conn, "board-1").unwrap().is_empty());
+        let row = notes::get(&conn, &note.id).unwrap().unwrap();
+        assert!(row.deleted_at.is_some(), "row must stay soft-deleted");
+        assert_eq!(row.category, "!INBOX");
+    }
+
+    #[tokio::test]
+    async fn promote_missing_board_fails_without_enqueues() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "lonesome".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+
+        let err = promote_note_to_board_inner(&mut conn, &note.id, "no-such-board", "card", "t").unwrap_err();
+        assert_eq!(err.to_string(), "board not found");
+        assert!(
+            outbox::next_batch(&conn, 10).unwrap().is_empty(),
+            "missing board must not enqueue"
+        );
+        assert!(items::list_for_checklist(&conn, "no-such-board").unwrap().is_empty());
+        // note untouched in !INBOX (Review Focus 3)
+        let row = notes::get(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(row.category, "!INBOX");
+        assert_eq!(row.content, "lonesome");
+        assert!(row.deleted_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn promote_blank_title_keeps_entropy_title() {
+        let mut conn = db();
+        let entropy = "cap_1759812345678_abcd";
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: entropy.into(),
+            content: "body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-1", "Maintenance");
+
+        let dto = promote_note_to_board_inner(&mut conn, &note.id, "board-1", "card text", "   ").unwrap();
+        assert_eq!(dto.title, entropy, "blank new_title must keep the existing title");
+        let row = notes::get(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(row.title, entropy);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        let p2: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert_eq!(p2["title"], entropy, "queued update op must carry the kept title");
+        assert_eq!(p2["category"], "PROCESSED");
+    }
+
+    #[tokio::test]
+    async fn promote_trims_card_text_and_rejects_empty() {
+        // trims
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-t", "Trim");
+        promote_note_to_board_inner(&mut conn, &note.id, "board-t", "  padded card  ", "").unwrap();
+        let flat = items::list_for_checklist(&conn, "board-t").unwrap();
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].text, "padded card");
+        let p1: serde_json::Value =
+            serde_json::from_str(&outbox::next_batch(&conn, 10).unwrap()[0].payload).unwrap();
+        assert_eq!(p1["text"], "padded card", "payload carries the TRIMMED text");
+
+        // rejects empty — fresh instance so the outbox-empty assert is clean
+        let mut conn2 = db();
+        let note2 = notes::insert_local(&conn2, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "raw content".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn2, "board-e", "Empty");
+        let err = promote_note_to_board_inner(&mut conn2, &note2.id, "board-e", "   ", "").unwrap_err();
+        assert_eq!(err.to_string(), "empty card text");
+        assert!(
+            outbox::next_batch(&conn2, 10).unwrap().is_empty(),
+            "empty card text must not enqueue"
+        );
+        assert!(items::list_for_checklist(&conn2, "board-e").unwrap().is_empty());
+        let row2 = notes::get(&conn2, &note2.id).unwrap().unwrap();
+        assert_eq!(row2.category, "!INBOX");
+        assert_eq!(row2.content, "raw content");
+    }
+
+    #[tokio::test]
+    async fn provenance_line_format_is_greppable() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759812345678_abcd".into(),
+            content: "seed body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-g", "Maintenance");
+        promote_note_to_board_inner(&mut conn, &note.id, "board-g", "Fix Nginx SSL", "").unwrap();
+
+        let row = notes::get(&conn, &note.id).unwrap().unwrap();
+        // new_content = old trimmed + blank line + ONE provenance line
+        let line = row
+            .content
+            .strip_prefix("seed body\n\n")
+            .expect("content = pre content + \\n\\n + provenance line");
+        assert!(!line.contains('\n'), "provenance stays ONE line: {line}");
+        assert!(line.starts_with("↳ "), "line: {line}");
+        // exact structure: ↳ <RFC3339-Z seconds> → Board "<title>" / item "<text>"
+        let body = line.strip_prefix("↳ ").unwrap();
+        let mut segs = body.splitn(2, " → Board \"");
+        let ts = segs.next().unwrap();
+        let rest = segs.next().expect(" → Board \" segment");
+        assert_eq!(
+            ts.len(),
+            20,
+            "RFC3339 with Z suffix at SECOND precision (no fractional part): {ts}"
+        );
+        assert!(ts.ends_with('Z'), "Z-suffixed timestamp: {ts}");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(ts).is_ok(),
+            "timestamp must parse as RFC3339: {ts}"
+        );
+        let mut board_segs = rest.splitn(2, "\" / item \"");
+        let board_title = board_segs.next().unwrap();
+        let item_part = board_segs.next().expect("\" / item \" segment");
+        assert_eq!(board_title, "Maintenance");
+        assert!(item_part.ends_with('"'), "item segment closes with a quote: {item_part}");
+        assert_eq!(&item_part[..item_part.len() - 1], "Fix Nginx SSL");
     }
 
     #[tokio::test]
