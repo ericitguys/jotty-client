@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import AgendaView from './components/AgendaView';
 import NoteList from './components/NoteList';
 import ChecklistList from './components/ChecklistList';
+import TriageView from './components/TriageView';
 import ChecklistView from './components/ChecklistView';
 import NoteEditor from './components/NoteEditor';
 import SyncBadge from './components/SyncBadge';
@@ -104,6 +105,20 @@ export default function App() {
     if (listFilter === 'task' || listFilter === 'simple') list = list.filter((c) => c.listType === listFilter);
     return list;
   })();
+
+  // Triage integration (P2 T5): the capture surface's rows — EVERY capture-zone
+  // note (nested !INBOX/* zones too), newest capture first (createdAt desc, id
+  // tiebreak mirroring the view's own defensive sort). visibleNotes stays
+  // untouched: TriageView is a SEPARATE branch of the wall swap, the P1
+  // semantics for every other surface are byte-stable.
+  const inboxNotes = (notes ?? [])
+    .filter((n) => isCaptureZone(n.category))
+    .sort((a, b) => {
+      const ka = a.createdAt ?? '';
+      const kb = b.createdAt ?? '';
+      if (ka !== kb) return ka < kb ? 1 : -1;
+      return a.id < b.id ? -1 : 1;
+    });
 
   // Theme mirror: light/dark/system (any custom theme id falls back to dark).
   // "system" follows the OS live via prefers-color-scheme. matchMedia is
@@ -218,6 +233,13 @@ export default function App() {
         useStore.getState().setListMode('notes');
         setQcFocus((n) => n + 1);
       }
+      // triage hotkey (P2 T5): the inbox IS the triage surface — selecting the
+      // capture zone swaps the wall to TriageView. Store-singleton read keeps
+      // the empty-deps listener fresh (same law as the capture hotkey).
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'i') {
+        e.preventDefault();
+        useStore.getState().selectCategory({ type: 'notes', path: '!INBOX' });
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -255,6 +277,10 @@ export default function App() {
         <NoteEditor key={`${selectedNoteId}-${contentNonce}`} noteId={selectedNoteId} onRetranscribe={(id) => setVoice({ mode: 'retranscribe', noteId: id })}/>
       ) : selectedChecklistId ? (
         <ChecklistView checklistId={selectedChecklistId}/>
+      ) : inboxSelected ? (
+        // Triage (P2 T5): the inbox category is NOT a plain list — the wall
+        // swaps to the keyboard-first triage surface BEFORE the agenda branch.
+        <TriageView notes={inboxNotes} />
       ) : listMode === 'agenda' ? (
         <AgendaView />
       ) : listMode === 'notes' ? (

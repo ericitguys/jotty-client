@@ -1626,3 +1626,66 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 .quick-capture { padding: 0 10px 10px; }
 .quick-capture input { width: 100%; box-sizing: border-box; }
 .quick-capture-error { color: var(--danger, #c0392b); font-size: 12px; padding: 4px 2px; }
+
+/* #triage (P2 T5): the !INBOX triage wall — card-idiom rows, keyboard-first.
+   New block at FILE END (never inside the card-wall block per the brief);
+   tokens mirror the card-wall idiom (--row/--border-soft/--radius). */
+.triage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.triage-count { color: var(--muted); font-size: 12px; }
+.triage-empty { color: var(--muted); padding: 18px 4px; }
+.triage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--row);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.triage-card:hover { border-color: var(--accent); }
+.triage-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.triage-head { display: flex; align-items: baseline; gap: 8px; }
+.triage-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.triage-date { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.triage-snippet {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.triage-actions { display: flex; gap: 6px; }
+.triage-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.triage-actions button:hover { border-color: var(--accent); color: var(--accent-text); }
+.triage-error { color: var(--danger); font-size: 13px; padding: 4px 2px; }
+@media (max-width: 700px) {
+  .triage-card { padding: 10px 12px; }
+  .triage-head { flex-wrap: wrap; }
+  .triage-actions button { flex: 1; padding: 6px 10px; }
+}

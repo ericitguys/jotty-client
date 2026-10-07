@@ -732,3 +732,50 @@ describe('voice retry storm guard (kimi audit 5.1: 1s debounce + in-flight ref)'
     expect(retryCalls()).toBe(2); // a NEW burst after the pass resolved may run the next pass
   });
 });
+
+describe('triage integration (capture P2 T5)', () => {
+  // !INBOX note fixtures carry createdAt: TriageView sorts + ages cards
+  const zoneNote = (id: string, title: string, content: string, category: string, createdAt: string) =>
+    ({ id, title, content, category, createdAt, updatedAt: createdAt, deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null });
+
+  it('selecting the !INBOX category renders TriageView instead of NoteList', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([
+        zoneNote('cap1', 'cap_9_aaaa', 'renew the vpn cert this week', '!INBOX', '2026-10-07T10:00:00.000Z'),
+        zoneNote('cap2', 'cap_9_zzzz', 'book the dentist', '!INBOX/kitchen', '2026-10-07T09:00:00.000Z'),
+        { id: 'home1', title: 'Groceries', content: 'milk', category: 'Home', updatedAt: '2026-01-01T00:00:00.000Z', deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null },
+      ]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [{ name: '!INBOX', path: '!INBOX', count: 2, level: 0 }], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument()); // wall settled first
+    act(() => { useStore.getState().selectCategory({ type: 'notes', path: '!INBOX' }); });
+    // the wall swaps to the triage surface
+    await waitFor(() => expect(screen.getByText('Triage')).toBeInTheDocument());
+    expect(screen.getByText('cap_9_aaaa')).toBeInTheDocument(); // zone rows surface as triage cards
+    expect(screen.getByText('cap_9_zzzz')).toBeInTheDocument(); // nested zone rows too (startsWith zone law)
+    expect(screen.queryByText('Groceries')).not.toBeInTheDocument(); // the notes wall (NoteList) unmounted
+    expect(document.querySelector('#triage')).not.toBeNull();
+  });
+
+  it('the plain notes wall is untouched — no triage swap without an inbox selection', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    expect(screen.queryByText('Triage')).not.toBeInTheDocument(); // default wall keeps the card view
+    expect(document.querySelector('#triage')).toBeNull();
+  });
+
+  it('Ctrl+Shift+I opens the triage surface from anywhere', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    fireEvent.keyDown(window, { key: 'I', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(screen.getByText('Triage')).toBeInTheDocument());
+    // the base mock carries no !INBOX rows — the triage wall renders its empty state
+    expect(screen.getByText('Inbox is empty 🎉')).toBeInTheDocument();
+  });
+});
