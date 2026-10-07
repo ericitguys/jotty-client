@@ -80,11 +80,29 @@ pub async fn scheduler_tick(app: &tauri::AppHandle) -> AppResult<()> {
 
     let due = {
         let conn = state.db.lock().await;
-        let interval_min: i64 = conn.query_row(
+        // kimi audit 1.1 (FIX-NOW): bare unwrap_or fallbacks masked sync_state
+        // read failures (a corrupt/stale-locked DB looked like a healthy
+        // default config). Behavior is preserved — fallback VALUES are
+        // identical — the failures now surface as a warning line each.
+        let interval_min: i64 = match conn.query_row(
             "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM sync_state WHERE key='sync_interval_minutes'), 5)",
-            [], |r| r.get(0)).unwrap_or(5);
-        let last: Option<String> = conn.query_row(
-            "SELECT value FROM sync_state WHERE key='last_sync_at'", [], |r| r.get(0)).optional().unwrap_or(None);
+            [], |r| r.get(0))
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("sync_state read failed; using default sync interval: {e}");
+                5
+            }
+        };
+        let last: Option<String> = match conn.query_row(
+            "SELECT value FROM sync_state WHERE key='last_sync_at'", [], |r| r.get(0)).optional()
+        {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("last_sync_at read failed; scheduling without last-sync knowledge: {e}");
+                None
+            }
+        };
         match last.and_then(|l| chrono::DateTime::parse_from_rfc3339(&l).ok()) {
             Some(t) => {
                 let since = (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes();

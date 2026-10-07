@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import Sidebar from './components/Sidebar';
 import AgendaView from './components/AgendaView';
@@ -30,6 +30,11 @@ export default function App() {
   const [voice, setVoice] = useState<VoiceFlow | null>(null);
   const [resumeRows, setResumeRows] = useState<VoiceRecordingDto[] | null>(null);
   const [contentNonce, setContentNonce] = useState(0); // remounts NoteEditor after a retranscribe save
+  // Storm guard (kimi audit 5.1): while one voice_retry_pending pass is still
+  // running, debounced 'online' bursts must not start a second parallel pass
+  // (the Rust side guards only per-row state). A ref lives across effect
+  // re-runs and is read live by the listener closure, so it never goes stale.
+  const voiceRetryInFlightRef = useRef(false);
 
   // Branding mirror: window title follows the instance's app name. The native
   // setTitle call is best-effort (skipped outside a real webview, e.g. tests)
@@ -139,9 +144,24 @@ export default function App() {
     // WebKitGTK/Android WebView both fire 'online' on OS network changes; jsdom
     // tests dispatch the event manually. A failed tap is silent: the next sync
     // tick retries the same rows anyway.
-    const onOnline = () => { api.voiceRetryPending().catch(() => {}); };
+    // Storm guard (kimi audit 5.1, FIX-NOW): flapping networks deliver rapid
+    // 'online' bursts — a 1s debounce coalesces each burst into ONE pass, and
+    // voiceRetryInFlightRef keeps overlapping bursts from queueing parallel
+    // passes. The guard is checked when the pass would START (after the
+    // debounce window), so a burst arriving mid-pass is simply dropped.
+    let onlineDebounce: ReturnType<typeof setTimeout> | null = null;
+    const onOnline = () => {
+      if (onlineDebounce != null) clearTimeout(onlineDebounce);
+      onlineDebounce = setTimeout(() => {
+        onlineDebounce = null;
+        if (voiceRetryInFlightRef.current) return; // next sync tick retries anyway
+        voiceRetryInFlightRef.current = true;
+        api.voiceRetryPending().catch(() => {}).finally(() => { voiceRetryInFlightRef.current = false; });
+      }, 1000);
+    };
     window.addEventListener('online', onOnline);
     return () => {
+      if (onlineDebounce != null) clearTimeout(onlineDebounce);
       un.then((f) => f()); uv.then((f) => f());
       window.removeEventListener('online', onOnline);
     };

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within, act } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
@@ -30,6 +30,12 @@ beforeEach(() => {
     if (cmd === 'ai_get_models') return Promise.resolve([]);
     return Promise.resolve(null);
   });
+});
+
+// storm-guard tests (kimi audit 5.1) use fake timers — restore for every test
+// so the fake clock never leaks into the next file-local suite member
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('App shell', () => {
@@ -589,8 +595,14 @@ describe('web preference mirroring', () => {
     render(<App />);
     // chip: the count surfaces inside the sync footer
     await waitFor(() => expect(screen.getByTestId('voice-pending-chip')).toHaveTextContent('2 waiting to transcribe'));
-    // the webview sees the network return -> the retry pass runs immediately
-    await act(async () => { window.dispatchEvent(new Event('online')); });
+    // the webview sees the network return -> ONE retry pass fires after the 1s
+    // debounce window (kimi audit 5.1 storm guard). Fake timers are safe here:
+    // the only waits left in this test are act() drains (no RTL async wrappers).
+    vi.useFakeTimers();
+    await act(async () => {
+      window.dispatchEvent(new Event('online'));
+      vi.advanceTimersByTime(1000);
+    });
     expect(invoke).toHaveBeenCalledWith('voice_retry_pending');
   });
 });
@@ -667,5 +679,56 @@ describe('!INBOX isolation (capture-foundation P1 T3)', () => {
     const li = nav.getByText('!INBOX').closest('li');
     expect(li).not.toBeNull();
     expect(li?.querySelector('.count')?.textContent).toBe('2'); // capture count chip next to the node
+  });
+});
+
+describe('voice retry storm guard (kimi audit 5.1: 1s debounce + in-flight ref)', () => {
+  const retryCalls = () => invoke.mock.calls.filter((c) => c[0] === 'voice_retry_pending').length;
+  const onlineBurst = (n: number) => {
+    for (let i = 0; i < n; i++) window.dispatchEvent(new Event('online'));
+  };
+
+  it('debounces a rapid online burst: 3 events within the window fire exactly ONE retry pass (after the window)', async () => {
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {}); // settle the mount promise chain inside act
+    onlineBurst(3);
+    expect(retryCalls()).toBe(0); // inside the debounce window: nothing has fired yet
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(retryCalls()).toBe(1); // the whole burst coalesces into exactly ONE pass
+  });
+
+  it('in-flight guard: a second burst while a pass is still pending stays at ONE invoke; the guard unblocks after it resolves', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    // re-mock EVERY command the App mount touches (test-local overrides REPLACE
+    // the whole beforeEach impl — mock fall-through class) + hold the retry pass
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_retry_pending') return gate;
+      if (cmd === 'get_connection') return Promise.resolve({ instance_url: 'http://localhost:1122', version: '1.22.0' });
+      if (cmd === 'list_notes') return Promise.resolve([]);
+      if (cmd === 'list_checklists') return Promise.resolve([]);
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'sync_status') return Promise.resolve({ pending: 0, last_sync_at: null, syncing: false });
+      if (cmd === 'voice_list_unsaved') return Promise.resolve([]);
+      if (cmd === 'list_agenda') return Promise.resolve([]);
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: 'https://ai.example.com', model: 'm', languageHint: '', apiPathSuffix: 'v1', hasKey: true });
+      if (cmd === 'ai_get_models') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    onlineBurst(3);
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(retryCalls()).toBe(1); // the first pass started and hangs on the gate
+    onlineBurst(2);
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(retryCalls()).toBe(1); // guard holds: no SECOND pass while the first is in flight
+    release();
+    await act(async () => {}); // drain the .catch/.finally chain so the guard releases
+    onlineBurst(1);
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(retryCalls()).toBe(2); // a NEW burst after the pass resolved may run the next pass
   });
 });
