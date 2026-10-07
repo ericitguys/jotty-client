@@ -134,6 +134,37 @@
 
 ---
 
+### Task 6 (audit-response): FTS purge on tombstone + soft delete (kimi audit 2.1 / 7.3)
+
+**Files:**
+- Modify: `src-tauri/src/db/notes.rs` (tombstone :154-157 + soft_delete_local :146-152 — add fts_refresh), possibly `src-tauri/src/db/checklists.rs` (tombstone — STOP-CONTRACT: verify the checklist FTS table actually exists in db/checklists.rs before editing; if checklists are not FTS-indexed, fix notes only and disclose)
+- Test: co-located `#[cfg(test)]` in db/notes.rs (+checklists.rs if touched)
+
+**Interfaces:**
+- Consumes: `fts_refresh(conn, id)` (db/notes.rs:40-48). Produces: tombstone + soft_delete_local now purge the FTS row — search no longer returns deleted notes until nothing remains.
+- Source: kimi whole-repo audit (kimi-audit-report.md §2.1 MEDIUM + §7.3 test gap) — recommendation adopted by controller ruling.
+
+- [ ] **Step 1: RED tests** — `tombstone_purges_fts_row` (insert note, tombstone, search_inner for its text → no hit); `soft_delete_purges_fts_row` (insert, soft-delete, search → no hit); if checklist FTS exists: `checklist_tombstone_purges_fts_row` mirror.
+- [ ] **Step 2: Implement** fts_refresh calls; keep tombstone's dirty-untouched contract (deleted_at + FTS purge ONLY; verify no byte-frozen fence asserts tombstone's exact behavior).
+- [ ] **Step 3: Gates:** cargo --lib (T2-closed baseline + 2 new ≈ **315+1i expected**, zero NEW failures; STOP-CONTRACT if the measured baseline differs — report the delta), census 18 Δ0; vitest sanity.
+- [ ] **Step 4: Commit** `fix(search): purge FTS rows on tombstone + soft delete (audit 2.1)`.
+
+### Task 7 (audit-response): voice-retry storm guard + scheduler warning logs (kimi audit 5.1 / 1.1)
+
+**Files:**
+- Modify: `src/App.tsx` (online-listener block ≈:139-143: 1s debounce + in-flight ref guard so overlapping 'online' bursts fire ONE voice_retry_pending and never a second while one is in flight)
+- Modify: `src-tauri/src/sync/mod.rs` (scheduler_tick ≈:84-95: on sync_state read error, log a warning line — behavior-preserving, fallback values stay; disclose: no Rust test for a log-only change, controller ruling)
+- Test: `src/App.test.tsx`
+
+**Interfaces:**
+- Produces: debounced+guarded `voiceRetryPending` — tests drive 3 rapid `window` 'online' events → exactly ONE `voice_retry_pending` invoke after the debounce window (vi.useFakeTimers + advanceTimersByTime is FINE here: no RTL async wrappers awaited in these tests — standing rule); in-flight guard: second burst while first pending → still ONE invoke total.
+- Source: kimi audit §5.1 MEDIUM (FIX-NOW per auditor) + §1.1 MEDIUM (log-only arm, controller-ruled accept-as-minimal).
+
+- [ ] **Step 1: RED tests** in App.test.tsx (shapes above; remember window listener fire = dispatchEvent(new Event('online'))).
+- [ ] **Step 2: Implement** debounce/in-flight ref (mirror-latest ref law for the listener) + Rust warning lines.
+- [ ] **Step 3: Gates:** vitest (baseline + 2), tsc clean, cargo --lib sanity (≥313+1i — no behavior change), census 18 Δ0.
+- [ ] **Step 4: Commit** `fix(voice): debounce + guard voice retry storm; warn on scheduler read failures (audit 5.1/1.1)`.
+
 ## Self-Review appendix (controller, completed pre-dispatch)
 
 - **Spec coverage:** §5 card list newest-first (T3), route enum validated client-side (T3, closed set in code — P3 reuses `isTriageRoute`), move/promote primitives PUT+originalCategory (T1+T2+T4), stale-guard (T2 server law + T4 defensive UI guard), keyboard-first j/k + a/x (T3/T4; `m` added as the manual-move key — DISCLOSED P2 addition, spec pins only j/k/a/x), discard = user-confirmed delete only (T4, ConfirmModal destructive), §6 lifecycle on promotion (T2: item + PROCESSED + rename + provenance), §4 boards stay the TODO surface, promote = item NOT note-move (T2 payload shape). §5 AI items (badges, board suggestions, tag curation, confidence) deliberately absent — P3 plan.
