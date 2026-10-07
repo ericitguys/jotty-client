@@ -110,6 +110,10 @@ pub fn soft_delete_list_local(conn: &Connection, id: &str) -> AppResult<()> {
 
 pub fn tombstone(conn: &Connection, id: &str) -> AppResult<()> {
     conn.execute("UPDATE checklists SET deleted_at=?2 WHERE id=?1", rusqlite::params![id, chrono::Utc::now().to_rfc3339()])?;
+    // audit 2.1: purge the lists_fts row so tombstoned checklists stay
+    // unsearchable. Purge-only — a delete+re-INSERT refresh would re-index the
+    // still-present checklists row and keep it searchable.
+    conn.execute("DELETE FROM lists_fts WHERE id=?1", [id])?;
     Ok(())
 }
 
@@ -147,6 +151,29 @@ mod tests {
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: updated.into(),
         }
+    }
+
+    #[test]
+    fn checklist_tombstone_purges_fts_row() {
+        let conn = db();
+        let fts_hits = |conn: &Connection| -> Vec<String> {
+            conn.prepare("SELECT id FROM lists_fts WHERE lists_fts MATCH 'vanadium'").unwrap()
+                .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        // seed via server upsert (parent checklist row + items::reconcile builds the lists_fts row)
+        let seeded = upsert_list_from_server(
+            &conn,
+            &server_checklist("srv-l1", "Heron Board", "2026-01-01T00:00:00.000Z", vec![ServerItem::simple("vanadium widget")]),
+        )
+        .unwrap();
+        assert!(seeded, "seed: server checklist must apply on an empty db");
+        assert_eq!(fts_hits(&conn), vec!["srv-l1".to_string()], "pre: list must be searchable before tombstone");
+        tombstone(&conn, "srv-l1").unwrap();
+        assert!(get_checklist(&conn, "srv-l1").unwrap().unwrap().deleted_at.is_some());
+        assert!(
+            fts_hits(&conn).is_empty(),
+            "tombstoned checklist must not remain searchable (audit 2.1: lists_fts row must be purged)"
+        );
     }
 
     #[test]

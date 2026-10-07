@@ -148,11 +148,19 @@ pub fn soft_delete_local(conn: &Connection, id: &str) -> AppResult<()> {
         "UPDATE notes SET deleted_at=?2, dirty=1 WHERE id=?1",
         rusqlite::params![id, now()],
     )?;
+    // audit 2.1: purge the FTS row so soft-deleted notes stay unsearchable.
+    // Purge-only (the DELETE half of fts_refresh): full fts_refresh would
+    // re-INSERT the row from the still-present notes row and keep it searchable.
+    conn.execute("DELETE FROM notes_fts WHERE id=?1", [id])?;
     Ok(())
 }
 
 pub fn tombstone(conn: &Connection, id: &str) -> AppResult<()> {
     conn.execute("UPDATE notes SET deleted_at=?2 WHERE id=?1", rusqlite::params![id, chrono::Utc::now().to_rfc3339()])?;
+    // audit 2.1: purge the FTS row so tombstoned notes stay unsearchable.
+    // Purge-only (the DELETE half of fts_refresh): full fts_refresh would
+    // re-INSERT the row from the still-present notes row and keep it searchable.
+    conn.execute("DELETE FROM notes_fts WHERE id=?1", [id])?;
     Ok(())
 }
 
@@ -255,6 +263,39 @@ mod tests {
         soft_delete_local(&conn, &n.id).unwrap();
         assert_eq!(list(&conn, false).unwrap().len(), 0);
         assert_eq!(list(&conn, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tombstone_purges_fts_row() {
+        let conn = db();
+        let n = insert_local(&conn, &NewNote { title: "Falcon Ledger".into(), content: "quartz beacon".into(), category: "Home".into() }).unwrap();
+        // pre-state: searchable through the user-facing search surface
+        let pre = crate::commands::search_inner(&conn, "quartz").unwrap();
+        assert_eq!(pre.notes.len(), 1, "note must be searchable before tombstone");
+        tombstone(&conn, &n.id).unwrap();
+        assert!(get(&conn, &n.id).unwrap().unwrap().deleted_at.is_some());
+        let post = crate::commands::search_inner(&conn, "quartz").unwrap();
+        assert!(
+            post.notes.is_empty(),
+            "tombstoned note must not remain searchable (audit 2.1: FTS row must be purged)"
+        );
+    }
+
+    #[test]
+    fn soft_delete_purges_fts_row() {
+        let conn = db();
+        let n = insert_local(&conn, &NewNote { title: "Heron Ledger".into(), content: "magnetite path".into(), category: "Home".into() }).unwrap();
+        let pre = crate::commands::search_inner(&conn, "magnetite").unwrap();
+        assert_eq!(pre.notes.len(), 1, "note must be searchable before soft delete");
+        soft_delete_local(&conn, &n.id).unwrap();
+        let after = get(&conn, &n.id).unwrap().unwrap();
+        assert!(after.deleted_at.is_some());
+        assert!(after.dirty, "soft delete keeps dirty=1 (outbox contract)");
+        let post = crate::commands::search_inner(&conn, "magnetite").unwrap();
+        assert!(
+            post.notes.is_empty(),
+            "soft-deleted note must not remain searchable (audit 2.1: FTS row must be purged)"
+        );
     }
 
     #[test]
