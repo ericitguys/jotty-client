@@ -324,11 +324,23 @@ pub(crate) fn promote_note_to_board_inner(
     if pre.deleted_at.is_some() {
         return Err(AppError::Other("stale: note no longer exists".into()));
     }
+    // fix F1 (T2 review): a note the triage pipeline already consumed is out of
+    // the capture zone — re-promoting it would duplicate the card and the
+    // provenance trail. Same user-facing error as the deleted-guard arm.
+    let in_zone = pre.category == "!INBOX" || pre.category.starts_with("!INBOX/");
+    if !in_zone {
+        return Err(AppError::Other("stale: note no longer exists".into()));
+    }
     // (2) board row must exist — its title feeds the provenance line. The
     // checklist_items FK (foreign_keys=ON) would also reject the insert, but
     // the explicit check fails before ANY write.
     let board = checklists::get_checklist(&tx, board_id)?
         .ok_or_else(|| AppError::Other("board not found".into()))?;
+    // fix L1 (T2 review): tombstoned boards still return from get_checklist —
+    // promoting into one would enqueue against a dead board id.
+    if board.deleted_at.is_some() {
+        return Err(AppError::Other("board not found".into()));
+    }
     // (3) trimmed card text is both the item text and the payload text
     let trimmed = card_text.trim();
     if trimmed.is_empty() {
@@ -2620,6 +2632,51 @@ mod tests {
         assert_eq!(board_title, "Maintenance");
         assert!(item_part.ends_with('"'), "item segment closes with a quote: {item_part}");
         assert_eq!(&item_part[..item_part.len() - 1], "Fix Nginx SSL");
+    }
+
+    // FIX ROUND 1 (2026-10-07 triage-view-p2, T2 review F1/L1): regression
+    // fences, added RED-first — both must FAIL against pre-fix HEAD (the
+    // re-promote currently succeeds and duplicates the card; the tombstoned
+    // board currently passes the board lookup and enqueues).
+
+    #[tokio::test]
+    async fn promote_already_processed_note_is_stale_zero_enqueues() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759000000000_ab12".into(),
+            content: "audit triaged body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        seed_checklist_row(&conn, "board-1", "Maintenance");
+        // promote once (happy path), then promote AGAIN — the second call must
+        // refuse: a PROCESSED note is out of the capture zone (review F1).
+        promote_note_to_board_inner(&mut conn, &note.id, "board-1", "card text", "").unwrap();
+        let outbox_after_first = outbox::pending_count(&conn).unwrap();
+        let err = promote_note_to_board_inner(&mut conn, &note.id, "board-1", "card text", "").unwrap_err();
+        assert!(format!("{}", err).contains("stale"), "got: {}", err);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), outbox_after_first, "re-promote enqueued ops");
+        assert_eq!(items::list_for_checklist(&conn, "board-1").unwrap().len(), 1, "re-promote duplicated the card");
+    }
+
+    #[tokio::test]
+    async fn promote_to_deleted_board_fails_without_enqueues() {
+        let mut conn = db();
+        let note = notes::insert_local(&conn, &notes::NewNote {
+            title: "cap_1759000000000_cd34".into(),
+            content: "body".into(),
+            category: "!INBOX".into(),
+        })
+        .unwrap();
+        // seed FIRST, then tombstone: a missing row would no-op the UPDATE and
+        // the fence would pass through the missing-board arm, never RED. The
+        // ruled L1 scenario is a TOMBSTONED (still-present) board row.
+        seed_checklist_row(&conn, "board-1", "Maintenance");
+        checklists::soft_delete_list_local(&conn, "board-1").unwrap();
+        let err = promote_note_to_board_inner(&mut conn, &note.id, "board-1", "card", "").unwrap_err();
+        assert!(format!("{}", err).contains("board not found"));
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert!(items::list_for_checklist(&conn, "board-1").unwrap().is_empty(), "deleted-board promote must not insert the card");
     }
 
     #[tokio::test]
