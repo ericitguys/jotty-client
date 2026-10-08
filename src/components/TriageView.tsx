@@ -4,6 +4,7 @@ import type { NoteDto } from '../api/types';
 import { isCaptureZone, useStore } from '../stores/store';
 import { relativeAge } from '../util/relativeTime';
 import { TRIAGE_MOVE_PRESET } from '../triage/routes';
+import { chunkIds, CONF_DEFAULT, normalizeTag, validateSuggestions, type ValidatedSuggestion } from '../triage/suggestions';
 import { titleFromText } from '../triage/titles';
 import ConfirmModal from './modals/ConfirmModal';
 import TriageMoveModal from './TriageMoveModal';
@@ -213,7 +214,13 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
       const selected = list[idx];
       if (!selected) return;
       // THE mapping call (brief): onAction is mirrored to stay current despite
-      // empty deps.
+      // empty deps. Task 2 adds EXACTLY ONE 's' branch riding ALL guard arms
+      // above — it sits before the selected-extraction because the sweep works
+      // on the WHOLE list (no selection needed), while a/m/x need one.
+      if (e.key === 's') {
+        void sweepRef.current();
+        return;
+      }
       if (e.key === 'a') actionRef.current('promote', selected);
       else if (e.key === 'm') actionRef.current('move', selected);
       else if (e.key === 'x') actionRef.current('discard', selected);
@@ -221,6 +228,102 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // ---- AI suggestions (P3 Task 2): sweep state ---------------------------
+  // Suggestions are ADVISORY session state on the view (no zustand, brief law)
+  // keyed by noteId; badges re-render per chunk as they arrive. The sweep is
+  // gated by sweepingRef (single-sweep law, mirrors busyRef) and stops the
+  // loop on unmount via the mounted-ref (facts §19).
+  const [aiSuggestions, setAiSuggestions] = useState<Record<string, ValidatedSuggestion>>({});
+  const [sweeping, setSweeping] = useState(false);
+  const [sweepProgress, setSweepProgress] = useState({ done: 0, total: 0 });
+  const [threshold, setThreshold] = useState<number>(CONF_DEFAULT);
+  const [vocab, setVocab] = useState<string[]>([]);
+  const sweepingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    // threshold + vocab load ONCE on mount (brief); failures fall back —
+    // the sweep still works with CONF_DEFAULT / empty vocab (proposals only).
+    api.getTriageSettings()
+      .then((s) => { if (mountedRef.current && s && typeof s.confidenceThreshold === 'number') setThreshold(s.confidenceThreshold); })
+      .catch(() => null);
+    api.getTriageTagVocab()
+      .then((v) => { if (mountedRef.current && Array.isArray(v)) setVocab(v.map(normalizeTag).filter(Boolean)); })
+      .catch(() => null);
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const boardTitles = useMemo(
+    () => new Set(boardsForPicker.map((b) => b.title)),
+    [boardsForPicker],
+  );
+  const vocabSet = useMemo(() => new Set(vocab), [vocab]);
+
+  // Stale-closure law extended to the ASYNC sweep: the loop spans renders, so
+  // chunk k+1 must read the LIVE board/threshold/vocab values (an approval
+  // mid-sweep re-splits later chunks; the mount loads land before chunk 1
+  // reads them).
+  const boardTitlesRef = useRef(boardTitles);
+  const thresholdRef = useRef(threshold);
+  const vocabSetRef = useRef(vocabSet);
+  boardTitlesRef.current = boardTitles;
+  thresholdRef.current = threshold;
+  vocabSetRef.current = vocabSet;
+
+  // THE sweep: snapshot CURRENT card ids → chunks → SEQUENTIAL awaits; a
+  // failed chunk surfaces an error line and the sweep CONTINUES (degrade law).
+  const sweep = async (): Promise<void> => {
+    if (sweepingRef.current) return; // single-sweep guard (brief)
+    const snapshot = cardsRef.current;
+    if (snapshot.length === 0) return;
+    const ids = snapshot.map((n) => n.id);
+    const chunks = chunkIds(ids);
+    sweepingRef.current = true;
+    setSweeping(true);
+    setSweepProgress({ done: 0, total: chunks.length });
+    const merged: Record<string, ValidatedSuggestion> = {};
+    for (let k = 0; k < chunks.length; k += 1) {
+      if (!mountedRef.current) break; // unmount stops the loop (facts §19)
+      try {
+        const dtos = await api.triageSuggest(chunks[k]!);
+        const got = validateSuggestions(dtos, {
+          noteIds: chunks[k]!,
+          boardTitles: boardTitlesRef.current,
+          threshold: thresholdRef.current,
+          vocab: vocabSetRef.current,
+        });
+        for (const [id, v] of got) merged[id] = v;
+        setAiSuggestions({ ...merged }); // badges re-render per chunk
+      } catch (e) {
+        setErr(`${fmtError(e)} — chunk failed — triaged manually`);
+      }
+      setSweepProgress({ done: k + 1, total: chunks.length });
+    }
+    sweepingRef.current = false;
+    setSweeping(false);
+  };
+  const sweepRef = useRef(sweep);
+  sweepRef.current = sweep; // stale-closure law: the s-key reads the live sweep
+
+  const approveTag = (t: string): void => {
+    api.addTriageTag(t)
+      .then((v) => {
+        if (!mountedRef.current || !Array.isArray(v)) return;
+        const merged = v.map(normalizeTag).filter(Boolean);
+        setVocab(merged);
+        setAiSuggestions((prev) => {
+          const next: Record<string, ValidatedSuggestion> = {};
+          for (const [id, s] of Object.entries(prev)) {
+            next[id] = s.newTags.includes(t)
+              ? { ...s, newTags: s.newTags.filter((x) => x !== t), tags: [...s.tags, t] }
+              : s;
+          }
+          return next;
+        });
+      })
+      .catch((e: unknown) => setErr(fmtError(e)));
+  };
 
   // THE mapping call lives in the listener above (mirrored actionRef);
   // buttons call the current-render onAction directly.
@@ -230,6 +333,13 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
       <div className="section-head">
         <h2>Triage</h2>
         <span className="triage-count">{cards.length}</span>
+        <button
+          className="triage-suggest-btn"
+          onClick={() => void sweep()}
+          disabled={cards.length === 0}
+        >
+          {sweeping ? `Analyzing… (${sweepProgress.done}/${sweepProgress.total})` : 'Suggest (AI)'}
+        </button>
       </div>
       <ul className="triage-list">
         {cards.length === 0 && <li className="triage-empty">Inbox is empty 🎉</li>}
@@ -244,6 +354,32 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
               <span className="triage-date">{relativeAge(n.createdAt)}</span>
             </div>
             <p className="triage-snippet">{squash(n.content)}</p>
+            {aiSuggestions[n.id] && (aiSuggestions[n.id]!.low ? (
+              <div className="triage-ai low">
+                <span className="triage-manual">Below confidence threshold — review manually</span>
+              </div>
+            ) : (
+              <div className="triage-ai">
+                <span className="triage-badge">{aiSuggestions[n.id]!.route}</span>
+                {aiSuggestions[n.id]!.boardTitle && (
+                  <span className="triage-board">Board: {aiSuggestions[n.id]!.boardTitle}</span>
+                )}
+                {aiSuggestions[n.id]!.tags.map((t) => (
+                  <span key={`t-${t}`} className="triage-tag">#{t}</span>
+                ))}
+                {aiSuggestions[n.id]!.newTags.map((t) => (
+                  <button
+                    key={`n-${t}`}
+                    className="triage-tag new"
+                    title={`Add "${t}" to the tag vocabulary`}
+                    onClick={() => approveTag(t)}
+                  >
+                    #{t}?
+                  </button>
+                ))}
+                <span className="triage-conf">{Math.round(aiSuggestions[n.id]!.confidence * 100)}%</span>
+              </div>
+            ))}
             <div className="triage-actions">
               <button onClick={() => onAction('promote', n)}>Promote</button>
               <button onClick={() => onAction('move', n)}>Move…</button>

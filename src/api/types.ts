@@ -78,6 +78,19 @@ export interface VoiceRecordingDto {
 export interface AiSettingsDto {
   baseUrl: string; model: string; languageHint: string; apiPathSuffix: string; hasKey: boolean;
 }
+/** One AI triage suggestion (Rust TriageSuggestionDto, commands/dto.rs — serde
+ * camelCase; wire-key SET pinned by the dto.rs fence). Advisory-only: never
+ * applied without the user's HITL action (Task 3). */
+export interface TriageSuggestionDto {
+  noteId: string; route: string;
+  suggestedBoard: string | null; suggestedTitle: string | null;
+  suggestedTags: string[]; confidence: number;
+}
+/** Triage settings (Rust TriageSettingsDto): the confidence gate as a fraction
+ * 0..=1. The Rust kv stores TEXT; the DTO carries it parsed. */
+export interface TriageSettings {
+  confidenceThreshold: number;
+}
 /** Result of the on-demand transcription retry pass (Rust VoiceRetryStatsDto,
  * commands/dto.rs — serde camelCase): staging rows re-attempted / succeeded and
  * saved notes backfilled by this pass. */

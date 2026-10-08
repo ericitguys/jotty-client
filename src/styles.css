@@ -1689,3 +1689,68 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   .triage-head { flex-wrap: wrap; }
   .triage-actions button { flex: 1; padding: 6px 10px; }
 }
+
+/* ===== AI suggestion badges (P3 Task 2) — appended at FILE END per plan law ===== */
+#triage .triage-ai {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+#triage .triage-ai.low {
+  color: var(--text-dim, #9a8f7f);
+  font-style: italic;
+}
+#triage .triage-badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+#triage .triage-board {
+  color: var(--text-dim, #9a8f7f);
+}
+#triage .triage-tag {
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #3a3a3a);
+  color: var(--text, #ddd);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.4;
+}
+#triage button.triage-tag.new {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 1px 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+#triage button.triage-tag.new:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+#triage .triage-conf {
+  margin-left: auto;
+  color: var(--text-dim, #9a8f7f);
+  font-variant-numeric: tabular-nums;
+}
+#triage .triage-suggest-btn {
+  margin-left: 8px;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #3a3a3a);
+  background: transparent;
+  color: var(--text, #ddd);
+  cursor: pointer;
+}
+#triage .triage-suggest-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -233,7 +233,10 @@ describe('TriageView actions', () => {
     fireEvent.click(cards[0]!.querySelectorAll('button')[0]!);
     expect(screen.getByRole('dialog')).toBeInTheDocument(); // modal wiring is live
     expect(cards[0]!.classList.contains('selected')).toBe(true); // selection untouched
-    expect(invoke).not.toHaveBeenCalled(); // OPENING a modal dispatches nothing
+    // P3 Task 2 amendment (disclosed in task-2-report): mounting TriageView now
+    // reads threshold + vocab once (passive, no side effects) — OPENING a modal
+    // still dispatches nothing beyond those two mount reads.
+    expect(invoke.mock.calls.every((c) => c[0] === 'get_triage_settings' || c[0] === 'triage_tag_vocab')).toBe(true);
   });
 
   it('defensively renders only capture-zone notes (isCaptureZone safety-net inside the view)', () => {
@@ -370,7 +373,8 @@ describe('TriageView action flows (Task 4 wiring)', () => {
     pressKey('a');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.querySelector('li.triage-card.selected')).toBeNull(); // selection cleared
-    expect(invoke).not.toHaveBeenCalled();
+    // P3 Task 2 amendment (disclosed): only the two passive mount reads fire.
+    expect(invoke.mock.calls.every((c) => c[0] === 'get_triage_settings' || c[0] === 'triage_tag_vocab')).toBe(true);
   });
 
   // Task-4 review F2 rider: the TriageMoveModal carries no in-dialog error
@@ -395,5 +399,271 @@ describe('TriageView action flows (Task 4 wiring)', () => {
       expect(screen.getByText('stale: note no longer exists')).toHaveClass('triage-error');
     });
     expect(invoke.mock.calls.filter((c) => c[0] === 'update_note')).toHaveLength(1);
+  });
+});
+describe('TriageView AI suggestions (P3 Task 2)', () => {
+  // ---- fixtures ----
+  const seedMany = (n: number): NoteDto[] =>
+    Array.from({ length: n }, (_, i) =>
+      note(`note-${String(i).padStart(2, '0')}`, `card ${String(i).padStart(2, '0')}`, `body ${i}`, isoAgo((i + 1) * HOUR)),
+    ); // createdAt: i=0 newest → card order (sorted desc) == seeded order
+
+  const sugg = (noteId: string, over: Record<string, unknown> = {}) => ({
+    noteId,
+    route: 'TODO',
+    suggestedBoard: null,
+    suggestedTitle: null,
+    suggestedTags: [],
+    confidence: 0.9,
+    ...over,
+  });
+
+  const cardByTitle = (title: string): Element | null =>
+    [...document.querySelectorAll('li.triage-card')].find(
+      (li) => li.querySelector('.triage-title')!.textContent === title,
+    ) ?? null;
+
+  const suggestCalls = (): string[][] =>
+    invoke.mock.calls.filter((c) => c[0] === 'triage_suggest').map((c) => c[1].noteIds);
+
+  const deferred = <T,>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } => {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  };
+
+  // standard passive mounts: settings + vocab resolve to known values
+  const passiveMounts = (): void => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo', 'cmd', 'incident', 'research']);
+      return Promise.resolve(null);
+    });
+  };
+
+  it('suggest button sweeps in chunked SEQUENTIAL order (45 notes → 20/20/5 slices in card order)', async () => {
+    passiveMounts();
+    const notes = seedMany(45);
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    render(<TriageView notes={notes} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(suggestCalls()).toHaveLength(3));
+    const allIds = notes.map((n) => n.id); // card order == seeded order (newest first)
+    expect(suggestCalls()).toEqual([
+      allIds.slice(0, 20),
+      allIds.slice(20, 40),
+      allIds.slice(40, 45),
+    ]);
+  });
+
+  it('badges render for confident suggestions: ONE .triage-ai row BETWEEN snippet and actions with pinned chips', async () => {
+    passiveMounts();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo', 'cmd']);
+      if (cmd === 'triage_suggest')
+        return Promise.resolve([
+          sugg('n1', { route: 'TODO', suggestedBoard: 'Maintenance', suggestedTags: ['todo', 'fresh'], confidence: 0.9 }),
+        ]);
+      return Promise.resolve(null);
+    });
+    const seedA = note('n1', 'cap_badge_ab', 'badge body', isoAgo(2 * HOUR));
+    const seedB = note('n2', 'cap_badge_cd', 'plain body', isoAgo(HOUR));
+    useStore.setState({ notes: [seedA, seedB], checklists: [boardList('b1', 'Maintenance', 'kanban')] } as never);
+    render(<TriageView notes={[seedA, seedB]} />);
+    // let the passive mount reads land BEFORE the sweep (the tag split reads
+    // the live vocab — the ordering the real app always has)
+    await waitFor(() => expect(invoke.mock.calls.some((c) => c[0] === 'triage_tag_vocab')).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(cardByTitle('cap_badge_ab')!.querySelector('.triage-ai')).not.toBeNull());
+
+    const card = cardByTitle('cap_badge_ab')!;
+    const row = card.querySelector('.triage-ai')!;
+    expect(card.querySelectorAll('.triage-ai')).toHaveLength(1); // ONE row per card
+    // DOM position law: BETWEEN .triage-snippet and .triage-actions
+    expect(row.previousElementSibling!.className).toBe('triage-snippet');
+    expect(row.nextElementSibling!.className).toBe('triage-actions');
+    // chips: route badge, resolved board, existing tags plain, proposed tag as a button ending '?'
+    expect(row.querySelector('.triage-badge')!.textContent).toBe('TODO');
+    expect(row.querySelector('.triage-board')!.textContent).toBe('Board: Maintenance');
+    expect([...row.querySelectorAll('.triage-tag:not(.new)')].map((t) => t.textContent)).toEqual(['#todo']);
+    const newChip = row.querySelector('button.triage-tag.new')!;
+    expect(newChip.textContent).toBe('#fresh?');
+    expect(row.querySelector('.triage-conf')!.textContent).toBe('90%');
+    // the OTHER card carries no badge row at all
+    expect(cardByTitle('cap_badge_cd')!.querySelector('.triage-ai')).toBeNull();
+  });
+
+  it('low-confidence suggestions render the manual-review state with no chips', async () => {
+    passiveMounts();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest')
+        return Promise.resolve([sugg('n1', { route: 'NOISE', suggestedBoard: 'Maintenance', suggestedTags: ['todo'], confidence: 0.4 })]);
+      return Promise.resolve(null);
+    });
+    const seed = note('n1', 'cap_low_ab', 'low body', isoAgo(HOUR));
+    useStore.setState({ notes: [seed], checklists: [boardList('b1', 'Maintenance', 'kanban')] } as never);
+    render(<TriageView notes={[seed]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(document.querySelector('.triage-ai.low')).not.toBeNull());
+    const row = document.querySelector('.triage-ai.low')!;
+    expect(row.textContent).toBe('Below confidence threshold — review manually');
+    expect(row.querySelector('.triage-badge')).toBeNull(); // no chips at all
+    expect(row.querySelector('.triage-tag')).toBeNull();
+    expect(row.querySelector('.triage-conf')).toBeNull();
+  });
+
+  it('a failed chunk degrades to manual and the sweep CONTINUES (chunk 2 rejects → chunk 3 still invoked)', async () => {
+    passiveMounts();
+    const notes = seedMany(45);
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') {
+        const n = invoke.mock.calls.filter((c) => c[0] === 'triage_suggest').length;
+        if (n === 1) return Promise.resolve(notes.slice(0, 20).map((x) => sugg(x.id, { suggestedBoard: 'Maintenance' })));
+        if (n === 2) return Promise.reject(new Error('backend exploded'));
+        if (n === 3) return Promise.resolve(notes.slice(40, 45).map((x) => sugg(x.id, { suggestedBoard: 'Zeta board' })));
+      }
+      return Promise.resolve(null);
+    });
+    useStore.setState({ notes, checklists: [boardList('b-zeta', 'Zeta board', 'kanban')] } as never);
+    render(<TriageView notes={notes} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(suggestCalls()).toHaveLength(3));
+    const errored = document.querySelector('.triage-error');
+    expect(errored).not.toBeNull();
+    expect(errored!.textContent).toContain('chunk failed — triaged manually'); // fmtError stripped, plan text rides
+    // badges from chunks 1 + 3 present; chunk 2 (degraded) has none
+    expect(cardByTitle('card 00')!.querySelector('.triage-badge')).not.toBeNull();
+    expect(cardByTitle('card 19')!.querySelector('.triage-badge')).not.toBeNull();
+    expect(cardByTitle('card 44')!.querySelector('.triage-badge')).not.toBeNull();
+    for (let i = 20; i < 40; i++) {
+      expect(cardByTitle(`card ${String(i).padStart(2, '0')}`)!.querySelector('.triage-ai')).toBeNull();
+    }
+  });
+
+  it('suggestions for notes no longer in cards are dropped (stale reply ids never render)', async () => {
+    passiveMounts();
+    const notes = [note('n-a', 'cap_stay_ab', 'stays', isoAgo(2 * HOUR)), note('n-b', 'cap_gone_cd', 'leaves', isoAgo(HOUR))];
+    useStore.setState({ notes } as never);
+    const gate = deferred<unknown[]>();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return gate.promise;
+      return Promise.resolve(null);
+    });
+    const { rerender } = render(<TriageView notes={notes} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    // while the sweep is in flight the card for n-b LEAVES the live set
+    const after = [notes[0]!];
+    useStore.setState({ notes: after } as never);
+    rerender(<TriageView notes={after} />);
+    // the reply arrives carrying BOTH ids (+ a hallucinated one)
+    gate.resolve([sugg('n-a'), sugg('n-b', { route: 'DOCS' }), sugg('n-hallucinated', { route: 'TODO' })]);
+    await waitFor(() => expect(cardByTitle('cap_stay_ab')!.querySelector('.triage-badge')).not.toBeNull());
+    expect(cardByTitle('cap_gone_cd')).toBeNull(); // card is gone entirely
+    expect(document.body.textContent).not.toContain('leaves');
+    // sanity: the sweep validated against the SNAPSHOT (n-b was requested)
+    expect(suggestCalls()).toHaveLength(1);
+  });
+
+  it('approving a new-tag chip joins the vocab and re-renders the chip plain', async () => {
+    passiveMounts();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([sugg('n1', { suggestedTags: ['#Fresh'] })]);
+      if (cmd === 'triage_tag_vocab_add') return Promise.resolve(['todo', 'fresh']);
+      return Promise.resolve(null);
+    });
+    const seed = note('n1', 'cap_tag_ab', 'tag body', isoAgo(HOUR));
+    useStore.setState({ notes: [seed], checklists: [] } as never);
+    render(<TriageView notes={[seed]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    const chip = await waitFor(() => {
+      const c = document.querySelector('button.triage-tag.new');
+      expect(c).not.toBeNull();
+      return c!;
+    });
+    expect(chip.textContent).toBe('#fresh?'); // NORMALIZED display (wire carried "#Fresh")
+    fireEvent.click(chip);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('triage_tag_vocab_add', { tag: 'fresh' })); // NORMALIZED tag
+    await waitFor(() => {
+      const plain = [...document.querySelectorAll('.triage-tag')].filter((t) => t.textContent === '#fresh');
+      const newBtn = document.querySelector('button.triage-tag.new');
+      expect(plain.length).toBeGreaterThan(0); // chip re-rendered PLAIN after vocab join
+      expect(newBtn).toBeNull();
+    });
+  });
+
+  it('s key triggers a sweep and rides all guard arms (input focus / open modal)', async () => {
+    passiveMounts();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    const notes = [note('n1', 'cap_key_ab', 'k body', isoAgo(2 * HOUR)), note('n2', 'cap_key_cd', 'k body 2', isoAgo(HOUR))];
+    useStore.setState({ notes } as never); // promote-modal stale-guard reads the LIVE store
+    render(
+      <>
+        <TriageView notes={notes} />
+        <input aria-label="guard input" data-testid="guard-input" />
+      </>,
+    );
+    const sweepCount = (): number => invoke.mock.calls.filter((c) => c[0] === 'triage_suggest').length;
+
+    pressKey('s'); // fires the sweep
+    await waitFor(() => expect(sweepCount()).toBe(1));
+
+    pressKey('s', screen.getByTestId('guard-input')); // input-focused: guarded
+    expect(sweepCount()).toBe(1);
+
+    pressKey('a'); // opens the promote modal
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    pressKey('s'); // modal open: guarded
+    expect(sweepCount()).toBe(1);
+  });
+
+  it('a second sweep click while a sweep is in flight is ignored (single-sweep guard)', async () => {
+    passiveMounts();
+    const notes = seedMany(45);
+    const gate = deferred<unknown[]>();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return gate.promise;
+      return Promise.resolve(null);
+    });
+    useStore.setState({ notes } as never);
+    render(<TriageView notes={notes} />);
+    const btn = screen.getByRole('button', { name: 'Suggest (AI)' });
+    fireEvent.click(btn);
+    expect(btn.textContent).toBe('Analyzing… (0/3)'); // progress template rides the in-flight state
+    fireEvent.click(btn); // re-entrant click IGNORED
+    expect(suggestCalls()).toHaveLength(1);
+    gate.resolve(notes.slice(0, 20).map((x) => sugg(x.id)));
+    await waitFor(() => expect(btn.textContent).toBe('Analyzing… (1/3)'));
+    // release the remaining chunks
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([]);
+      return Promise.resolve(null);
+    });
+    await waitFor(() => expect(btn.textContent).toBe('Suggest (AI)')); // back to idle
+    // the guard released; the REMAINING chunks complete the ORIGINAL sweep
+    expect(suggestCalls()).toHaveLength(3);
   });
 });

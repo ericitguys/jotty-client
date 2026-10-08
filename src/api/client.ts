@@ -111,6 +111,15 @@ export const aiGetModels = () => invoke<string[]>('ai_get_models');
 export const getAiSettings = () => invoke<T.AiSettingsDto>('get_ai_settings');
 export const setAiSettings = (baseUrl: string | null, model: string | null, languageHint: string | null, apiKey: string | null) =>
   invoke<T.AiSettingsDto>('set_ai_settings', { baseUrl, model, languageHint, apiKey });
+// AI triage suggestions (P3 Task 2 → Task 1 commands; wire contract pinned in
+// task-1-report.md — command names + arg keys noteIds/tag + camelCase DTOs).
+export const triageSuggest = (noteIds: string[]) =>
+  invoke<T.TriageSuggestionDto[]>('triage_suggest', { noteIds });
+export const getTriageSettings = () => invoke<T.TriageSettings>('get_triage_settings');
+export const setTriageSettings = (confidenceThreshold: number) =>
+  invoke<T.TriageSettings>('set_triage_settings', { confidenceThreshold });
+export const getTriageTagVocab = () => invoke<string[]>('triage_tag_vocab');
+export const addTriageTag = (tag: string) => invoke<string[]>('triage_tag_vocab_add', { tag });
 // Tauri asset-protocol URL for a local audio file; the try/catch keeps jsdom
 // tests honest (no __TAURI_INTERNALS__ there) — audioSrc falls back to the
 // raw path, which component tests assert on.
