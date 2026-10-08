@@ -25,8 +25,16 @@ const fmtError = (e: unknown): string => String(e).replace(/^.*Error: /, '');
 
 // Promote card-text default: first non-empty line of the content, hard-capped
 // at 120 chars (plan Task 4 interface, verbatim).
+// HTML STRIP (T5 real-engine probe catch — the WebKitGTK still rendered the
+// literal `<p>…</p>`): content is TipTap HTML; tags become spaces so the flat
+// text never carries markup, THEN whitespace collapses and the cap applies.
 const firstCardTextLine = (content: string): string =>
-  content.split('\n').map((s) => s.trim()).find(Boolean)?.slice(0, 120) ?? '';
+  content
+    .replace(/<[^>]*>/g, ' ')
+    .split('\n')
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .find(Boolean)
+    ?.slice(0, 120) ?? '';
 
 // Snippet: content squashed to one line, hard-capped at 160 chars (plan T3).
 // HTML STRIP (T5 real-engine probe catch — the WebKitGTK still rendered the

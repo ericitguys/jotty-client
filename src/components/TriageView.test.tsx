@@ -779,6 +779,36 @@ describe('TriageView suggestion prefill (P3 Task 3)', () => {
   });
 });
 
+describe('TriageView promote card-text strip (P2-defect rider)', () => {
+  it('strips TipTap HTML from the promote card-text default (tags -> spaces, lines collapse)', () => {
+    const html = '<p>Renew the vpn cert <strong>this week</strong></p>';
+    const n1 = note('n1', 'cap_html_ab', html, isoAgo(HOUR));
+    useStore.setState({ notes: [n1], checklists: [boardList('b1', 'Maintenance', 'kanban')] } as never);
+    render(<TriageView notes={[n1]} />);
+    pressKey('a');
+    const dialog = screen.getByRole('dialog');
+    const cardTextInput = within(dialog).getByRole('textbox', { name: 'Card text' });
+    expect(cardTextInput).toHaveValue('Renew the vpn cert this week');
+    expect(cardTextInput).not.toHaveValue(String.fromCharCode(60));
+    expect((cardTextInput as HTMLInputElement).value.includes('<')).toBe(false);
+  });
+  it('multi-tag line: tags become spaces so words never glue; first non-empty line still wins', () => {
+    const html = '<p>Alpha</p>\n<br>Beta';
+    const n1 = note('n2', 'cap_html_cd', html, isoAgo(HOUR));
+    useStore.setState({ notes: [n1], checklists: [] } as never);
+    render(<TriageView notes={[n1]} />);
+    pressKey('a');
+    expect(within(screen.getByRole('dialog')).getByRole('textbox', { name: 'Card text' })).toHaveValue('Alpha');
+  });
+  it('a flat list collapses into one squashed line (strip law, mirrors the snippet)', () => {
+    const n1 = note('n3', 'cap_html_ef', '<ul><li>First line</li><li>Second</li></ul>', isoAgo(HOUR));
+    useStore.setState({ notes: [n1], checklists: [] } as never);
+    render(<TriageView notes={[n1]} />);
+    pressKey('a');
+    expect(within(screen.getByRole('dialog')).getByRole('textbox', { name: 'Card text' })).toHaveValue('First line Second');
+  });
+});
+
 describe('TriageView P3 integration seams (Task 4: the whole mesh)', () => {
   // Mock-fallthrough law ×2: a seam override re-mocks EVERY command in the chain.
   const meshMocks = (confidence: number, threshold: number | 'reject'): void => {
