@@ -731,6 +731,24 @@ describe('voice retry storm guard (kimi audit 5.1: 1s debounce + in-flight ref)'
     act(() => { vi.advanceTimersByTime(1000); });
     expect(retryCalls()).toBe(2); // a NEW burst after the pass resolved may run the next pass
   });
+
+  // Whole-branch-review MX1 catch: the in-flight guard absorbs stacked timers,
+  // so the burst-coalescing test alone cannot distinguish a working debounce
+  // from guard-only compensation. The RESET law pins the debounce itself: an
+  // event INSIDE the window re-arms it — no pass may start mid-burst.
+  it('an online event inside the debounce window resets it — no fire before the settled window closes', async () => {
+    vi.useFakeTimers();
+    render(<App />);
+    await act(async () => {});
+    onlineBurst(1);
+    act(() => { vi.advanceTimersByTime(900); });
+    expect(retryCalls()).toBe(0); // 100ms inside the window: nothing yet
+    onlineBurst(1);               // second event RESETS the timer to now+1000
+    act(() => { vi.advanceTimersByTime(900); });
+    expect(retryCalls()).toBe(0); // t=1800: the reset window (closes t=1900) is still open — no mid-burst fire
+    act(() => { vi.advanceTimersByTime(100); });
+    expect(retryCalls()).toBe(1); // t=1900: the SETTLED window closes — exactly one pass for the whole storm
+  });
 });
 
 describe('triage integration (capture P2 T5)', () => {
