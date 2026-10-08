@@ -77,6 +77,17 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
     [checklists],
   );
 
+  // ---- Suggestion prefill gate (P3 Task 3): prefill is the suggestion's
+  // ONLY privilege, and it must EARN it: present AND above the confidence
+  // threshold AND not the discard-primed NOISE route. Below-threshold /
+  // unresolved-board suggestions open the modals exactly as P2 did (entropy
+  // title / first board); the dimmed low badge is the user's explanation.
+  const usableSuggestion = (n: NoteDto): ValidatedSuggestion | null => {
+    const s = aiSuggestions[n.id];
+    if (!s || s.low || s.route === 'NOISE') return null;
+    return s;
+  };
+
   const onAction = (action: TriageAction, note: NoteDto): void => {
     // Defensive double-guard (brief): the Rust apply revalidates server-side
     // ("stale: note no longer exists" → zero enqueues); the view additionally
@@ -395,8 +406,17 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
           onClose={closeModal}
           onConfirm={applyPromote}
           boards={boardsForPicker}
+          defaultBoardId={(() => {
+            const s = usableSuggestion(activeNote);
+            return s?.boardTitle
+              ? boardsForPicker.find((b) => b.title === s.boardTitle)?.id
+              : undefined; // unresolved → P2 first-board fallback
+          })()}
           defaultText={firstCardTextLine(activeNote.content)}
-          defaultTitle={titleFromText(activeNote.content)}
+          defaultTitle={(() => {
+            const s = usableSuggestion(activeNote);
+            return s?.newTitle ?? titleFromText(activeNote.content);
+          })()}
           error={err ?? undefined}
         />
       )}
@@ -406,8 +426,16 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
           onClose={closeModal}
           onConfirm={applyMove}
           presets={[TRIAGE_MOVE_PRESET.COMMANDS, TRIAGE_MOVE_PRESET.DOCS]}
-          defaultCategory={activeNote.category ?? ''}
-          defaultTitle={activeNote.title}
+          defaultCategory={(() => {
+            const s = usableSuggestion(activeNote);
+            // COMMANDS/DOCS map to their sweep preset; every other route keeps
+            // the note's own category (P2 zero-hallucination default).
+            if (s && (s.route === 'COMMANDS' || s.route === 'DOCS')) {
+              return TRIAGE_MOVE_PRESET[s.route];
+            }
+            return activeNote.category ?? '';
+          })()}
+          defaultTitle={usableSuggestion(activeNote)?.newTitle ?? activeNote.title}
         />
       )}
       {modal === 'discard' && activeNote && (

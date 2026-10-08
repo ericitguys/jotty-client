@@ -147,3 +147,42 @@ describe('TriagePromoteModal', () => {
     expect(screen.getByRole('textbox', { name: 'Card title' })).toHaveValue('Grab bulbs');
   });
 });
+// ---- P3 Task 3: the additive defaultBoardId prefill (confident suggestions) ----
+describe('TriagePromoteModal defaultBoardId prefill (P3 Task 3)', () => {
+  it('default_board_id_prefills_board_choice: defaultBoardId=B selects B, not the first board', () => {
+    render(
+      <TriagePromoteModal
+        isOpen
+        onClose={() => {}}
+        onConfirm={() => {}}
+        boards={boards}
+        defaultBoardId="b2"
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Board' })).toHaveTextContent('Zeta board');
+  });
+
+  it('default_board_id_absent_falls_back_to_first_board: P2 byte-stable behavior (unresolved suggestion → boards[0])', () => {
+    render(
+      <TriagePromoteModal
+        isOpen
+        onClose={() => {}}
+        onConfirm={() => {}}
+        boards={boards}
+        defaultBoardId={undefined}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Board' })).toHaveTextContent('Maintenance');
+    // and an id NOT among the boards also falls back to the first (defensive)
+    render(
+      <TriagePromoteModal
+        isOpen
+        onClose={() => {}}
+        onConfirm={() => {}}
+        boards={boards}
+        defaultBoardId="no-such-id"
+      />,
+    );
+    expect(screen.getAllByRole('button', { name: 'Board' })[1]).toHaveTextContent('Maintenance');
+  });
+});

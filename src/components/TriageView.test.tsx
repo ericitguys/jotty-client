@@ -53,6 +53,10 @@ const cardIds = (): string[] =>
   [...document.querySelectorAll('li.triage-card')].map(
     (li) => li.querySelector('.triage-title')!.textContent!,
   );
+const cardByTitle = (title: string): Element | null =>
+  [...document.querySelectorAll('li.triage-card')].find(
+    (li) => li.querySelector('.triage-title')!.textContent === title,
+  ) ?? null;
 const selectedCard = (): HTMLElement | null =>
   document.querySelector('li.triage-card.selected');
 const pressKey = (key: string, target?: Element): void => {
@@ -418,11 +422,6 @@ describe('TriageView AI suggestions (P3 Task 2)', () => {
     ...over,
   });
 
-  const cardByTitle = (title: string): Element | null =>
-    [...document.querySelectorAll('li.triage-card')].find(
-      (li) => li.querySelector('.triage-title')!.textContent === title,
-    ) ?? null;
-
   const suggestCalls = (): string[][] =>
     invoke.mock.calls.filter((c) => c[0] === 'triage_suggest').map((c) => c[1].noteIds);
 
@@ -665,5 +664,116 @@ describe('TriageView AI suggestions (P3 Task 2)', () => {
     await waitFor(() => expect(btn.textContent).toBe('Suggest (AI)')); // back to idle
     // the guard released; the REMAINING chunks complete the ORIGINAL sweep
     expect(suggestCalls()).toHaveLength(3);
+  });
+});
+
+describe('TriageView suggestion prefill (P3 Task 3)', () => {
+  const seedPair = (): NoteDto[] => {
+    const notes = [
+      note('n1', 'cap_pref_ab', 'Renew the vpn cert this week', isoAgo(HOUR)),
+      note('n2', 'cap_pref_cd', 'plain body', isoAgo(2 * HOUR)),
+    ]; // n1 newest → cards[0] (the card the a/m keys act on)
+    useStore.setState({ notes, checklists: [boardList('b1', 'Maintenance', 'kanban'), boardList('b2', 'Zeta board', 'kanban')] } as never);
+    return notes;
+  };
+
+  // sweep harness: confident suggestion for n1; per-test override re-mocks the
+  // WHOLE chain (mock-fallthrough law)
+  const sweepOnce = (suggestion: unknown): void => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve(suggestion);
+      return Promise.resolve(null);
+    });
+  };
+  const sugg = (over: Record<string, unknown>) => ({
+    noteId: 'n1', route: 'TODO', suggestedBoard: null, suggestedTitle: null,
+    suggestedTags: [], confidence: 0.9, ...over,
+  });
+  const clickSuggest = async (): Promise<void> => {
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(invoke.mock.calls.some((c) => c[0] === 'triage_suggest')).toBe(true));
+  };
+
+  it('confident todo suggestion opens promote prefilled: suggested board + suggested title (card text NOT AI)', async () => {
+    seedPair();
+    sweepOnce([sugg({ suggestedBoard: 'Zeta board', suggestedTitle: 'Renew the vpn cert' })]);
+    render(<TriageView notes={useStore.getState().notes as NoteDto[]} />);
+    await clickSuggest();
+    pressKey('a'); // promote on the FIRST card (n1 — newest)
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Board' })).toHaveTextContent('Zeta board');
+    expect(within(dialog).getByRole('textbox', { name: 'Card title' })).toHaveValue('Renew the vpn cert');
+    expect(within(dialog).getByRole('textbox', { name: 'Card text' })).toHaveValue('Renew the vpn cert this week'); // first line, NOT AI
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('promote_note_to_board', {
+      noteId: 'n1', boardId: 'b2', cardText: 'Renew the vpn cert this week', newTitle: 'Renew the vpn cert',
+    }));
+  });
+
+  it('confident COMMANDS route opens move prefilled: LIBRARY/Commands + suggested title', async () => {
+    seedPair();
+    sweepOnce([sugg({ route: 'COMMANDS', suggestedTitle: 'vpn renewal steps' })]);
+    render(<TriageView notes={useStore.getState().notes as NoteDto[]} />);
+    await clickSuggest();
+    pressKey('m');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('textbox', { name: 'Category' })).toHaveValue('LIBRARY/Commands');
+    expect(within(dialog).getByRole('textbox', { name: 'Title' })).toHaveValue('vpn renewal steps');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', {
+      id: 'n1', title: 'vpn renewal steps', content: 'Renew the vpn cert this week', category: 'LIBRARY/Commands',
+    }));
+  });
+
+  it('below-threshold suggestion opens the modals EXACTLY as P2 (entropy title, first board, first-line text)', async () => {
+    seedPair();
+    sweepOnce([sugg({ confidence: 0.4, suggestedBoard: 'Zeta board', suggestedTitle: 'AI title that must NOT appear' })]);
+    render(<TriageView notes={useStore.getState().notes as NoteDto[]} />);
+    await clickSuggest();
+    pressKey('a');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Board' })).toHaveTextContent('Maintenance'); // boards[0] fallback
+    expect(within(dialog).getByRole('textbox', { name: 'Card title' })).toHaveValue('Renew the vpn cert this week'); // titleFromText(content)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('promote_note_to_board', {
+      noteId: 'n1', boardId: 'b1', cardText: 'Renew the vpn cert this week', newTitle: 'Renew the vpn cert this week',
+    }));
+  });
+
+  it('NOISE route suggestion touches no prefill: promote uses P2 defaults, move uses the note category, discard untouched', async () => {
+    seedPair();
+    sweepOnce([sugg({ route: 'NOISE', suggestedBoard: 'Zeta board', suggestedTitle: 'AI title must not appear' })]);
+    render(<TriageView notes={useStore.getState().notes as NoteDto[]} />);
+    await clickSuggest();
+    // the badge IS the cue (route badge renders)
+    expect(cardByTitle('cap_pref_ab')!.querySelector('.triage-badge')!.textContent).toBe('NOISE');
+    pressKey('m');
+    let dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('textbox', { name: 'Category' })).toHaveValue('!INBOX'); // the note's own category
+    expect(within(dialog).getByRole('textbox', { name: 'Title' })).toHaveValue('cap_pref_ab'); // the note's own title
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    pressKey('a');
+    dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Board' })).toHaveTextContent('Maintenance'); // first board
+    expect(within(dialog).getByRole('textbox', { name: 'Card title' })).toHaveValue('Renew the vpn cert this week'); // entropy fallback
+  });
+
+  it('user edits override the prefill (HITL law: values, never the contract)', async () => {
+    seedPair();
+    sweepOnce([sugg({ suggestedBoard: 'Zeta board', suggestedTitle: 'AI title' })]);
+    render(<TriageView notes={useStore.getState().notes as NoteDto[]} />);
+    await clickSuggest();
+    pressKey('a');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('textbox', { name: 'Card title' })).toHaveValue('AI title');
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Card text' }), { target: { value: 'User typed text' } });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Card title' }), { target: { value: 'User title' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('promote_note_to_board', {
+      noteId: 'n1', boardId: 'b2', cardText: 'User typed text', newTitle: 'User title',
+    }));
   });
 });

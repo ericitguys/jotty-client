@@ -8,13 +8,14 @@ import Dropdown from './Dropdown';
 // stays the caller's job, so an async apply that fails can keep the dialog
 // open and surface its error line; a no-boards state replaces the Dropdown
 // with a placeholder and disables the confirm.
-export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards, defaultText, defaultTitle, error }: {
+export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards, defaultText, defaultTitle, defaultBoardId, error }: {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (boardId: string, cardText: string, newTitle: string) => void;
   boards: { id: string; title: string }[];
   defaultText?: string;
   defaultTitle?: string;
+  defaultBoardId?: string;
   error?: string;
 }) {
   const [boardId, setBoardId] = useState('');
@@ -30,13 +31,15 @@ export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards,
   const wasOpen = useRef(false);
   useEffect(() => {
     if (isOpen && !wasOpen.current) {
-      setBoardId(boards[0]?.id ?? '');
+      // P3 Task 3: the CONFIDENT suggestion's board preselects; anything off
+      // (prop absent, id ∉ boards) falls back to P2's boards[0] law.
+      setBoardId(boards.some((b) => b.id === defaultBoardId) ? defaultBoardId! : boards[0]?.id ?? '');
       setCardText(defaultText ?? '');
       setNewTitle(defaultTitle ?? '');
       cardRef.current?.focus();
     }
     wasOpen.current = isOpen;
-  }, [isOpen, defaultText, defaultTitle, boards]);
+  }, [isOpen, defaultText, defaultTitle, defaultBoardId, boards]);
 
   // Escape closes wherever the focus sits — listen on window (PromptModal law).
   useEffect(() => {
