@@ -7,6 +7,7 @@ pub mod jotty;
 pub mod keys;
 pub mod state;
 pub mod sync;
+pub mod triage_ai;
 pub mod updater;
 pub mod voice_ai;
 
@@ -104,6 +105,11 @@ pub fn run() {
             commands::get_ai_settings,
             commands::set_ai_settings,
             commands::ai_get_models,
+            commands::triage_suggest,
+            commands::get_triage_settings,
+            commands::set_triage_settings,
+            commands::triage_tag_vocab,
+            commands::triage_tag_vocab_add,
             commands::voice_transcribe,
             commands::voice_tidy,
             commands::voice_extract_tasks,

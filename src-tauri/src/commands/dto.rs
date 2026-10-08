@@ -374,9 +374,68 @@ impl From<crate::voice_ai::RetryStats> for VoiceRetryStatsDto {
     }
 }
 
+// ---- AI-augmented triage (P3 Task 1) -------------------------------------
+// One suggestion per input note (advisory; the route literal was validated
+// Rust-side). TS contract: src/api/types.ts TriageSuggestionDto.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageSuggestionDto {
+    pub note_id: String,
+    pub route: String,
+    pub suggested_board: Option<String>,
+    pub suggested_title: Option<String>,
+    pub suggested_tags: Vec<String>,
+    pub confidence: f64,
+}
+
+impl From<crate::triage_ai::TriageSuggestion> for TriageSuggestionDto {
+    fn from(s: crate::triage_ai::TriageSuggestion) -> Self {
+        TriageSuggestionDto {
+            note_id: s.note_id,
+            route: s.route,
+            suggested_board: s.suggested_board,
+            suggested_title: s.suggested_title,
+            suggested_tags: s.suggested_tags,
+            confidence: s.confidence,
+        }
+    }
+}
+
+// Confidence-threshold setting (kv TEXT storage, facts §18); the wire key is
+// camelCase 'confidenceThreshold'.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageSettingsDto {
+    pub confidence_threshold: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triage_suggestion_dto_wire_keys_are_camelcase() {
+        let dto = TriageSuggestionDto {
+            note_id: "n1".into(),
+            route: "TODO".into(),
+            suggested_board: Some("Maintenance".into()),
+            suggested_title: None,
+            suggested_tags: vec!["todo".into()],
+            confidence: 0.8,
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["confidence", "noteId", "route", "suggestedBoard", "suggestedTags", "suggestedTitle"],
+            "wire key SET pinned for the TS bindings (serde_json emits sorted; order is not the contract)"
+        );
+        assert_eq!(v["noteId"], "n1");
+        assert_eq!(v["suggestedBoard"], "Maintenance");
+        let s = serde_json::to_value(&TriageSettingsDto { confidence_threshold: 0.7 }).unwrap();
+        assert_eq!(s.as_object().unwrap().keys().map(|k| k.as_str()).collect::<Vec<_>>(), vec!["confidenceThreshold"]);
+    }
     use crate::db::items::ItemRow;
 
     #[test]

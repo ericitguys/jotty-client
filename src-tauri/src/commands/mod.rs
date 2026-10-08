@@ -10,6 +10,7 @@ use crate::jotty::client::JottyClient;
 use crate::state::AppState;
 use dto::{
     AgendaEntryDto, AiSettingsDto, AppointmentDraftDto, BoardDto, BoardStatusDto, CategoriesDto,
+    TriageSettingsDto, TriageSuggestionDto,
     ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
     SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
     VoiceRetryStatsDto,
@@ -1567,7 +1568,7 @@ pub(crate) fn persist_ai_suffix(conn: &Connection, effective: crate::voice_ai::S
     Ok(())
 }
 
-pub(crate) async fn build_ai_client(state: &tauri::State<'_, AppState>) -> AppResult<crate::voice_ai::VoiceAiClient> {
+pub(crate) async fn build_ai_client(state: &AppState) -> AppResult<crate::voice_ai::VoiceAiClient> {
     let (base, suffix) = {
         let conn = state.db.lock().await;
         (ai_base_url(&conn)?, ai_suffix(&conn)?)
@@ -1666,6 +1667,165 @@ pub async fn set_ai_settings(
 pub async fn ai_get_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
     let ai = build_ai_client(&state).await.map_err(|e| e.to_string())?;
     ai_models_core(&ai, &state.db).await.map_err(|e| e.to_string())
+}
+
+// ---- AI-augmented triage (P3 Task 1) -------------------------------------
+// Suggestions are ADVISORY session state: this command writes NOTHING except
+// the ai_api_suffix kv on success (Send law: the db lock is never held across
+// the network await — ai_models_core shape).
+pub(crate) async fn triage_suggest_inner(
+    state: &AppState,
+    note_ids: Vec<String>,
+) -> AppResult<Vec<TriageSuggestionDto>> {
+    // (a) cap check FIRST — a hard error, not a silent clamp (silent clamping
+    // would hide TS orchestration bugs; the two caps must drift together).
+    if note_ids.len() > crate::triage_ai::TRIAGE_CHUNK_CAP {
+        return Err(crate::error::AppError::Other(format!(
+            "chunk exceeds cap of {} — slice client-side",
+            crate::triage_ai::TRIAGE_CHUNK_CAP
+        )));
+    }
+    // dedupe ids, order-stable
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<String> = note_ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    // (b) scoped db lock: rows + boards + vocab + model + start suffix
+    let (payloads, board_names, vocab, model, start_suffix) = {
+        let conn = state.db.lock().await;
+        let mut payloads = Vec::new();
+        for id in &ids {
+            // missing -> skipped silently (stale client snapshots are legal)
+            let Some(row) = crate::db::notes::get(&conn, id)? else { continue };
+            // deleted -> skipped; out-of-zone -> skipped (the sweep only asks
+            // about zone rows, but a stale id may have been triaged already)
+            if row.deleted_at.is_some() {
+                continue;
+            }
+            if !(row.category == "!INBOX" || row.category.starts_with("!INBOX/")) {
+                continue;
+            }
+            payloads.push(crate::triage_ai::TriageNotePayload {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                // char-boundary-safe truncation to the prompt cap
+                content: row.content.chars().take(crate::triage_ai::NOTE_CONTENT_CAP).collect(),
+            });
+        }
+        let all = crate::db::checklists::list_checklists(&conn, false)?;
+        let board_names: Vec<String> = all
+            .iter()
+            .filter(|c| c.deleted_at.is_none() && (c.list_type == "kanban" || c.list_type == "task"))
+            .map(|c| c.title.clone())
+            .collect();
+        let vocab = triage_tag_vocab_inner(&conn)?;
+        let model = ai_model(&conn)?;
+        let start_suffix = ai_suffix(&conn)?;
+        (payloads, board_names, vocab, model, start_suffix)
+    };
+    if payloads.is_empty() {
+        return Err(crate::error::AppError::Other("no notes to triage".into()));
+    }
+    if model.trim().is_empty() {
+        return Err(crate::error::AppError::Other(
+            "AI model not configured — pick one in Settings".into(),
+        ));
+    }
+    // (c) drop the lock -> network (Send law: no guard crosses this await)
+    let ai = build_ai_client(state).await?;
+    let (suggestions, effective) = crate::triage_ai::triage_suggest(
+        &ai, &model, &payloads, &board_names, &vocab, start_suffix,
+    )
+    .await?;
+    // (d) re-lock -> persist the effective suffix on success only
+    let conn = state.db.lock().await;
+    persist_ai_suffix(&conn, effective)?;
+    Ok(suggestions.into_iter().map(TriageSuggestionDto::from).collect())
+}
+
+pub(crate) const TRIAGE_THRESHOLD_DEFAULT: f64 = 0.70;
+
+pub(crate) fn get_triage_settings_inner(conn: &Connection) -> AppResult<TriageSettingsDto> {
+    let raw = kv_get_or(conn, "triage_confidence_threshold", "")?;
+    let threshold: f64 = raw.trim().parse::<f64>().ok()
+        .filter(|v| (0.0..=1.0).contains(v))
+        .unwrap_or(TRIAGE_THRESHOLD_DEFAULT); // absent/blank/garbage/out-of-range -> 0.70, never an error
+    Ok(TriageSettingsDto { confidence_threshold: threshold })
+}
+
+pub(crate) fn set_triage_settings_inner(conn: &Connection, confidence_threshold: f64) -> AppResult<TriageSettingsDto> {
+    if !(0.0..=1.0).contains(&confidence_threshold) {
+        return Err(crate::error::AppError::Other(
+            "confidence threshold must be between 0 and 1".into(),
+        ));
+    }
+    // TEXT storage per the kv law (facts §18: no f64 precedent — TEXT round-trip)
+    kv_set(conn, "triage_confidence_threshold", &confidence_threshold.to_string())?;
+    Ok(TriageSettingsDto { confidence_threshold })
+}
+
+pub(crate) fn triage_tag_vocab_inner(conn: &Connection) -> AppResult<Vec<String>> {
+    const DEFAULT_VOCAB: [&str; 4] = ["todo", "cmd", "incident", "research"]; // spec §5.4 seeds, without '#'
+    let raw = kv_get_or(conn, "triage_tag_vocab", "")?;
+    let parsed: Option<Vec<String>> = if raw.trim().is_empty() {
+        None
+    } else {
+        serde_json::from_str::<Vec<String>>(&raw).ok()
+    };
+    Ok(parsed.unwrap_or_else(|| DEFAULT_VOCAB.iter().map(|s| s.to_string()).collect()))
+}
+
+pub(crate) fn triage_tag_vocab_add_inner(conn: &Connection, tag: &str) -> AppResult<Vec<String>> {
+    // normalize: trim, strip ALL leading '#'s, lowercase; empty -> Err
+    let norm = tag.trim().trim_start_matches('#').to_lowercase();
+    if norm.is_empty() {
+        return Err(crate::error::AppError::Other("empty tag".into()));
+    }
+    let mut vocab = triage_tag_vocab_inner(conn)?;
+    if !vocab.iter().any(|t| t == &norm) {
+        vocab.push(norm.clone());
+        kv_set(conn, "triage_tag_vocab", &serde_json::to_string(&vocab).map_err(|e| crate::error::AppError::Other(format!("vocab serialize: {e}")))?)?;
+    }
+    Ok(vocab)
+}
+
+#[tauri::command]
+pub async fn triage_suggest(
+    state: tauri::State<'_, AppState>,
+    note_ids: Vec<String>,
+) -> Result<Vec<TriageSuggestionDto>, String> {
+    triage_suggest_inner(&state, note_ids).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_triage_settings(state: tauri::State<'_, AppState>) -> Result<TriageSettingsDto, String> {
+    let conn = state.db.lock().await;
+    get_triage_settings_inner(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_triage_settings(
+    state: tauri::State<'_, AppState>,
+    confidence_threshold: f64,
+) -> Result<TriageSettingsDto, String> {
+    let conn = state.db.lock().await;
+    set_triage_settings_inner(&conn, confidence_threshold).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn triage_tag_vocab(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let conn = state.db.lock().await;
+    triage_tag_vocab_inner(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn triage_tag_vocab_add(
+    state: tauri::State<'_, AppState>,
+    tag: String,
+) -> Result<Vec<String>, String> {
+    let conn = state.db.lock().await;
+    triage_tag_vocab_add_inner(&conn, &tag).map_err(|e| e.to_string())
 }
 
 pub(crate) async fn voice_transcribe_inner(
@@ -2013,6 +2173,17 @@ mod tests {
     use crate::db::{board, migrations, open, outbox};
     use crate::keys::KeyStore as _;
     use rusqlite::Connection;
+
+    // ---- AI triage (P3 Task 1) ----
+
+    fn seed_inbox_note(conn: &Connection, id_hint: &str, category: &str, content: &str) -> crate::db::notes::NoteRow {
+        let n = crate::db::notes::insert_local(conn, &crate::db::notes::NewNote {
+            title: format!("cap_{id_hint}"),
+            content: content.into(),
+            category: category.into(),
+        }).unwrap();
+        n
+    }
 
     // v0.15.3 title-mirror regression: on Wayland, tao embeds the window title
     // in a GtkHeaderBar (built once via WlHeader::setup) and later
@@ -3994,5 +4165,280 @@ mod tests {
         let err = super::quick_capture_inner(&mut conn, "   ")
             .expect_err("empty input rejected");
         assert!(err.to_string().contains("empty"), "message mentions empty: {err}");
+    }
+
+    // ---- AI triage (P3 Task 1): command + kv fences ----
+
+    #[tokio::test]
+    async fn triage_chunk_cap_enforced() {
+        let conn = db();
+        let ai_ks = crate::keys::MockKeyStore::default();
+        ai_ks.set("sk-test").unwrap();
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(ai_ks)).unwrap();
+        let ids: Vec<String> = (0..26).map(|i| format!("no-such-{i}")).collect();
+        let err = triage_suggest_inner(&state, ids.clone()).await.expect_err("26 ids must fail the cap");
+        assert!(err.to_string().contains("chunk exceeds cap of 20"), "{err}");
+        // exactly at the cap passes the cap gate and reaches the next gate
+        // (no such rows -> all filtered -> "no notes to triage")
+        let ids20: Vec<String> = (0..20).map(|i| format!("no-such-{i}")).collect();
+        let err2 = triage_suggest_inner(&state, ids20).await.expect_err("no rows to triage");
+        assert!(err2.to_string().contains("no notes to triage"), "{err2}");
+    }
+
+    #[tokio::test]
+    async fn triage_suggest_skips_missing_deleted_and_out_of_zone_ids() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        // seed FIRST: the mock's reply must carry the REAL id (the parser
+        // drops unknown ids — the validation law this test proves)
+        let conn = db();
+        kv_set(&conn, "ai_model", "test-model").unwrap();
+        let good = seed_inbox_note(&conn, "good", "!INBOX", "renew the vpn cert");
+        let gone = seed_inbox_note(&conn, "gone", "!INBOX", "removed elsewhere");
+        crate::db::notes::soft_delete_local(&conn, &gone.id).unwrap();
+        let outside = seed_inbox_note(&conn, "outside", "HOME", "plain note");
+
+        let s = MockServer::start().await;
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reqs: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> = std::sync::Arc::default();
+        let (h, rq) = (hits.clone(), reqs.clone());
+        let reply_id = good.id.clone();
+        kv_set(&conn, "ai_base_url", &s.uri()).unwrap();
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(move |req: &wiremock::Request| {
+                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+                rq.lock().unwrap().push(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{"message": {"content": serde_json::to_string(&serde_json::json!([
+                        {"note_id": reply_id, "route": "TODO", "suggested_board": serde_json::Value::Null,
+                         "suggested_title": serde_json::Value::Null, "suggested_tags": [], "confidence": 0.8}
+                    ])).unwrap()}}]}
+                ))
+            })
+            .mount(&s).await;
+        let ai_ks = crate::keys::MockKeyStore::default();
+        ai_ks.set("sk-test").unwrap();
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(ai_ks)).unwrap();
+        let dto = triage_suggest_inner(&state, vec![good.id.clone(), gone.id.clone(), outside.id.clone(), "missing-id".into()])
+            .await
+            .expect("the good row survives every filter");
+        // exactly ONE note reached the chat body
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let sent = reqs.lock().unwrap();
+        let notes = sent[0]["messages"][1]["content"]
+            .as_str()
+            .map(|c| serde_json::from_str::<serde_json::Value>(c).unwrap())
+            .unwrap()["notes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(notes.len(), 1, "missing/deleted/out-of-zone ids are filtered BEFORE the chat");
+        assert_eq!(notes[0]["id"], good.id.as_str());
+        // and the reply rides back as exactly one DTO
+        assert_eq!(dto.len(), 1);
+        assert_eq!(dto[0].note_id, good.id);
+        assert_eq!(dto[0].route, "TODO");
+        assert_eq!(dto[0].confidence, 0.8);
+    }
+
+    #[tokio::test]
+    async fn triage_suggest_all_filtered_out_errors() {
+        let conn = db();
+        let gone = seed_inbox_note(&conn, "gone", "!INBOX", "removed elsewhere");
+        crate::db::notes::soft_delete_local(&conn, &gone.id).unwrap();
+        let _outside = seed_inbox_note(&conn, "outside", "HOME", "plain note");
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(crate::keys::MockKeyStore::default())).unwrap();
+        let err = triage_suggest_inner(&state, vec![gone.id.clone(), "missing-id".into()])
+            .await
+            .expect_err("nothing left after the zone/existence filters");
+        assert!(err.to_string().contains("no notes to triage"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn triage_suggest_model_not_configured_message() {
+        let conn = db();
+        let good = seed_inbox_note(&conn, "good", "!INBOX", "body");
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(crate::keys::MockKeyStore::default())).unwrap();
+        let err = triage_suggest_inner(&state, vec![good.id])
+            .await
+            .expect_err("empty ai_model kv is the configure-prompt error");
+        assert_eq!(
+            err.to_string(),
+            "AI model not configured — pick one in Settings",
+            "the voice-chain string, verbatim"
+        );
+        // errors gate BEFORE any network/suffix write
+        let raw: Option<String> = state
+            .db
+            .lock()
+            .await
+            .query_row("SELECT value FROM sync_state WHERE key='ai_api_suffix'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(raw.is_none(), "no chat -> no suffix persistence");
+    }
+
+    #[tokio::test]
+    async fn triage_suggest_persists_effective_suffix_on_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        // seed first: the reply must carry the REAL id
+        let conn = db();
+        kv_set(&conn, "ai_model", "test-model").unwrap();
+        let good = seed_inbox_note(&conn, "good", "!INBOX", "body");
+        let s = MockServer::start().await;
+        // v1 path 404s -> chain retries plain -> success carries the Plain suffix back
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({"detail": "no"})))
+            .mount(&s).await;
+        let reply_id = good.id.clone();
+        kv_set(&conn, "ai_base_url", &s.uri()).unwrap();
+        Mock::given(method("POST")).and(path("/api/chat/completions"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let reply = serde_json::json!({"choices": [{"message": {"content": serde_json::to_string(&serde_json::json!([
+                    {"note_id": reply_id, "route": "DOCS", "suggested_board": serde_json::Value::Null,
+                     "suggested_title": serde_json::Value::Null, "suggested_tags": ["#Doc"], "confidence": 0.9}
+                ])).unwrap()}}]});
+                ResponseTemplate::new(200).set_body_json(reply)
+            })
+            .mount(&s).await;
+        let ai_ks = crate::keys::MockKeyStore::default();
+        ai_ks.set("sk-test").unwrap();
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(ai_ks)).unwrap();
+        let dto = triage_suggest_inner(&state, vec![good.id]).await.unwrap();
+        assert_eq!(dto.len(), 1);
+        // the EFFECTIVE suffix persisted (raw "v1"/"plain" TEXT per the voice law)
+        let raw: String = state.db.lock().await
+            .query_row("SELECT value FROM sync_state WHERE key='ai_api_suffix'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, "plain");
+        // tags come back normalized (leading '#' stripped, lowercase)
+        assert_eq!(dto[0].suggested_tags, vec!["doc"]);
+    }
+
+    #[tokio::test]
+    async fn triage_note_content_truncated_to_cap_in_prompt() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        let reqs: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> = std::sync::Arc::default();
+        let rq = reqs.clone();
+        Mock::given(method("POST")).and(path("/api/v1/chat/completions"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+                rq.lock().unwrap().push(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices": [{"message": {"content": "[]"}}]}))
+            })
+            .mount(&s).await;
+        let conn = db();
+        kv_set(&conn, "ai_base_url", &s.uri()).unwrap();
+        kv_set(&conn, "ai_model", "test-model").unwrap();
+        let long = "x".repeat(3000);
+        let good = seed_inbox_note(&conn, "long", "!INBOX", &long);
+        let ai_ks = crate::keys::MockKeyStore::default();
+        ai_ks.set("sk-test").unwrap();
+        let state = AppState::new(conn, Box::new(crate::keys::MockKeyStore::default()), Box::new(ai_ks)).unwrap();
+        triage_suggest_inner(&state, vec![good.id]).await.unwrap();
+        let sent = reqs.lock().unwrap();
+        let note0 = &sent[0]["messages"][1]["content"]
+            .as_str()
+            .map(|c| serde_json::from_str::<serde_json::Value>(c).unwrap())
+            .unwrap()["notes"][0];
+        let c = note0["content"].as_str().unwrap();
+        assert_eq!(c.chars().count(), 2000, "the prompt body truncates the note to the cap");
+        assert!(c.chars().all(|ch| ch == 'x'));
+    }
+
+    #[test]
+    fn triage_tag_vocab_defaults_without_persisting() {
+        let conn = db();
+        let v = triage_tag_vocab_inner(&conn).unwrap();
+        assert_eq!(v, vec!["todo", "cmd", "incident", "research"]);
+        // the read NEVER persists the default (facts §18 law)
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM sync_state WHERE key='triage_tag_vocab'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(raw.is_none(), "defaults stay unpersisted");
+    }
+
+    #[test]
+    fn triage_tag_vocab_add_normalizes_dedups_and_persists() {
+        let conn = db();
+        let v1 = triage_tag_vocab_add_inner(&conn, "  #FreshTag ").unwrap();
+        assert_eq!(v1.last().unwrap(), "freshtag", "trim + strip # + lowercase");
+        // re-adding the same tag in any casing/shape dedupes: list unchanged
+        let v2 = triage_tag_vocab_add_inner(&conn, "#FRESHTAG").unwrap();
+        assert_eq!(v2, v1);
+        let v3 = triage_tag_vocab_add_inner(&conn, "freshtag").unwrap();
+        assert_eq!(v3, v1);
+        // and the existing default tags dedupe the same way
+        let v4 = triage_tag_vocab_add_inner(&conn, "#TODO").unwrap();
+        assert_eq!(v4, v1, "default tags also dedupe, list unchanged");
+        // the MERGED array persisted as kv TEXT (a future read gets the merge
+        // back even from a fresh process — the defaults are NOT re-seeded)
+        let raw: String = conn
+            .query_row("SELECT value FROM sync_state WHERE key='triage_tag_vocab'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, serde_json::json!(["todo", "cmd", "incident", "research", "freshtag"]).to_string());
+        assert_eq!(triage_tag_vocab_inner(&conn).unwrap(), v1, "read-back equals the merged list");
+    }
+
+    #[test]
+    fn triage_tag_vocab_add_rejects_empty() {
+        let conn = db();
+        for bad in ["", "   ", "###"] {
+            assert!(triage_tag_vocab_add_inner(&conn, bad).is_err(), "{bad:?} rejected");
+        }
+        // nothing persisted by rejected adds
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM sync_state WHERE key='triage_tag_vocab'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(raw.is_none());
+    }
+
+    #[test]
+    fn triage_confidence_threshold_default_when_absent_or_garbage() {
+        let conn = db();
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.70);
+        kv_set(&conn, "triage_confidence_threshold", "abc").unwrap();
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.70);
+        kv_set(&conn, "triage_confidence_threshold", "1.5").unwrap(); // out of clamp -> default
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.70);
+        kv_set(&conn, "triage_confidence_threshold", "").unwrap();
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.70);
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.70);
+    }
+
+    #[test]
+    fn triage_confidence_threshold_set_rejects_out_of_range() {
+        let conn = db();
+        let err = set_triage_settings_inner(&conn, 1.5).expect_err("out of range");
+        assert!(err.to_string().contains("between 0 and 1"), "{err}");
+        let err2 = set_triage_settings_inner(&conn, -0.1).expect_err("negative rejected");
+        assert!(err2.to_string().contains("between 0 and 1"), "{err2}");
+        // the kv stays untouched by the rejected writes
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM sync_state WHERE key='triage_confidence_threshold'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(raw.is_none());
+        // boundaries are LEGAL (review focus 5: 0 and 1 inclusive)
+        set_triage_settings_inner(&conn, 0.0).unwrap();
+        set_triage_settings_inner(&conn, 1.0).unwrap();
+    }
+
+    #[test]
+    fn triage_confidence_threshold_set_round_trips() {
+        let conn = db();
+        set_triage_settings_inner(&conn, 0.9).unwrap();
+        let raw: String = conn
+            .query_row("SELECT value FROM sync_state WHERE key='triage_confidence_threshold'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, "0.9", "TEXT storage law");
+        assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.9);
     }
 }

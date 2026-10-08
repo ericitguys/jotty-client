@@ -165,7 +165,9 @@ impl VoiceAiClient {
         }
     }
 
-    async fn chat_once(&self, suffix: Suffix, body: &Value) -> AppResult<Value> {
+    // P3: triage_ai.rs drives the same chat seam (visibility-only edit; the
+    // body/behavior is byte-frozen by the P3 plan).
+    pub(crate) async fn chat_once(&self, suffix: Suffix, body: &Value) -> AppResult<Value> {
         let resp = self
             .http
             .post(format!("{}/chat/completions", self.base(suffix)))
@@ -267,7 +269,8 @@ fn parse_models(v: &Value) -> AppResult<Vec<String>> {
         .collect())
 }
 
-fn parse_choice(v: &Value) -> AppResult<String> {
+// P3: triage_ai.rs reuses the strict choices[0] extraction.
+pub(crate) fn parse_choice(v: &Value) -> AppResult<String> {
     v.pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
         .map(|s| s.to_string())
