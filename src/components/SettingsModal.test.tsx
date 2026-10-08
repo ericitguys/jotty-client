@@ -329,3 +329,61 @@ describe('SettingsModal connect-form wrapper (tier B task 4)', () => {
     expect((form.querySelector('button') as HTMLButtonElement).textContent).toBe('Connect');
   });
 });
+
+// ---- P3 Task 4: AI triage confidence threshold (rides the existing AI section) ----
+describe('SettingsModal AI triage confidence threshold (P3 Task 4)', () => {
+  const aiMocks = (threshold: number | null): void => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: '/api/chat/completions', hasKey: false });
+      if (cmd === 'get_triage_settings') {
+        return threshold === null
+          ? Promise.reject(new Error('offline'))
+          : Promise.resolve({ confidenceThreshold: threshold });
+      }
+      return Promise.resolve(null);
+    });
+  };
+
+  it('shows_current_confidence_threshold: the stored value loads into the field; offline read falls back to 0.7', async () => {
+    aiMocks(0.42);
+    const { unmount } = render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const field = await screen.findByLabelText('AI triage confidence threshold');
+    await waitFor(() => expect(field).toHaveValue(0.42)); // command load (jsdom number-inputs read a NUMBER)
+    unmount();
+    aiMocks(null); // offline: the read REJECTS
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('AI triage confidence threshold')).toHaveValue(0.7));
+  });
+
+  it('save_submits_valid_threshold: 0.9 rides the existing Save (busy label swap)', async () => {
+    aiMocks(0.7);
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_settings') return Promise.resolve({ instanceUrl: 'http://x', syncIntervalMinutes: 5 });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: '/api/chat/completions', hasKey: false });
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: '/api/chat/completions', hasKey: false });
+      if (cmd === 'set_triage_settings') return Promise.resolve({ confidenceThreshold: 0.9 });
+      return Promise.resolve(null);
+    });
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const field = await screen.findByLabelText('AI triage confidence threshold');
+    await waitFor(() => expect(field).toHaveValue(0.7));
+    fireEvent.change(field, { target: { value: '0.9' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_triage_settings', { confidenceThreshold: 0.9 }));
+    await waitFor(() => expect(screen.getByText('AI settings saved.')).toBeInTheDocument());
+  });
+
+  it('out_of_range_threshold_shows_error_without_invoke: 1.5 → error line, NO set_triage_settings (and no ai save)', async () => {
+    aiMocks(0.7);
+    render(<SettingsModal mode="settings" onClose={() => {}} />);
+    const field = await screen.findByLabelText('AI triage confidence threshold');
+    await waitFor(() => expect(field).toHaveValue(0.7));
+    fireEvent.change(field, { target: { value: '1.5' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(screen.getByText(/must be between 0 and 1/i)).toBeInTheDocument());
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_triage_settings')).toBe(false);
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_ai_settings')).toBe(false);
+  });
+});

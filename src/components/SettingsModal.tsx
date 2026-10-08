@@ -42,10 +42,17 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   const [models, setModels] = useState<string[]>([]);
   const [aiMsg, setAiMsg] = useState<string | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
+  // P3 Task 4: the triage confidence gate rides the AI section (kv TEXT → the
+  // input carries the parsed value as its string form; bad read = the 0.7
+  // default so the settings stay editable OFFLINE).
+  const [triThresh, setTriThresh] = useState('');
 
   useEffect(() => {
     if (mode !== 'settings') return;
     api.getSettings().then((data) => { if (data) setSettings(data); });
+    api.getTriageSettings().then((s) => {
+      setTriThresh(String(s?.confidenceThreshold ?? 0.7));
+    }).catch(() => setTriThresh('0.7'));
     api.getAiSettings().then((s) => {
       setAiBase(s.baseUrl); setAiModel(s.model); setAiLang(s.languageHint); setAiHas(s.hasKey);
       if (s.baseUrl && s.hasKey) {
@@ -70,8 +77,24 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
   };
 
   const saveAi = async () => {
+    // P3 Task 4: validate the threshold BEFORE anything fires — out-of-range or
+    // junk means an error line and NO invoke at all (not even set_ai_settings).
+    const t = Number(triThresh);
+    if (triThresh.trim() === '' || !Number.isFinite(t) || t < 0 || t > 1) {
+      setError('AI triage confidence threshold must be between 0 and 1');
+      return;
+    }
     setAiBusy(true); setError(null); setAiMsg(null);
-    try { await persistAi(); setAiMsg('AI settings saved.'); }
+    try {
+      await persistAi();
+      const saved = await api.setTriageSettings(t);
+      // LIVE seam: an open TriageView re-gates its badges immediately (no
+      // remount, no zustand — the store-free channel stays a window event).
+      window.dispatchEvent(new CustomEvent('jotty:triage-threshold-changed', {
+        detail: { threshold: saved?.confidenceThreshold ?? t },
+      }));
+      setAiMsg('AI settings saved.');
+    }
     catch (e) { setError(fmtErr(e)); }
     finally { setAiBusy(false); }
   };
@@ -212,6 +235,16 @@ export default function SettingsModal({ mode, onClose, onConnected }: {
                 <input list="ai-model-list" placeholder="Tidy model" value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
                 <datalist id="ai-model-list">{models.map((m) => <option key={m} value={m} />)}</datalist>
                 <input placeholder="Language hint (optional, e.g. en)" value={aiLang} onChange={(e) => setAiLang(e.target.value)} />
+                <label className="triage-threshold-row">
+                  AI triage confidence threshold
+                  <input
+                    aria-label="AI triage confidence threshold"
+                    type="number" min="0" max="1" step="0.05"
+                    value={triThresh}
+                    onChange={(e) => setTriThresh(e.target.value)}
+                  />
+                  <span className="voice-hint">0–1; lower = more AI suggestions flagged for manual review</span>
+                </label>
                 <div className="voice-actions">
                   <button onClick={saveAi} disabled={aiBusy}>{aiBusy ? 'Working…' : 'Save'}</button>
                   <button onClick={testAi} disabled={aiBusy}>Test connection</button>

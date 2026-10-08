@@ -1754,3 +1754,24 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   opacity: 0.5;
   cursor: default;
 }
+
+/* ===== P3 Task 4: the threshold settings row (probe catch: the unlabeled
+   flex row clipped both the label wrap and the hint) ===== */
+#triage ~ .modal-backdrop .triage-threshold-row,
+.modal .triage-threshold-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+  color: var(--text, #ddd);
+  font-size: 13px;
+}
+.modal .triage-threshold-row input[type='number'] {
+  width: 84px;
+}
+.modal .triage-threshold-row .voice-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  opacity: 0.8;
+}

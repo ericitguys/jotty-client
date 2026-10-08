@@ -5,6 +5,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import TriageView from './TriageView';
+import SettingsModal from './SettingsModal';
 import { relativeAge } from '../util/relativeTime';
 import { useStore } from '../stores/store';
 import type { ChecklistDto, NoteDto } from '../api/types';
@@ -775,5 +776,100 @@ describe('TriageView suggestion prefill (P3 Task 3)', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('promote_note_to_board', {
       noteId: 'n1', boardId: 'b2', cardText: 'User typed text', newTitle: 'User title',
     }));
+  });
+});
+
+describe('TriageView P3 integration seams (Task 4: the whole mesh)', () => {
+  // Mock-fallthrough law ×2: a seam override re-mocks EVERY command in the chain.
+  const meshMocks = (confidence: number, threshold: number | 'reject'): void => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') {
+        return threshold === 'reject'
+          ? Promise.reject(new Error('offline'))
+          : Promise.resolve({ confidenceThreshold: threshold });
+      }
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([
+        {
+          noteId: 'n1', route: 'TODO', suggestedBoard: 'Maintenance', suggestedTitle: 'Renew the vpn cert',
+          suggestedTags: ['todo'], confidence,
+        },
+      ]);
+      if (cmd === 'set_triage_settings') return Promise.resolve({ confidenceThreshold: 0.95 });
+      if (cmd === 'set_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: '/api/chat/completions', hasKey: false });
+      if (cmd === 'get_ai_settings') return Promise.resolve({ baseUrl: '', model: '', languageHint: '', apiPathSuffix: '/api/chat/completions', hasKey: false });
+      return Promise.resolve(null);
+    });
+  };
+  const seedMesh = (): NoteDto[] => {
+    const notes = [note('n1', 'cap_mesh_ab', 'Renew the vpn cert this week', isoAgo(HOUR)), note('n2', 'cap_mesh_cd', 'plain body', isoAgo(2 * HOUR))];
+    useStore.setState({ notes, checklists: [boardList('b1', 'Maintenance', 'kanban'), boardList('b2', 'Zeta board', 'kanban')] } as never);
+    return notes;
+  };
+
+  it('threshold_edit_re_gates_badges_live: settings Save at 0.95 turns the formerly-confident badge into .triage-ai low', async () => {
+    meshMocks(0.9, 0.7);
+    const notes = seedMesh();
+    render(
+      <>
+        <TriageView notes={notes} />
+        <SettingsModal mode="settings" onClose={() => {}} />
+      </>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(document.querySelector('.triage-ai:not(.low)')).not.toBeNull()); // 0.9 >= 0.7 confident
+    // the real SettingsModal runs in the SAME tree: raise the gate to 0.95 + Save
+    const field = screen.getByLabelText('AI triage confidence threshold');
+    fireEvent.change(field, { target: { value: '0.95' } });
+    fireEvent.click(screen.getByText('Save')); // real saveAi path (busy/mocks above)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_triage_settings', { confidenceThreshold: 0.95 }));
+    await waitFor(() => expect(document.querySelector('.triage-ai.low')).not.toBeNull()); // LIVE re-gate (no remount)
+    expect(document.querySelector('.triage-ai:not(.low)')).toBeNull();
+    expect(document.querySelector('.triage-manual')!.textContent).toBe('Below confidence threshold — review manually');
+  });
+
+  it('sweep_to_prefill_to_apply_end_to_end: 45-note sweep → confident prefill → promote invokes with the prefilled values → refreshAll', async () => {
+    meshMocks(0.9, 0.7);
+    const all = Array.from({ length: 45 }, (_, i) =>
+      note(`note-${String(i).padStart(2, '0')}`, `card ${String(i).padStart(2, '0')}`, `body ${i}`, isoAgo((i + 1) * HOUR)));
+    useStore.setState({ notes: all, checklists: [boardList('b-zeta', 'Zeta board', 'kanban')] } as never);
+    // per-call replies: each chunk CONFIRMS its first id (badge + prefill + apply
+    // all ride chunk 1's note-00; chunks 2/3 come back empty)
+    const notes = all;
+    invoke.mockImplementation((cmd: string, args?: { noteIds?: string[] }) => {
+      if (cmd === 'get_triage_settings') return Promise.resolve({ confidenceThreshold: 0.7 });
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') {
+        const chunk = args?.noteIds ?? [];
+        return Promise.resolve(chunk.map((id, i) => (i === 0
+          ? { noteId: id, route: 'TODO', suggestedBoard: 'Zeta board', suggestedTitle: 'Sweep prefill title', suggestedTags: [], confidence: 0.9 }
+          : null)).filter(Boolean));
+      }
+      return Promise.resolve(null);
+    });
+    render(<TriageView notes={notes} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(document.querySelector('.triage-badge')).not.toBeNull());
+    // confident suggestion on card 0 (newest = note-00) → open promote prefilled
+    pressKey('a');
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: 'Board' })).toHaveTextContent('Zeta board');
+    expect(within(dialog).getByRole('textbox', { name: 'Card title' })).toHaveValue('Sweep prefill title');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('promote_note_to_board', {
+        noteId: 'note-00', boardId: 'b-zeta', cardText: 'body 0', newTitle: 'Sweep prefill title',
+      });
+    });
+    await waitFor(() => expect(invoke.mock.calls.some((c) => c[0] === 'list_notes')).toBe(true)); // refreshAll ran
+  });
+
+  it('offline_settings_read_defaults_sweep: getTriageSettings rejects at mount → sweep runs, gate = CONF_DEFAULT 0.7', async () => {
+    meshMocks(0.75, 'reject'); // 0.75: confident vs 0.7 default, NOT confident vs 0.9
+    render(<TriageView notes={seedMesh()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    await waitFor(() => expect(document.querySelector('.triage-ai:not(.low)')).not.toBeNull());
+    expect(document.querySelector('.triage-ai.low')).toBeNull();
+    expect(document.querySelector('.triage-badge')!.textContent).toBe('TODO');
   });
 });

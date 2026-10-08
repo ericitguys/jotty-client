@@ -84,7 +84,7 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
   // title / first board); the dimmed low badge is the user's explanation.
   const usableSuggestion = (n: NoteDto): ValidatedSuggestion | null => {
     const s = aiSuggestions[n.id];
-    if (!s || s.low || s.route === 'NOISE') return null;
+    if (!s || isLow(s) || s.route === 'NOISE') return null;
     return s;
   };
 
@@ -265,6 +265,27 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
     return () => { mountedRef.current = false; };
   }, []);
 
+  // LIVE re-gate (P3 Task 4 seam): the Settings save dispatches the new
+  // threshold; a mounted TriageView re-gates its badges immediately (the
+  // sweep loop reads thresholdRef per chunk — same value, no drift).
+  useEffect(() => {
+    const onThreshold = (e: Event): void => {
+      const v = (e as CustomEvent<{ threshold?: number }>).detail?.threshold;
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        setThreshold(v);
+        thresholdRef.current = v;
+      }
+    };
+    window.addEventListener('jotty:triage-threshold-changed', onThreshold);
+    return () => window.removeEventListener('jotty:triage-threshold-changed', onThreshold);
+  }, []);
+
+  // LIVE low-derive (P3 Task 4): the stored ValidatedSuggestion.low is the
+  // AT-SWEEP snapshot (validation wire law); the BADGE + the PREFILL GATE
+  // derive low from the CURRENT threshold so a settings save re-gates badges
+  // immediately (the seam fence caught the stale-snapshot gap).
+  const isLow = (s: ValidatedSuggestion): boolean => s.confidence < threshold;
+
   const boardTitles = useMemo(
     () => new Set(boardsForPicker.map((b) => b.title)),
     [boardsForPicker],
@@ -365,7 +386,7 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
               <span className="triage-date">{relativeAge(n.createdAt)}</span>
             </div>
             <p className="triage-snippet">{squash(n.content)}</p>
-            {aiSuggestions[n.id] && (aiSuggestions[n.id]!.low ? (
+            {aiSuggestions[n.id] && (isLow(aiSuggestions[n.id]!) ? (
               <div className="triage-ai low">
                 <span className="triage-manual">Below confidence threshold — review manually</span>
               </div>
