@@ -63,8 +63,16 @@ raw INSERT) gain the two columns with NULL defaults; reconcile UPDATE arms exten
 // client.rs
 pub async fn update_item_description(&self, list_id: &str, path: &str, description: Option<&str>) -> AppResult<()>;
 pub async fn update_item_estimated_time(&self, list_id: &str, path: &str, hours: Option<i64>) -> AppResult<()>;
-// items.rs — row gains: pub description: Option<String>, pub estimated_time: Option<i64>
-// push.rs — match arms, payload keys: description (string|null), estimatedTime (int|null)
+pub async fn update_item_priority(&self, list_id: &str, path: &str, priority: Option<&str>) -> AppResult<()>;
+// db/items.rs — ItemRow/ServerItemFlat gain: pub description: Option<String>, pub estimated_time: Option<i64>
+//   ServerItemFlat is rebuilt from ServerItem (flatten): description: it.description.clone(), estimated_time: it.estimated_time.map(|f| f as i64)  (server truncates fractions; ints only cross the DB)
+//   COLS constant + row() + INSERT shapes + the clean-row reconcile UPDATE (line ~198) extend with description=?, estimated_time=?
+//   checklists.rs INSERT-into-items paths follow the COLS/row() change (compile-forced) — pre-ruled
+// push.rs — THREE match arms, payload keys: description (string|null), estimatedTime (int|null), priority (string|null)
+//   resolver: resolve_item_target(..., update_arm=false) for ALL THREE (text-verified writes; a rename mid-queue must not
+//   re-resolve via stored path — the row text IS the new text; same law as the target-date arm which passes false)
+// outbox op kinds (engine-literal match strings): "set_note_desc", "set_est_time", "set_prio" — entity "checklist_item"
+// enqueue sites to mirror (shape precedent): commands/mod.rs:478-483 (set_date payload built inline, null via json!)
 ```
 
 ---
@@ -82,7 +90,9 @@ src/components/KanbanBoard.tsx (+ .test.tsx), src/store.ts if needed.
   description + estimatedTime (serde camelCase); command registrations + lib.rs invoke
   handler names (set_item_description, set_item_est_time). Rust tests: round-trip row
   update + op payload pin (serde_json map of the enqueued op) + gate rejects on unknown
-  item.
+  item. PRIORITY note: the priority OUTBOX OP + client method + push arm live in T1
+  (payload {priority}); T2 adds ONLY the command set_item_priority_inner (+registration)
+  following the SAME inner shape, plus the types/UI.
 - types.ts: ItemDto += description?: string | null; estimatedTime?: number | null
   (mirror dto.rs EXACTLY — cross-task DTO law).
 - api bindings (src/api/*): setDescription(checklistId, itemLocalId, value|null),
