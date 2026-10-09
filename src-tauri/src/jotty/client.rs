@@ -1,6 +1,7 @@
 use crate::error::{AppError, AppResult};
 use crate::jotty::models::{Categories, Created, Health, KanbanBoard, ServerChecklist, ServerNote, ServerStatus, UserPrefs, WebManifest};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 #[derive(Debug, Clone)]
 pub struct JottyClient {
@@ -408,7 +409,78 @@ impl JottyClient {
         self.api_send::<serde_json::Value>(reqwest::Method::DELETE, &format!("/api/checklists/{list_id}/items/{path}"), serde_json::json!({})).await?;
         Ok(())
     }
+
+    // ---- P9: board column/status CRUD (statuses routes) ----
+
+    /// POST /api/tasks/{taskId}/statuses — add a board column. `order` is always sent
+    /// as an explicit integer; `color` and `auto_complete` ride only when Some.
+    pub async fn add_board_status(&self, board_id: &str, id: &str, label: &str,
+        color: Option<&str>, order: i64, auto_complete: Option<bool>
+    ) -> AppResult<()> {
+        let mut body = serde_json::json!({"id": id, "label": label, "order": order});
+        if let Some(c) = color {
+            body["color"] = serde_json::Value::String(c.to_string());
+        }
+        if let Some(ac) = auto_complete {
+            body["autoComplete"] = serde_json::Value::Bool(ac);
+        }
+        self.api_send::<serde_json::Value>(reqwest::Method::POST, &format!("/api/tasks/{board_id}/statuses"), body).await?;
+        Ok(())
+    }
+
+    /// PUT /api/tasks/{taskId}/statuses/{statusId} — partial update; only Some keys
+    /// cross the wire. Status ids are free-form (spaces/unicode) and URL-encoded.
+    pub async fn update_board_status(&self, board_id: &str, status_id: &str,
+        patch: &BoardStatusPatch
+    ) -> AppResult<()> {
+        let encoded = encode_path_segment(status_id);
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT,
+            &format!("/api/tasks/{board_id}/statuses/{encoded}"),
+            serde_json::to_value(patch).map_err(|e| AppError::Other(format!("serialize patch: {e}")))?,
+        ).await?;
+        Ok(())
+    }
+
+    /// DELETE /api/tasks/{taskId}/statuses/{statusId} — remove a column; its cards
+    /// move server-side to the first-by-order remaining column. Status ids are
+    /// URL-encoded because they may contain spaces/unicode.
+    pub async fn delete_board_status(&self, board_id: &str, status_id: &str) -> AppResult<()> {
+        let encoded = encode_path_segment(status_id);
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::DELETE,
+            &format!("/api/tasks/{board_id}/statuses/{encoded}"),
+            serde_json::json!({}),
+        ).await?;
+        Ok(())
+    }
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardStatusPatch {
+    #[serde(skip_serializing_if = "Option::is_none")] pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub order: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub auto_complete: Option<bool>,
+}
+
+/// Percent-encode ONE path segment for the statuses routes: the RFC 3986
+/// unreserved set rides bare (A-Z a-z 0-9 - . _ ~); every OTHER byte
+/// (multibyte UTF-8 included, byte-wise) → %XX uppercase. Status ids are
+/// free-form (spaces/unicode probed) — encodeURIComponent parity.
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+// ---- end P9 statuses CRUD ------------------------------------------------
 
 async fn finish<T: DeserializeOwned>(resp: reqwest::Response) -> AppResult<T> {
     let status = resp.status();
@@ -1070,5 +1142,111 @@ mod tests {
         assert!(matches!(err, AppError::Api { status: 400, .. }));
         let err = c.update_item_priority("l1", "9", Some("high")).await.unwrap_err();
         assert!(matches!(err, AppError::Api { status: 400, .. }));
+    }
+
+    // ---- P9: board column/status CRUD (statuses routes) ----
+
+    #[tokio::test]
+    async fn add_board_status_posts_exact_minimal_body() {
+        let s = server().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"id":"col2","label":"In Review","order":3})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true,"data":{"id":"col2","label":"In Review","order":3}})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.add_board_status("b1", "col2", "In Review", None, 3, None).await.unwrap();
+        assert_eq!(s.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn add_board_status_sends_optional_keys_when_some() {
+        let s = server().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"id":"c2","label":"High","color":"#ef4444","order":1,"autoComplete":true})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true,"data":{"id":"c2","label":"High","color":"#ef4444","order":1,"autoComplete":true}})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.add_board_status("b1", "c2", "High", Some("#ef4444"), 1, Some(true)).await.unwrap();
+        assert_eq!(s.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_board_status_sends_only_some_keys() {
+        let s = server().await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/col-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true,"data":{"id":"col-a","label":"Backlog-ish","order":0}})))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/col-b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true,"data":{"id":"col-b","order":2,"autoComplete":false}})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_board_status("b1", "col-a", &crate::jotty::client::BoardStatusPatch { label: Some("Backlog-ish".to_string()), color: None, order: None, auto_complete: None }).await.unwrap();
+        c.update_board_status("b1", "col-b", &crate::jotty::client::BoardStatusPatch { label: None, color: None, order: Some(2), auto_complete: Some(false) }).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2);
+        let b0: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(b0, serde_json::json!({"label":"Backlog-ish"}), "body 0: {b0}");
+        let b1: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(b1, serde_json::json!({"order":2,"autoComplete":false}), "false must ride when Some; body 1: {b1}");
+    }
+
+    #[tokio::test]
+    async fn delete_board_status_sends_empty_body_delete() {
+        let s = server().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        Mock::given(method("DELETE")).and(path("/api/tasks/b1/statuses/col-x"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+            })
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.delete_board_status("b1", "col-x").await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&reqs[0].body).unwrap(), serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn encoded_status_id_hits_percent_encoded_path() {
+        let s = server().await;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/In%20Review%20%CE%B1"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true,"data":{"id":"In Review α","label":"R"}}))
+            })
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_board_status("b1", "In Review α", &crate::jotty::client::BoardStatusPatch { label: Some("R".to_string()), color: None, order: None, auto_complete: None }).await.unwrap();
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn statuses_calls_map_non_2xx_to_app_error() {
+        let s = server().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/col-z"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
+        Mock::given(method("DELETE")).and(path("/api/tasks/b1/statuses/col-z"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let patch = crate::jotty::client::BoardStatusPatch { label: Some("L".to_string()), color: None, order: None, auto_complete: None };
+        assert!(matches!(c.add_board_status("b1", "col-z", "L", None, 1, None).await.unwrap_err(), AppError::Api { status: 500, .. }));
+        assert!(matches!(c.update_board_status("b1", "col-z", &patch).await.unwrap_err(), AppError::Api { status: 500, .. }));
+        assert!(matches!(c.delete_board_status("b1", "col-z").await.unwrap_err(), AppError::Api { status: 500, .. }));
+    }
+
+    #[test]
+    fn encode_path_segment_fences() {
+        assert_eq!(crate::jotty::client::encode_path_segment("In Review α"), "In%20Review%20%CE%B1");
+        assert_eq!(crate::jotty::client::encode_path_segment("todo"), "todo");
+        assert_eq!(crate::jotty::client::encode_path_segment("a/b?c"), "a%2Fb%3Fc");
     }
 }
