@@ -858,6 +858,34 @@ describe('TriageView P3 integration seams (Task 4: the whole mesh)', () => {
     expect(document.querySelector('.triage-manual')!.textContent).toBe('Below confidence threshold — review manually');
   });
 
+  it('stale_mount_fetch_never_overwrites_a_live_threshold_save (audit F3): gated getTriageSettings resolving AFTER the event is discarded', async () => {
+    invoke.mockReset();
+    let release!: (v: { confidenceThreshold: number }) => void;
+    const gated = new Promise<{ confidenceThreshold: number }>((res) => { release = res; });
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_triage_settings') return gated;
+      if (cmd === 'triage_tag_vocab') return Promise.resolve(['todo']);
+      if (cmd === 'triage_suggest') return Promise.resolve([
+        { noteId: 'n1', route: 'TODO', suggestedBoard: 'Maintenance', suggestedTitle: 'Renew the vpn cert', suggestedTags: [], confidence: 0.6 },
+      ]);
+      return Promise.resolve(null);
+    });
+    const notes = [note('n1', 'cap_race_ab', 'Renew the vpn cert this week', isoAgo(HOUR))];
+    useStore.setState({ notes, checklists: [boardList('b1', 'Maintenance', 'kanban')] } as never);
+    render(<TriageView notes={notes} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest (AI)' }));
+    // gated fetch still pending → gate = CONF_DEFAULT 0.7 → 0.6 renders LOW
+    await waitFor(() => expect(document.querySelector('.triage-ai.low')).not.toBeNull());
+    // live save event lowers the gate to 0.5 → 0.6 flips to confident
+    window.dispatchEvent(new CustomEvent('jotty:triage-threshold-changed', { detail: { threshold: 0.5 } }));
+    await waitFor(() => expect(document.querySelector('.triage-ai:not(.low)')).not.toBeNull());
+    // the STALE mount fetch now resolves with the old stored 0.7 — must be discarded
+    release!({ confidenceThreshold: 0.7 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector('.triage-ai:not(.low)')).not.toBeNull();
+    expect(document.querySelector('.triage-ai.low')).toBeNull();
+  });
+
   it('sweep_to_prefill_to_apply_end_to_end: 45-note sweep → confident prefill → promote invokes with the prefilled values → refreshAll', async () => {
     meshMocks(0.9, 0.7);
     const all = Array.from({ length: 45 }, (_, i) =>

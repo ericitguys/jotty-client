@@ -38,7 +38,11 @@ export default function TriageMoveModal({ isOpen, onClose, onConfirm, presets, d
 
   if (!isOpen) return null;
 
-  const confirm = () => { onConfirm(category, newTitle); };
+  // Audit F5 fix: an empty category must not attempt the round-trip (the
+  // update layer has no empty-category guard). Blank TITLE stays legal —
+  // blank keeps the current title (applyMove law).
+  const canConfirm = category.trim() !== '';
+  const confirm = () => { if (canConfirm) onConfirm(category, newTitle); };
   return (
     <div
       className="modal-backdrop"
@@ -53,7 +57,7 @@ export default function TriageMoveModal({ isOpen, onClose, onConfirm, presets, d
           value={category}
           placeholder="Category"
           onChange={(e) => setCategory(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) confirm(); }}
         />
         <div className="triage-presets">
           {presets.map((p) => (
@@ -67,11 +71,11 @@ export default function TriageMoveModal({ isOpen, onClose, onConfirm, presets, d
           value={newTitle}
           placeholder="Title"
           onChange={(e) => setNewTitle(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) confirm(); }}
         />
         <div className="prompt-actions">
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="button" className="primary" onClick={confirm}>Confirm</button>
+          <button type="button" className="primary" disabled={!canConfirm} onClick={confirm}>Confirm</button>
         </div>
       </div>
     </div>

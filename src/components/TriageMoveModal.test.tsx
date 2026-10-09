@@ -61,6 +61,22 @@ describe('TriageMoveModal', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('empty category disables Confirm and Enter (audit F5); typing re-enables', () => {
+    const onConfirm = vi.fn();
+    render(
+      <TriageMoveModal isOpen onClose={() => {}} onConfirm={onConfirm} presets={['LIBRARY/Docs']} />,
+    );
+    const cat = screen.getByRole('textbox', { name: 'Category' });
+    const confirmBtn = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmBtn).toBeDisabled();
+    fireEvent.keyDown(cat, { key: 'Enter' });
+    expect(onConfirm).not.toHaveBeenCalled();
+    fireEvent.change(cat, { target: { value: 'LIBRARY/Docs' } });
+    expect(confirmBtn).toBeEnabled();
+    fireEvent.click(confirmBtn);
+    expect(onConfirm).toHaveBeenCalledWith('LIBRARY/Docs', '');
+  });
+
   it('clicking a preset chip fills the category input without confirming', () => {
     const onConfirm = vi.fn();
     render(

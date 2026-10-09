@@ -52,7 +52,12 @@ export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards,
   if (!isOpen) return null;
 
   const hasBoards = boards.length > 0;
-  const confirm = () => { if (hasBoards) onConfirm(boardId, cardText, newTitle); };
+  // Audit F5 fix: empty card text is a guaranteed upstream reject ("empty
+  // card text", promote guard) — disable instead of error-flashing. Blank
+  // newTitle stays legal (keep the entropy capture title). !hasBoards keeps
+  // its old silent-noop semantics as an explicit disable.
+  const canConfirm = hasBoards && cardText.trim() !== '';
+  const confirm = () => { if (canConfirm) onConfirm(boardId, cardText, newTitle); };
   return (
     <div
       className="modal-backdrop"
@@ -79,18 +84,18 @@ export default function TriagePromoteModal({ isOpen, onClose, onConfirm, boards,
           value={cardText}
           placeholder="Card text"
           onChange={(e) => setCardText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) confirm(); }}
         />
         <input
           aria-label="Card title"
           value={newTitle}
           placeholder="Card title"
           onChange={(e) => setNewTitle(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) confirm(); }}
         />
         <div className="prompt-actions">
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="button" className="primary" disabled={!hasBoards} onClick={confirm}>Confirm</button>
+          <button type="button" className="primary" disabled={!canConfirm} onClick={confirm}>Confirm</button>
         </div>
       </div>
     </div>

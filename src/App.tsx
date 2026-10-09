@@ -219,8 +219,16 @@ export default function App() {
     refreshVoiceDrafts();
   };
 
+  // Audit F2 fix: App-level hotkeys must not fire behind open modals. The
+  // empty-deps listener cannot read fresh state — mirror the modal flags per
+  // render (the established ref-mirror law), and the handler reads the ref.
+  const modalOpen = !!(showSearch || showSettings || showConflicts || voice || resumeRows);
+  const modalOpenRef = useRef(modalOpen);
+  modalOpenRef.current = modalOpen;
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (modalOpenRef.current) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setShowSearch(true);

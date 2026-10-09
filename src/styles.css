@@ -1757,7 +1757,6 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 
 /* ===== P3 Task 4: the threshold settings row (probe catch: the unlabeled
    flex row clipped both the label wrap and the hint) ===== */
-#triage ~ .modal-backdrop .triage-threshold-row,
 .modal .triage-threshold-row {
   display: flex;
   flex-wrap: wrap;
@@ -1775,3 +1774,36 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   font-size: 11px;
   opacity: 0.8;
 }
+
+/* ===== audit fixes (versions-27-29 round, F1/F4): triage preset chips +
+   low-confidence manual note had NO rules anywhere (classes referenced in
+   JSX, defined in no css file); chips mirror the .triage-tag idiom; the
+   manual note is a muted review line. Selectors are deliberately scope-less:
+   guessing ancestor nesting is how the dead `#triage ~` selector above died. ===== */
+.triage-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+button.triage-preset {
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #3a3a3a);
+  color: var(--text, #ddd);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.4;
+  font-family: inherit;
+  cursor: pointer;
+}
+button.triage-preset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+#triage .triage-manual {
+  font-size: 12px;
+  color: var(--text-dim, #9a8f7f);
+}
+

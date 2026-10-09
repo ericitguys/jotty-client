@@ -796,4 +796,30 @@ describe('triage integration (capture P2 T5)', () => {
     // the base mock carries no !INBOX rows — the triage wall renders its empty state
     expect(screen.getByText('Inbox is empty 🎉')).toBeInTheDocument();
   });
+
+  it('hotkeys stay inert behind an open modal (audit F2); closing Settings restores them', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Groceries')).toBeInTheDocument());
+    // open Settings the way the drawer test does (read that test's exact steps)
+    fireEvent.click(screen.getByText('Settings'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument());
+    expect(screen.getByLabelText('AI triage confidence threshold')).toBeInTheDocument(); // Settings is up
+    fireEvent.keyDown(window, { key: 'I', ctrlKey: true, shiftKey: true });
+    // no swap behind the modal: the triage empty-state must NOT have rendered
+    expect(screen.queryByText('Inbox is empty 🎉')).toBeNull();
+    // close Settings (backdrop click, per the modal structure)
+    fireEvent.click(document.querySelector('.modal-backdrop')!);
+    await waitFor(() => expect(screen.queryByLabelText('AI triage confidence threshold')).toBeNull());
+    fireEvent.keyDown(window, { key: 'I', ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(screen.getByText('Inbox is empty 🎉')).toBeInTheDocument()); // hotkey restored
+  });
+
+  it('audit F1/F4: triage preset chips + manual note have css rules; the dead #triage ~ selector is gone', () => {
+    const css = cssTextApp().replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).toContain('.triage-presets {');
+    expect(css).toContain('button.triage-preset {');
+    expect(css).toContain('display: flex');
+    expect(css).toContain('#triage .triage-manual {');
+    expect(css).not.toContain('#triage ~');
+  });
 });

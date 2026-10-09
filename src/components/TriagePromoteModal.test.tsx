@@ -70,6 +70,23 @@ describe('TriagePromoteModal', () => {
     expect(onConfirm).toHaveBeenNthCalledWith(2, 'b2', 'Fix the fuse box', 'Fuse box');
   });
 
+  it('empty card text disables Confirm and Enter (audit F5); typing re-enables', () => {
+    const onConfirm = vi.fn();
+    render(
+      <TriagePromoteModal isOpen onClose={() => {}} onConfirm={onConfirm} boards={boards} defaultText="grab bulbs" defaultTitle="Grab bulbs" />,
+    );
+    const cardText = screen.getByRole('textbox', { name: 'Card text' });
+    fireEvent.change(cardText, { target: { value: '' } });
+    const confirmBtn = screen.getByRole('button', { name: 'Confirm' });
+    expect(confirmBtn).toBeDisabled();
+    fireEvent.keyDown(cardText, { key: 'Enter' });
+    expect(onConfirm).not.toHaveBeenCalled();
+    fireEvent.change(cardText, { target: { value: 'body text' } });
+    expect(confirmBtn).toBeEnabled();
+    fireEvent.click(confirmBtn);
+    expect(onConfirm).toHaveBeenCalledWith('b1', 'body text', expect.any(String));
+  });
+
   it('no boards: placeholder line replaces the dropdown and the confirm is disabled', () => {
     const onConfirm = vi.fn();
     render(<TriagePromoteModal isOpen onClose={() => {}} onConfirm={onConfirm} boards={[]} />);
@@ -147,6 +164,7 @@ describe('TriagePromoteModal', () => {
     expect(screen.getByRole('textbox', { name: 'Card title' })).toHaveValue('Grab bulbs');
   });
 });
+
 // ---- P3 Task 3: the additive defaultBoardId prefill (confident suggestions) ----
 describe('TriagePromoteModal defaultBoardId prefill (P3 Task 3)', () => {
   it('default_board_id_prefills_board_choice: defaultBoardId=B selects B, not the first board', () => {

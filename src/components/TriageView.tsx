@@ -260,12 +260,16 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
   const [vocab, setVocab] = useState<string[]>([]);
   const sweepingRef = useRef(false);
   const mountedRef = useRef(true);
+  const settingsTouchedRef = useRef(false); // audit F3: a live threshold save poisons the stale mount fetch
   useEffect(() => {
     mountedRef.current = true;
     // threshold + vocab load ONCE on mount (brief); failures fall back —
     // the sweep still works with CONF_DEFAULT / empty vocab (proposals only).
+    // F3: this result is discarded once a live jotty:triage-threshold-changed
+    // save has landed (stale-overwrite race). Vocab stays unguarded: only
+    // TriageView writes vocab.
     api.getTriageSettings()
-      .then((s) => { if (mountedRef.current && s && typeof s.confidenceThreshold === 'number') setThreshold(s.confidenceThreshold); })
+      .then((s) => { if (mountedRef.current && !settingsTouchedRef.current && s && typeof s.confidenceThreshold === 'number') setThreshold(s.confidenceThreshold); })
       .catch(() => null);
     api.getTriageTagVocab()
       .then((v) => { if (mountedRef.current && Array.isArray(v)) setVocab(v.map(normalizeTag).filter(Boolean)); })
@@ -280,6 +284,7 @@ export default function TriageView({ notes }: { notes: NoteDto[] }) {
     const onThreshold = (e: Event): void => {
       const v = (e as CustomEvent<{ threshold?: number }>).detail?.threshold;
       if (typeof v === 'number' && Number.isFinite(v)) {
+        settingsTouchedRef.current = true;
         setThreshold(v);
         thresholdRef.current = v;
       }
