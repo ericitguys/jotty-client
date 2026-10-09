@@ -56,6 +56,17 @@ export const setEstimatedTime = (checklistId: string, itemLocalId: string, estim
   invoke<void>('set_item_est_time', { checklistId, itemLocalId, estimatedTime });
 export const setPriority = (checklistId: string, itemLocalId: string, priority: 'critical' | 'high' | 'medium' | 'low' | 'none' | null) =>
   invoke<void>('set_item_priority', { checklistId, itemLocalId, priority });
+// P9 board columns: thin async wrappers; null = key absent for optional fields.
+// addBoardColumn color null -> no color key; updateBoardColumn's label/color/autoComplete
+// are tri-state (null = leave untouched, false is a real toggle value).
+export const addBoardColumn = (checklistId: string, label: string, color: string | null) =>
+  invoke<void>('add_board_column', { checklistId, label, color });
+export const updateBoardColumn = (checklistId: string, statusId: string, label: string | null, color: string | null, autoComplete: boolean | null) =>
+  invoke<void>('update_board_column', { checklistId, statusId, label, color, autoComplete });
+export const deleteBoardColumn = (checklistId: string, statusId: string) =>
+  invoke<void>('delete_board_column', { checklistId, statusId });
+export const moveBoardColumn = (checklistId: string, statusId: string, direction: 'up' | 'down') =>
+  invoke<void>('move_board_column', { checklistId, statusId, direction });
 // Client-side card recurrence (task 4): preset is one of the rust engine's
 // Preset::key literals ('daily'|'weekly'|'biweekly'|'monthly'|'yearly') or
 // null to clear. Invoke keys mirror the Rust command params exactly

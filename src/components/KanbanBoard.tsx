@@ -92,6 +92,13 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const [startDateVal, setStartDateVal] = useState('');
   const [startDateTouched, setStartDateTouched] = useState(false);
   const TIME_OPTIONS = timeDropdownOptions();
+  // P9 column editor state: one open menu at a time
+  const [colMenuFor, setColMenuFor] = useState<string | null>(null);
+  const [colNewLabel, setColNewLabel] = useState('');
+  const [colNewColor, setColNewColor] = useState<string | null>(null);
+  const [colRenameLabel, setColRenameLabel] = useState('');
+  const [colError, setColError] = useState<string | null>(null);
+  const PALETTE = ['#3b82f6','#ef4444','#22c55e','#eab308','#a855f7','#ec4899','#14b8a6','#f97316'];
 
   useEffect(() => {
     let cancelled = false;
@@ -223,9 +230,73 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     await reload();
   };
 
+  // P9 column editor actions (ONLINE-ONLY: no local cache/outbox writes; UI
+  // refresh rides the caller's reload after the server call succeeds).
+  const closeColMenu = () => {
+    setColMenuFor(null);
+    setColError(null);
+    setColNewLabel('');
+    setColNewColor(null);
+    setColRenameLabel('');
+  };
+  const openColMenu = (colId: string, label: string) => {
+    setColMenuFor(colId);
+    setColError(null);
+    setColNewLabel('');
+    setColNewColor(null);
+    setColRenameLabel(label);
+  };
+  const addColumn = async () => {
+    if (!colNewLabel.trim()) return;
+    try {
+      await api.addBoardColumn(checklistId, colNewLabel.trim(), colNewColor);
+      closeColMenu();
+      await reload();
+    } catch (e) {
+      setColError(String(e));
+    }
+  };
+  const renameColumn = async (col: BoardStatusDto) => {
+    if (!colRenameLabel.trim()) return;
+    try {
+      await api.updateBoardColumn(checklistId, col.id, colRenameLabel.trim(), null, null);
+      closeColMenu();
+      await reload();
+    } catch (e) {
+      setColError(String(e));
+    }
+  };
+  const toggleColumnAutoComplete = async (col: BoardStatusDto) => {
+    try {
+      await api.updateBoardColumn(checklistId, col.id, null, null, !col.autoComplete);
+      closeColMenu();
+      await reload();
+    } catch (e) {
+      setColError(String(e));
+    }
+  };
+  const moveColumn = async (col: BoardStatusDto, direction: 'up' | 'down') => {
+    try {
+      await api.moveBoardColumn(checklistId, col.id, direction);
+      closeColMenu();
+      await reload();
+    } catch (e) {
+      setColError(String(e));
+    }
+  };
+  const deleteColumn = async (col: BoardStatusDto) => {
+    try {
+      await api.deleteBoardColumn(checklistId, col.id);
+      closeColMenu();
+      await reload();
+    } catch (e) {
+      setColError(String(e));
+    }
+  };
+
   return (
     <div className="kanban-board">
-      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setRepeating(null); setDetailFor(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
+      {(menuFor || renaming || addingTo || colMenuFor) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setRepeating(null); setDetailFor(null); setReminderDate(''); setReminderTime(''); closeAddForm(); closeColMenu(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -234,6 +305,40 @@ export default function KanbanBoard({ checklistId, items, reload }: {
             <span className="kanban-dot" style={col.color ? { background: col.color } : undefined} />
             <span className="kanban-col-title">{col.label}</span>
             <span className="kanban-count">{cardsFor(col).length}</span>
+            <button className="kanban-col-menu-btn" aria-label="Column actions" onClick={(e) => { e.stopPropagation(); colMenuFor === col.id ? closeColMenu() : openColMenu(col.id, col.label); }}><Icon name="more" size={13} /></button>
+            {colMenuFor === col.id && (
+              <div className="kanban-menu" onClick={(e) => e.stopPropagation()} onKeyDown={(e: KeyboardEvent) => { if (e.key === 'Escape') closeColMenu(); }}>
+                <div className="kanban-col-section">
+                  <input className="kanban-col-label-input" placeholder="New column name" value={colNewLabel} onChange={(e) => setColNewLabel(e.target.value)} />
+                  <div className="kanban-col-palette">
+                    {PALETTE.map((c) => (
+                      <button key={c} className={`kanban-swatch${colNewColor === c ? ' picked' : ''}`} style={{ background: c }} aria-label={c} onClick={() => setColNewColor(c)} />
+                    ))}
+                    <button className={`kanban-swatch${colNewColor === null ? ' picked' : ''}`} aria-label="None" onClick={() => setColNewColor(null)} />
+                  </div>
+                  <button className="kanban-menu-primary" onClick={() => addColumn()}>Add column</button>
+                </div>
+                <div className="kanban-col-section">
+                  <input className="kanban-col-label-input" aria-label="Rename column" value={colRenameLabel} onChange={(e) => setColRenameLabel(e.target.value)} />
+                  <button onClick={() => renameColumn(col)}>Apply</button>
+                </div>
+                <button onClick={() => toggleColumnAutoComplete(col)}>Auto-complete: {col.autoComplete ? 'On' : 'Off'}</button>
+                <button onClick={() => moveColumn(col, 'up')}>Move up</button>
+                <button onClick={() => moveColumn(col, 'down')}>Move down</button>
+                {cols.length > 2 && (() => {
+                  const dest = cols.filter((c) => c.id !== col.id).sort((a, b) => a.order - b.order)[0];
+                  const count = cardsFor(col).length;
+                  return (
+                    <div className="kanban-danger kanban-col-delete">
+                      <span>{dest ? `${dest.label} · ${count} card${count === 1 ? '' : 's'}` : ''}</span>
+                      <button onClick={() => deleteColumn(col)}>Delete</button>
+                    </div>
+                  );
+                })()}
+                {colError && <p className="kanban-error">{colError}</p>}
+                <button onClick={closeColMenu}>Back</button>
+              </div>
+            )}
           </div>
           <div className="kanban-cards">
             {cardsFor(col).map((item) => (

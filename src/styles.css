@@ -1146,7 +1146,7 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 /* ---------- kanban board ---------- */
 .kanban-board { display: flex; gap: 10px; align-items: flex-start; padding-bottom: 8px; position: relative; min-height: 200px; }
 .kanban-col { flex: 0 0 auto; width: 260px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 10px; }
-.kanban-col-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.kanban-col-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); position: relative; }
 .kanban-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .kanban-count { margin-left: auto; background: var(--panel-input); border-radius: 8px; padding: 0 6px; font-size: 11px; }
 /* .kanban-card sits ABOVE .kanban-cards on purpose: voiceTheme's RULE()
@@ -1806,4 +1806,11 @@ button.triage-preset:hover {
   font-size: 12px;
   color: var(--text-dim, #9a8f7f);
 }
+
+/* P9 board column editor (minimal) */
+.kanban-col-menu-btn { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 12px; line-height: 1; }
+.kanban-swatch { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.kanban-swatch.picked { border-color: var(--accent); }
+.kanban-col-label-input { width: 100%; background: var(--panel-input); border: 1px solid var(--border-soft); border-radius: 6px; padding: 4px 6px; color: var(--text); font-size: 13px; box-sizing: border-box; }
+.kanban-col-palette { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
 

@@ -793,3 +793,198 @@ describe('KanbanBoard details (P8 task 2)', () => {
     expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_target_date')).toHaveLength(1);
   });
 });
+
+describe('KanbanBoard column editor (P9)', () => {
+  it('1. col menu opens from the Column actions button and renders the panel', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    expect(document.querySelector('.kanban-menu')).not.toBeNull();
+    expect(screen.getByPlaceholderText('New column name')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add column' })).toBeInTheDocument();
+  });
+
+  it('2. Add column sends add_board_column with null color and closes+reloads', async () => {
+    const reload = vi.fn(async () => {});
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'add_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.change(screen.getByPlaceholderText('New column name'), { target: { value: 'Review' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add column' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_board_column', { checklistId: 'b1', label: 'Review', color: null }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'add_board_column')).toHaveLength(1);
+    await waitFor(() => expect(document.querySelector('.kanban-menu')).toBeNull());
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('3. palette: picked color rides, None sends null color', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'add_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    // with color
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.change(screen.getByPlaceholderText('New column name'), { target: { value: 'Blue' } });
+    fireEvent.click(screen.getByRole('button', { name: '#3b82f6' }));
+    expect(document.querySelector('.kanban-swatch.picked')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add column' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_board_column', { checklistId: 'b1', label: 'Blue', color: '#3b82f6' }));
+    // with None (default null)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[1]);
+    fireEvent.change(screen.getByPlaceholderText('New column name'), { target: { value: 'Plain' } });
+    fireEvent.click(screen.getByRole('button', { name: 'None' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add column' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_board_column', { checklistId: 'b1', label: 'Plain', color: null }));
+  });
+
+  it('4. rename applies update_board_column with only the label', async () => {
+    const reload = vi.fn(async () => {});
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'update_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Rename column' }), { target: { value: 'New' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_board_column', { checklistId: 'b1', statusId: 'todo', label: 'New', color: null, autoComplete: null }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'update_board_column')).toHaveLength(1);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('5. auto-complete toggle sends the flipped boolean with label/color null', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'update_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[2]);
+    expect(screen.getByText('Auto-complete: On')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Auto-complete: On'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_board_column', { checklistId: 'b1', statusId: 'completed', label: null, color: null, autoComplete: false }));
+    // flip again from off -> on on a different column
+    invoke.mockClear();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.click(screen.getByText('Auto-complete: Off'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_board_column', { checklistId: 'b1', statusId: 'todo', label: null, color: null, autoComplete: true }));
+  });
+
+  it('6. reorder Move up on the second column sends one move_board_column invoke', async () => {
+    const reload = vi.fn(async () => {});
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'move_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('In Progress')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[1]);
+    fireEvent.click(screen.getByText('Move up'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('move_board_column', { checklistId: 'b1', statusId: 'in_progress', direction: 'up' }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'move_board_column')).toHaveLength(1);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('7. delete guard hides the delete row when only two columns remain', async () => {
+    const twoColBoard = {
+      checklistId: 'b1',
+      statuses: [
+        { id: 'todo', label: 'To Do', color: null, order: 0, autoComplete: false },
+        { id: 'completed', label: 'Completed', color: null, order: 1, autoComplete: true },
+      ],
+    };
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(twoColBoard);
+      if (cmd === 'fetch_task_board') return Promise.resolve(twoColBoard);
+      if (cmd === 'delete_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+    expect(invoke.mock.calls.some((c) => c[0] === 'delete_board_column')).toBe(false);
+  });
+
+  it('8. delete with cards shows destination label and count, then deletes', async () => {
+    const reload = vi.fn(async () => {});
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'delete_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('Completed')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[2]);
+    expect(screen.getByText('To Do · 1 card')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('delete_board_column', { checklistId: 'b1', statusId: 'completed' }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'delete_board_column')).toHaveLength(1);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('9. error path keeps the panel open and shows an inline error row', async () => {
+    const reload = vi.fn(async () => {});
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'add_board_column') return Promise.reject(new Error('network down'));
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.change(screen.getByPlaceholderText('New column name'), { target: { value: 'Oops' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add column' }));
+    await waitFor(() => expect(screen.getByText('Error: network down')).toBeInTheDocument());
+    expect(document.querySelector('.kanban-menu')).not.toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('10. Back and Escape close the col panel without invoking', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    expect(document.querySelector('.kanban-menu')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(document.querySelector('.kanban-menu')).toBeNull();
+    expect(invoke.mock.calls.some((c) => c[0] === 'add_board_column')).toBe(false);
+    expect(invoke.mock.calls.some((c) => c[0] === 'delete_board_column')).toBe(false);
+    // Escape path
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.keyDown(document.querySelector('.kanban-menu')!, { key: 'Escape' });
+    expect(document.querySelector('.kanban-menu')).toBeNull();
+  });
+
+  it('11. BoardStatusDto carries the fields the editor uses', () => {
+    const s = board.statuses[0];
+    expect(s).toHaveProperty('id');
+    expect(s).toHaveProperty('label');
+    expect(s).toHaveProperty('color');
+    expect(s).toHaveProperty('order');
+    expect(s).toHaveProperty('autoComplete');
+  });
+});

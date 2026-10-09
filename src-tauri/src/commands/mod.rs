@@ -763,6 +763,197 @@ pub async fn create_task_board(state: tauri::State<'_, AppState>, title: String,
     create_task_board_inner(&state, &title, &category).await.map_err(|e| e.to_string())
 }
 
+// ---- P9 board columns: add/rename/color/order/delete (ONLINE-ONLY thin wrappers) ----
+
+fn slugify(label: &str) -> String {
+    let lower = label.to_lowercase();
+    let mut out = String::new();
+    let mut in_run = false;
+    for c in lower.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            in_run = true;
+        } else if in_run {
+            out.push('-');
+            in_run = false;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        out = "col".into();
+    }
+    out
+}
+
+fn unique_column_id(base: &str, cached: &[crate::db::board::BoardStatusRow]) -> String {
+    let ids: std::collections::HashSet<String> = cached.iter().map(|r| r.status_id.clone()).collect();
+    if !ids.contains(base) {
+        return base.to_string();
+    }
+    let mut n = 1;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !ids.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+pub(crate) async fn add_board_column_inner(
+    state: &AppState,
+    checklist_id: &str,
+    label: &str,
+    color: Option<&str>,
+) -> AppResult<()> {
+    {
+        let conn = state.db.lock().await;
+        if let Some(cl) = checklists::get_checklist(&conn, checklist_id)? {
+            if cl.list_type != "kanban" && cl.list_type != "task" {
+                return Err(AppError::Other("columns only work on kanban boards".into()));
+            }
+        }
+    }
+    let client = state.client.read().await.clone()
+        .ok_or_else(|| AppError::Other("not connected".into()))?;
+    let (id, order) = {
+        let conn = state.db.lock().await;
+        let cached = board::list(&conn, checklist_id)?;
+        let base = slugify(label);
+        let id = unique_column_id(&base, &cached);
+        let order = cached.iter().map(|r| r.sort_order).max().unwrap_or(-1) + 1;
+        (id, order)
+    };
+    client.add_board_status(checklist_id, &id, label, color, order, None).await
+}
+
+pub(crate) async fn update_board_column_inner(
+    state: &AppState,
+    checklist_id: &str,
+    status_id: &str,
+    label: Option<String>,
+    color: Option<String>,
+    auto_complete: Option<bool>,
+) -> AppResult<()> {
+    {
+        let conn = state.db.lock().await;
+        if let Some(cl) = checklists::get_checklist(&conn, checklist_id)? {
+            if cl.list_type != "kanban" && cl.list_type != "task" {
+                return Err(AppError::Other("columns only work on kanban boards".into()));
+            }
+        }
+    }
+    let client = state.client.read().await.clone()
+        .ok_or_else(|| AppError::Other("not connected".into()))?;
+    let patch = crate::jotty::client::BoardStatusPatch {
+        label,
+        color,
+        order: None,
+        auto_complete,
+    };
+    client.update_board_status(checklist_id, status_id, &patch).await
+}
+
+pub(crate) async fn delete_board_column_inner(
+    state: &AppState,
+    checklist_id: &str,
+    status_id: &str,
+) -> AppResult<()> {
+    {
+        let conn = state.db.lock().await;
+        if let Some(cl) = checklists::get_checklist(&conn, checklist_id)? {
+            if cl.list_type != "kanban" && cl.list_type != "task" {
+                return Err(AppError::Other("columns only work on kanban boards".into()));
+            }
+        }
+        let cached = board::list(&conn, checklist_id)?;
+        if cached.len() < 3 {
+            return Err(AppError::Other("a board keeps at least two columns".into()));
+        }
+    }
+    let client = state.client.read().await.clone()
+        .ok_or_else(|| AppError::Other("not connected".into()))?;
+    client.delete_board_status(checklist_id, status_id).await
+}
+
+pub(crate) async fn move_board_column_inner(
+    state: &AppState,
+    checklist_id: &str,
+    status_id: &str,
+    direction: &str,
+) -> AppResult<()> {
+    if direction != "up" && direction != "down" {
+        return Err(AppError::Other("direction must be up or down".into()));
+    }
+    let client = state.client.read().await.clone()
+        .ok_or_else(|| AppError::Other("not connected".into()))?;
+    let (target_id, target_order, current_order) = {
+        let conn = state.db.lock().await;
+        if let Some(cl) = checklists::get_checklist(&conn, checklist_id)? {
+            if cl.list_type != "kanban" && cl.list_type != "task" {
+                return Err(AppError::Other("columns only work on kanban boards".into()));
+            }
+        }
+        let cached = board::list(&conn, checklist_id)?;
+        let idx = cached
+            .iter()
+            .position(|r| r.status_id == status_id)
+            .ok_or_else(|| AppError::Other(format!("status {status_id} not found")))?;
+        let neighbor_idx = if direction == "up" {
+            idx.checked_sub(1)
+        } else {
+            Some(idx + 1)
+        };
+        if neighbor_idx.map(|i| i >= cached.len()).unwrap_or(true) {
+            return Ok(());
+        }
+        let nidx = neighbor_idx.unwrap();
+        let current = &cached[idx];
+        let neighbor = &cached[nidx];
+        (
+            neighbor.status_id.clone(),
+            neighbor.sort_order,
+            current.sort_order,
+        )
+    };
+    let patch_current = crate::jotty::client::BoardStatusPatch {
+        label: None,
+        color: None,
+        order: Some(target_order),
+        auto_complete: None,
+    };
+    client.update_board_status(checklist_id, status_id, &patch_current).await?;
+    let patch_neighbor = crate::jotty::client::BoardStatusPatch {
+        label: None,
+        color: None,
+        order: Some(current_order),
+        auto_complete: None,
+    };
+    client.update_board_status(checklist_id, &target_id, &patch_neighbor).await
+}
+
+#[tauri::command]
+pub async fn add_board_column(state: tauri::State<'_, AppState>, checklist_id: String, label: String, color: Option<String>) -> Result<(), String> {
+    add_board_column_inner(&state, &checklist_id, &label, color.as_deref()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_board_column(state: tauri::State<'_, AppState>, checklist_id: String, status_id: String, label: Option<String>, color: Option<String>, auto_complete: Option<bool>) -> Result<(), String> {
+    update_board_column_inner(&state, &checklist_id, &status_id, label, color, auto_complete).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_board_column(state: tauri::State<'_, AppState>, checklist_id: String, status_id: String) -> Result<(), String> {
+    delete_board_column_inner(&state, &checklist_id, &status_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn move_board_column(state: tauri::State<'_, AppState>, checklist_id: String, status_id: String, direction: String) -> Result<(), String> {
+    move_board_column_inner(&state, &checklist_id, &status_id, &direction).await.map_err(|e| e.to_string())
+}
+
 // ---- search (FTS5 MATCH, quote-escaped) ----
 
 pub(crate) fn search_inner(conn: &Connection, query: &str) -> AppResult<SearchResultsDto> {
@@ -4735,5 +4926,271 @@ mod tests {
             .unwrap();
         assert_eq!(raw, "0.9", "TEXT storage law");
         assert_eq!(get_triage_settings_inner(&conn).unwrap().confidence_threshold, 0.9);
+    }
+
+    // ---- P9 board column editor: command-layer fences (ONLINE-ONLY) ----
+
+    #[tokio::test]
+    async fn board_column_inners_reject_non_kanban_and_make_no_http() {
+        let s = wiremock::MockServer::start().await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('b1','B','Home','regular','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',0)",
+                [],
+            ).unwrap();
+        }
+        assert_eq!(
+            add_board_column_inner(&state, "b1", "New", None).await.unwrap_err().to_string(),
+            "columns only work on kanban boards"
+        );
+        assert_eq!(
+            update_board_column_inner(&state, "b1", "todo", Some("X".into()), None, None).await.unwrap_err().to_string(),
+            "columns only work on kanban boards"
+        );
+        assert_eq!(
+            delete_board_column_inner(&state, "b1", "todo").await.unwrap_err().to_string(),
+            "columns only work on kanban boards"
+        );
+        assert_eq!(
+            move_board_column_inner(&state, "b1", "todo", "up").await.unwrap_err().to_string(),
+            "columns only work on kanban boards"
+        );
+        assert_eq!(s.received_requests().await.unwrap().len(), 0, "gated inners must issue zero http requests");
+    }
+
+    #[tokio::test]
+    async fn add_board_column_generates_slug_and_order_from_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(&conn, "b1", &[
+                ("todo", "To Do", None, 0, false),
+                ("in_progress", "In Progress", None, 1, false),
+                ("completed", "Completed", None, 2, true),
+            ]).unwrap();
+        }
+        add_board_column_inner(&state, "b1", "In Review", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"id":"in-review","label":"In Review","order":3}));
+    }
+
+    #[tokio::test]
+    async fn add_board_column_dedupes_slug_collision_with_suffix() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(&conn, "b1", &[
+                ("in-review", "In Review", None, 0, false),
+                ("completed", "Completed", None, 1, true),
+            ]).unwrap();
+        }
+        add_board_column_inner(&state, "b1", "In Review", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"id":"in-review-1","label":"In Review","order":2}));
+    }
+
+    #[tokio::test]
+    async fn add_board_column_falls_back_to_col_for_non_sluggable_label() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/tasks/b1/statuses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(&conn, "b1", &[]).unwrap();
+        }
+        add_board_column_inner(&state, "b1", "ααα", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"id":"col","label":"ααα","order":0}));
+    }
+
+    #[tokio::test]
+    async fn update_board_column_sends_only_some_keys() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/todo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[("todo", "To Do", None, 0, false), ("completed", "Completed", None, 1, true)],
+            ).unwrap();
+        }
+        update_board_column_inner(&state, "b1", "todo", Some("Backlog-ish".into()), None, None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"label":"Backlog-ish"}));
+    }
+
+    #[tokio::test]
+    async fn delete_board_column_rejects_when_two_or_fewer_columns() {
+        let state = test_state_with_client("http://127.0.0.1:1").await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[("todo", "To Do", None, 0, false), ("completed", "Completed", None, 1, true)],
+            ).unwrap();
+        }
+        let err = delete_board_column_inner(&state, "b1", "todo").await.unwrap_err();
+        assert!(err.to_string().contains("a board keeps at least two columns"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn delete_board_column_hits_when_three_or_more_columns() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("DELETE")).and(path("/api/tasks/b1/statuses/st2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[
+                    ("st1", "One", None, 0, false),
+                    ("st2", "Two", None, 1, false),
+                    ("st3", "Three", None, 2, true),
+                ],
+            ).unwrap();
+        }
+        delete_board_column_inner(&state, "b1", "st2").await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method.as_ref(), "DELETE");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn move_board_column_swaps_order_with_neighbor() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/st1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        Mock::given(method("PUT")).and(path("/api/tasks/b1/statuses/st2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success": true})))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[
+                    ("st1", "One", None, 0, false),
+                    ("st2", "Two", None, 1, false),
+                    ("st3", "Three", None, 2, true),
+                ],
+            ).unwrap();
+        }
+        move_board_column_inner(&state, "b1", "st1", "down").await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(String::from_utf8_lossy(&reqs[0].body), r#"{"order":1}"#);
+        assert_eq!(String::from_utf8_lossy(&reqs[1].body), r#"{"order":0}"#);
+    }
+
+    #[tokio::test]
+    async fn move_board_column_at_edge_makes_zero_calls() {
+        let s = wiremock::MockServer::start().await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[
+                    ("st1", "One", None, 0, false),
+                    ("st2", "Two", None, 1, false),
+                    ("st3", "Three", None, 2, true),
+                ],
+            ).unwrap();
+        }
+        move_board_column_inner(&state, "b1", "st1", "up").await.unwrap();
+        move_board_column_inner(&state, "b1", "st3", "down").await.unwrap();
+        assert_eq!(s.received_requests().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn move_board_column_rejects_unknown_status() {
+        let s = wiremock::MockServer::start().await;
+        let state = test_state_with_client(&s.uri()).await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[("st1", "One", None, 0, false), ("st2", "Two", None, 1, false)],
+            ).unwrap();
+        }
+        let err = move_board_column_inner(&state, "b1", "ghost", "up").await.unwrap_err();
+        assert!(err.to_string().contains("status ghost not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn board_column_inners_err_when_offline() {
+        let state = test_state_with_client("http://127.0.0.1:1").await;
+        {
+            let conn = state.db.lock().await;
+            seed_checklist_row(&conn, "b1", "B");
+            board::replace_cache(
+                &conn,
+                "b1",
+                &[
+                    ("todo", "To Do", None, 0, false),
+                    ("in_progress", "In Progress", None, 1, false),
+                    ("completed", "Completed", None, 2, true),
+                ],
+            ).unwrap();
+        }
+        assert!(add_board_column_inner(&state, "b1", "X", None).await.is_err());
+        assert!(update_board_column_inner(&state, "b1", "todo", Some("X".into()), None, None).await.is_err());
+        assert!(delete_board_column_inner(&state, "b1", "todo").await.is_err());
+        assert!(move_board_column_inner(&state, "b1", "todo", "down").await.is_err());
     }
 }
