@@ -24,9 +24,29 @@ pub fn run() {
         .setup(|app| {
             let db_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&db_dir)?;
-            // Android key-store fallback reads this (no env inheritance on Android).
+            // P10: route keyring to the system AndroidKeyStore-backed builder
+            // BEFORE any Entry exists (restore_connection below reads keys).
+            // Failure is LOUD (logged) — no plaintext fallback reappears.
             #[cfg(target_os = "android")]
-            std::env::set_var("JOTTY_APP_DATA", &db_dir);
+            if let Err(e) = android_keyring::set_android_keyring_credential_builder() {
+                log::error!("android keyring builder init failed: {e}");
+            }
+            // P10: one-time legacy plaintext migration (both accounts). The
+            // migration fn keeps the plaintext file on any keystore failure,
+            // so a retry next startup is always safe.
+            #[cfg(target_os = "android")]
+            {
+                for (account, label) in [
+                    (keys::ACCOUNT, "api-key"),
+                    (keys::AI_ACCOUNT, "openwebui-key"),
+                ] {
+                    match keys::keys_migrate_legacy(&db_dir, account, &keys::OsKeyStore) {
+                        Ok(Some(_)) => log::info!("legacy plaintext key migrated to AndroidKeyStore: {label}"),
+                        Ok(None) => {}
+                        Err(e) => log::warn!("legacy key migration skipped (kept plaintext): {e}"),
+                    }
+                }
+            }
             let conn = db::open(&db_dir.join("jotty.db"))?;
             db::migrations::run(&conn)?;
             let voice_dir = db_dir.join("voice");

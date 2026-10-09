@@ -28,6 +28,14 @@ hound = "3.5"
 cpal = "0.18"
 tauri-plugin-opener = "^2"
 
+[target.'cfg(target_os = "android")'.dependencies]
+# P10: keyring v3 CredentialBuilder — AES key in the system AndroidKeyStore,
+# credential blobs encrypted in app-private prefs (JNI via ndk-context,
+# supplied by Tauri Mobile). Desktop builds never compile this.
+android-keyring = { version = "0.2", features = ["ndk-context"] }
+
+[target.'cfg(target_os = "android")'.dev-dependencies]
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
