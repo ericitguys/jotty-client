@@ -314,6 +314,56 @@ impl JottyClient {
         Ok(())
     }
 
+    /// PATCH /api/checklists/{listId}/items/{indexPath} — description only.
+    /// Body KEY always present: Some(s) → string, None → null (null clears —
+    /// probe-verified 2026-10-09 on 1.28.0: {"description":null} → 200, field
+    /// reads back None). Partial update: other fields untouched.
+    pub async fn update_item_description(&self, list_id: &str, path: &str, description: Option<&str>) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["description"] = match description {
+            Some(d) => serde_json::Value::String(d.to_string()),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
+    /// PATCH /api/checklists/{listId}/items/{indexPath} — estimatedTime (HOURS) only.
+    /// Integer wire shape: upstream accepts fractional hours but TRUNCATES them
+    /// server-side (live-probed 2.5 → 2), so the client sends whole hours as a
+    /// JSON integer — never a float. null clears ("{"estimatedTime":null}" → 200).
+    pub async fn update_item_estimated_time(&self, list_id: &str, path: &str, hours: Option<i64>) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["estimatedTime"] = match hours {
+            Some(h) => serde_json::json!(h),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
+    /// PATCH /api/checklists/{listId}/items/{indexPath} — priority only
+    /// (upstream enum critical|high|medium|low|none; "low"/null verified 200 on
+    /// 1.28.0). Body KEY always present: Some(s) → string, None → null clears.
+    pub async fn update_item_priority(&self, list_id: &str, path: &str, priority: Option<&str>) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["priority"] = match priority {
+            Some(p) => serde_json::Value::String(p.to_string()),
+            None => serde_json::Value::Null,
+        };
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
     /// Set/clear a kanban item reminder on the dedicated sub-route:
     /// Some(iso) → PUT body {"datetime": iso} (upstream PUT REQUIRES datetime —
     /// 400 without); None → DELETE (same URL, empty body — the upstream DELETE
@@ -938,6 +988,87 @@ mod tests {
             .mount(&s).await;
         let c = JottyClient::new(&s.uri(), "ck").unwrap();
         let err = c.set_item_reminder("b1", "srv-1", Some("2026-10-01T09:00:00Z")).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 400, .. }));
+    }
+
+    // ---- P8 card-detail PATCHes (description / estimatedTime / priority) ----
+    // Upstream PATCH /api/checklists/{listId}/items/{indexPath} accepts each field
+    // PARTIAL with null-clears (live-probed 1.28.0: {"description":null},
+    // {"estimatedTime":null}, {"priority":null} all 200 → field reads back None).
+    // The body KEY is ALWAYS present — a Some/None key-omission would leave the
+    // field untouched upstream instead of clearing it.
+
+    #[tokio::test]
+    async fn update_item_description_sends_string_and_null_clears() {
+        let s = server().await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_item_description("l1", "0", Some("body text")).await.unwrap();
+        c.update_item_description("l1", "0", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "two calls = two PATCHes");
+        let set_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(set_body, serde_json::json!({"description":"body text"}), "Some -> string body, set: {set_body}");
+        let clear_body: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(clear_body, serde_json::json!({"description": null}), "None -> null body (key ALWAYS present, clears upstream): {clear_body}");
+    }
+
+    #[tokio::test]
+    async fn update_item_estimated_time_sends_integer_and_null_clears() {
+        // estimatedTime is HOURS as a JSON INTEGER (upstream accepts fractional but
+        // truncates server-side — live-probed 2.5 -> 2; client sends whole hours).
+        // The exact-body equality pins the integer wire shape: {"estimatedTime":3}
+        // (i64) != {"estimatedTime":3.0} (f64) under serde_json Value equality.
+        let s = server().await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_item_estimated_time("l1", "0", Some(3)).await.unwrap();
+        c.update_item_estimated_time("l1", "0", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "two calls = two PATCHes");
+        let set_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(set_body, serde_json::json!({"estimatedTime":3}), "Some(3) -> INTEGER body (a float 3.0 would NOT equal this): {set_body}");
+        let clear_body: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(clear_body, serde_json::json!({"estimatedTime": null}), "None -> null body (key ALWAYS present): {clear_body}");
+    }
+
+    #[tokio::test]
+    async fn update_item_priority_sends_string_and_null_clears() {
+        // priority enum: critical|high|medium|low|none (upstream enum; "low" probe-
+        // verified 200); null clears.
+        let s = server().await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true})))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        c.update_item_priority("l1", "0", Some("high")).await.unwrap();
+        c.update_item_priority("l1", "0", None).await.unwrap();
+        let reqs = s.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "two calls = two PATCHes");
+        let set_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(set_body, serde_json::json!({"priority":"high"}), "Some -> string body: {set_body}");
+        let clear_body: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert_eq!(clear_body, serde_json::json!({"priority": null}), "None -> null body (key ALWAYS present): {clear_body}");
+    }
+
+    #[tokio::test]
+    async fn update_item_detail_writes_map_non_2xx_to_api_error() {
+        // api_send contract unchanged: a non-2xx (upstream 400s a bad index/path —
+        // probe-verified) surfaces as AppError::Api with the status.
+        let s = server().await;
+        Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/9"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad index"))
+            .mount(&s).await;
+        let c = JottyClient::new(&s.uri(), "ck").unwrap();
+        let err = c.update_item_description("l1", "9", Some("x")).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 400, .. }));
+        let err = c.update_item_estimated_time("l1", "9", Some(2)).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { status: 400, .. }));
+        let err = c.update_item_priority("l1", "9", Some("high")).await.unwrap_err();
         assert!(matches!(err, AppError::Api { status: 400, .. }));
     }
 }

@@ -22,6 +22,8 @@ pub struct ItemRow {
     pub reminder_datetime: Option<String>,
     pub reminder_notified: Option<bool>,
     pub recurrence: Option<String>,
+    pub description: Option<String>,
+    pub estimated_time: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,8 @@ pub struct ServerItemFlat {
     pub priority: Option<String>,
     pub target_date: Option<String>,
     pub start_date: Option<String>,
+    pub description: Option<String>,
+    pub estimated_time: Option<i64>,
 }
 
 pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
@@ -57,6 +61,11 @@ pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
             priority: it.priority.clone(),
             target_date: it.target_date.clone(),
             start_date: it.start_date.clone(),
+            // P8: rich fields carry across the DB boundary as ints only — upstream
+            // accepts fractional estimatedTime but truncates server-side (live-probed
+            // 2.5 -> 2), so the f64 wire value truncates HERE at flatten (R4).
+            description: it.description.clone(),
+            estimated_time: it.estimated_time.map(|f| f as i64),
         })
         .collect()
 }
@@ -72,7 +81,7 @@ fn fts_refresh(conn: &Connection, list_id: &str) -> AppResult<()> {
     Ok(())
 }
 
-const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, reminder_datetime, reminder_notified, recurrence";
+const COLS: &str = "local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, reminder_datetime, reminder_notified, recurrence, description, estimated_time";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
     Ok(ItemRow {
@@ -92,6 +101,8 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
         reminder_datetime: r.get(13)?,
         reminder_notified: r.get::<_, Option<i64>>(14)?.map(|v| v != 0),
         recurrence: r.get(15)?,
+        description: r.get(16)?,
+        estimated_time: r.get(17)?,
     })
 }
 
@@ -193,10 +204,19 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
                 // replays); clean rows mirror server truth, which repairs text on
                 // id-confirmed claims whose stored path had drifted away.
                 let text = if l.dirty { l.text.clone() } else { s.text.clone() };
+                // P8 dirty-fence law mirrors the text law: a DIRTY row's description/
+                // estimated_time are owned by its queued detail op until it replays —
+                // a clean-pull claim must not clobber the local values (fenced by
+                // reconcile_dirty_rows_keep_local_description_and_est_time).
+                let (description, estimated_time) = if l.dirty {
+                    (l.description.clone(), l.estimated_time)
+                } else {
+                    (s.description.clone(), s.estimated_time)
+                };
                 let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
                 conn.execute(
-                    "UPDATE checklist_items SET position=?2, text=?3, completed=?4, server_path=?5, status=?6, priority=?7, target_date=?8, start_date=?9, server_item_id=?10, parent_id=?11, dirty=0 WHERE local_id=?1",
-                    rusqlite::params![l.local_id, order as i64, text, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), parent_local],
+                    "UPDATE checklist_items SET position=?2, text=?3, completed=?4, server_path=?5, status=?6, priority=?7, target_date=?8, start_date=?9, server_item_id=?10, parent_id=?11, description=?12, estimated_time=?13, dirty=0 WHERE local_id=?1",
+                    rusqlite::params![l.local_id, order as i64, text, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), parent_local, description, estimated_time],
                 )?;
                 bound.insert(s.path.clone(), l.local_id.clone());
             }
@@ -204,9 +224,9 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
                 let local_id = uuid::Uuid::new_v4().to_string();
                 let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
                 conn.execute(
-                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12)",
-                    rusqlite::params![local_id, checklist_id, parent_local, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone()],
+                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, description, estimated_time)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    rusqlite::params![local_id, checklist_id, parent_local, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), s.description.clone(), s.estimated_time],
                 )?;
                 bound.insert(s.path.clone(), local_id);
             }
@@ -735,7 +755,10 @@ mod tests {
     fn migration_v5_recurrence_column_roundtrips() {
         let conn = db();
         migrations::run(&conn).expect("migrations");
-        assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        // >= 5: later migrations (P8 schema v6, 2026-10-09) bump the version
+        // further; the exact pin lives in the latest migration's test
+        // (migrations.rs::migration_v6_adds_item_description_and_estimated_time_columns).
+        assert!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap() >= 5);
         conn.execute(
             "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
             [],
@@ -800,6 +823,8 @@ mod tests {
             priority: None,
             target_date: None,
             start_date: None,
+            description: None,
+            estimated_time: None,
         };
         items::reconcile(&conn, "l1", &[flat]).unwrap();
         let after = items::get(&conn, &row.local_id).unwrap().unwrap();
@@ -843,6 +868,8 @@ mod tests {
             priority: None,
             target_date: None,
             start_date: None,
+            description: None,
+            estimated_time: None,
         };
         items::reconcile(&conn, "l1", &[flat]).unwrap();
         let after = items::get(&conn, &row.local_id).unwrap().unwrap();
@@ -853,5 +880,73 @@ mod tests {
         // `dirty=0` SET member) clears dirty on EVERY claim, so no "claimed while
         // dirty" seed can end dirty — this fence asserts the actual shape instead.
         assert!(!after.dirty, "the claim write owns the row: dirty clears");
+    }
+
+    // ------------------------------------------------------------------
+    // P8 Task 1: reconcile carries the two new card-detail columns
+    // (description TEXT, estimated_time INTEGER — schema v6).
+
+    #[test]
+    fn reconcile_carries_description_and_estimated_time_on_clean_rows() {
+        // A server pull with description+estimatedTime must FILL the new columns
+        // on a clean row (both arms: the fresh-INSERT import AND the update-in-
+        // place claim), and estimatedTime must arrive as an INTEGER — the server
+        // accepts fractional hours (2.5) but truncates server-side, so the f64
+        // wire value truncates AT FLATTEN (2.5 -> 2; i64 crosses the DB).
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let server = vec![
+            ServerItem { text: "card a".into(), description: Some("body".into()), estimated_time: Some(2.5), ..Default::default() },
+            ServerItem { text: "card b".into(), ..Default::default() },
+        ];
+        reconcile(&conn, &list.id, &flatten(&server)).unwrap();
+        let rows = list_for_checklist(&conn, &list.id).unwrap();
+        let a = rows.iter().find(|r| r.text == "card a").unwrap();
+        assert_eq!(a.description.as_deref(), Some("body"), "fresh import arm must carry the server description");
+        assert_eq!(a.estimated_time, Some(2), "estimatedTime 2.5 must truncate to INTEGER 2 at flatten");
+        let b = rows.iter().find(|r| r.text == "card b").unwrap();
+        assert_eq!(b.description, None, "absent field stays NULL");
+        assert_eq!(b.estimated_time, None, "absent field stays NULL");
+        // second pull, changed values -> the update-in-place claim must carry them too
+        let changed = vec![
+            ServerItem { text: "card a".into(), description: Some("body 2".into()), estimated_time: Some(8.0), ..Default::default() },
+            ServerItem { text: "card b".into(), ..Default::default() },
+        ];
+        reconcile(&conn, &list.id, &flatten(&changed)).unwrap();
+        let rows = list_for_checklist(&conn, &list.id).unwrap();
+        let a = rows.iter().find(|r| r.text == "card a").unwrap();
+        assert_eq!(a.description.as_deref(), Some("body 2"), "update-in-place claim must carry the changed description");
+        assert_eq!(a.estimated_time, Some(8), "update-in-place claim must carry the changed estimatedTime");
+        assert!(!a.dirty);
+    }
+
+    #[test]
+    fn reconcile_dirty_rows_keep_local_description_and_est_time() {
+        // The existing dirty-fence law extended to the new columns: a DIRTY row
+        // claimed in place (arm C — dirty, still at its stored path, id agrees,
+        // text mismatch) keeps its LOCAL text AND its local description/
+        // estimated_time — a queued set_note_desc/set_est_time op owns those
+        // server writes until it replays; a pull must never clobber them.
+        let conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "L".into(), category: "Home".into() }).unwrap();
+        reconcile(&conn, &list.id, &flatten(&vec![
+            ServerItem { id: Some("srv-a".into()), text: "card a".into(), description: Some("srv desc".into()), estimated_time: Some(3.0), ..Default::default() },
+        ])).unwrap();
+        // local detail edits (the T2 command shape): description + est_time + a
+        // text edit to exercise the dirty in-place claim arm — direct SQL mirroring
+        // the set_item_description_inner row write that lands in Task 2.
+        conn.execute(
+            "UPDATE checklist_items SET text='card a edited', description='local desc', estimated_time=7, dirty=1 WHERE checklist_id=?1",
+            [&list.id],
+        ).unwrap();
+        reconcile(&conn, &list.id, &flatten(&vec![
+            ServerItem { id: Some("srv-a".into()), text: "card a".into(), description: Some("srv desc 2".into()), estimated_time: Some(9.0), ..Default::default() },
+        ])).unwrap();
+        let after = list_for_checklist(&conn, &list.id).unwrap();
+        assert_eq!(after.len(), 1, "the dirty row must be claimed in place, not duplicated");
+        assert_eq!(after[0].text, "card a edited", "existing text dirty-fence law holds");
+        assert_eq!(after[0].description.as_deref(), Some("local desc"), "dirty row must keep its LOCAL description, not the server's");
+        assert_eq!(after[0].estimated_time, Some(7), "dirty row must keep its LOCAL estimated_time, not the server's");
+        assert!(!after[0].dirty, "the claim write owns the row (existing dirty=0 on claim)");
     }
 }

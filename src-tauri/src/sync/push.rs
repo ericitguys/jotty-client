@@ -231,6 +231,57 @@ pub async fn push_pending(conn: &mut Connection, client: &JottyClient) -> AppRes
                     },
                     Err(e) => Err(e),
                 }
+                // P8 card details: description/estimatedTime/priority are TEXT-VERIFIED
+                // writes (check-op class — a mis-targeted detail write stamps the WRONG
+                // card), so resolve_item_target passes update_arm=false like set_date;
+                // each op then rides ONE single-field PATCH. Payload keys are exactly
+                // what the arms read: description / estimatedTime / priority (null =
+                // clear, key may be absent from legacy payloads = None = clear too);
+                // estimatedTime travels as a JSON integer (i64) — a fractional value
+                // can never appear (the command layer truncates), any non-integer
+                // payload form maps to None -> upstream null (clear).
+                ("checklist_item", "set_note_desc") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        Ok(path) => match client.update_item_description(
+                            &item_list_id, &path,
+                            // payload description null/absent -> None -> PATCH null (clears)
+                            payload["description"].as_str(),
+                        ).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "set_est_time") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        Ok(path) => match client.update_item_estimated_time(
+                            &item_list_id, &path,
+                            // payload estimatedTime null/absent -> None -> PATCH null (clears)
+                            payload["estimatedTime"].as_i64(),
+                        ).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
+                ("checklist_item", "set_prio") => match fetch_list_snapshot(client, &item_list_id).await {
+                    Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
+                        Ok(path) => match client.update_item_priority(
+                            &item_list_id, &path,
+                            // payload priority null/absent -> None -> PATCH null (clears)
+                            payload["priority"].as_str(),
+                        ).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(e),
+                        },
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                }
                 ("checklist_item", "set_reminder") => match fetch_list_snapshot(client, &item_list_id).await {
                     Ok(snap) => match resolve_item_target(conn, &snap.items, payload["item_local_id"].as_str().unwrap_or(&op.entity_id), &mut claims, false) {
                         Ok(path) => {
@@ -2076,6 +2127,281 @@ mod tests {
         assert!(!row.completed, "row.completed == false after push_pending");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE state='pending'", [], |r| r.get(0)).unwrap();
         assert!(n > 1, "the sweep's check op must ride behind the replayed set_date");
+    }
+
+    // ------------------------------------------------------------------
+    // P8 Task 1: card-detail replay arms ("set_note_desc" / "set_est_time" /
+    // "set_prio", entity checklist_item). Payload keys are EXACTLY what the
+    // arms read: checklist_id, item_local_id, description / estimatedTime /
+    // priority (null = clear). Every op resolves via fetch_list_snapshot +
+    // resolve_item_target (update_arm=false — TEXT-VERIFIED writes, check-op
+    // class: a mis-targeted detail write stamps the WRONG card), then ONE
+    // PATCH via the new single-field client methods. Per-endpoint hit
+    // counters (T12 N1 class) pin the wire body AND the target path.
+
+    #[tokio::test]
+    async fn item_set_note_desc_ops_replay_as_description_patches() {
+        // one SET + one CLEAR op on the same card in one run: both PATCH the
+        // resolved path; description string = set, null = clear (key ALWAYS
+        // present — probe-verified 1.28.0). The drifted path "1" must never
+        // be hit.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let set_hits = Arc::new(AtomicUsize::new(0));
+        let clear_hits = Arc::new(AtomicUsize::new(0));
+        let wrong_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let sh = set_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"description":"step 1: sand"})))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let ch = clear_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"description": null})))
+                .respond_with(move |_: &_| {
+                    ch.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            // mis-target pin: NO matcher for any body at a drifted path "1"
+            let wh = wrong_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/1"))
+                .respond_with(move |_: &_| {
+                    wh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_note_desc", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "description": "step 1: sand"})).unwrap();
+        outbox::enqueue(&conn, "set_note_desc", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "description": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "set + clear ops must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(set_hits.load(Ordering::SeqCst), 1, "set op must PATCH description string at the card's path");
+        assert_eq!(clear_hits.load(Ordering::SeqCst), 1, "clear op must PATCH description null (key always present)");
+        assert_eq!(wrong_hits.load(Ordering::SeqCst), 0, "no other path may receive a description PATCH");
+    }
+
+    #[tokio::test]
+    async fn item_set_note_desc_drift_resolves_by_text_never_the_stale_path() {
+        // drifted-snapshot case (mis-target class discipline): the row synced
+        // when "a" sat at path "1"; a peer insert moved it to "0" and "y" now
+        // occupies the stale path. resolve_item_target(update_arm=false) is
+        // TEXT-VERIFIED, so the PATCH must land on "a" at its NEW path — a
+        // description written to the stale path would stamp the WRONG card.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{
+                    "id":"l1","title":"L","category":"Home","type":"simple",
+                    "items": [
+                        {"id":"srv-a","index":0,"text":"a","completed":false},
+                        {"id":"srv-y","index":1,"text":"y","completed":false}
+                    ],
+                    "createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"
+                }]
+            })))
+            .mount(&s).await;
+        let patch_hits = Arc::new(AtomicUsize::new(0));
+        let stale_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let ph = patch_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"description":"x"})))
+                .respond_with(move |_: &_| {
+                    ph.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let sh = stale_hits.clone();
+            // NO body matcher: counts the drifted path even if hit with a wrong body
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/1"))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        // the row synced when "a" sat at path "1"
+        conn.execute("UPDATE checklist_items SET server_path='1', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_note_desc", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "description": "x"})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the drifted op must resolve by text and replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(patch_hits.load(Ordering::SeqCst), 1, "text-verified resolve must PATCH the card at its NEW path 0");
+        assert_eq!(stale_hits.load(Ordering::SeqCst), 0, "the drifted stored path \"1\" (now holds y) must never be patched");
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn item_set_est_time_ops_replay_as_estimated_time_patches() {
+        // estimatedTime travels as a JSON INTEGER (i64); null clears. Both ops
+        // replay on one run; hit counters per endpoint pin the exact body AND
+        // the path (integer-only wire shape: a float body would never match
+        // the {"estimatedTime":3} mock — upstream truncates fractions itself).
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let set_hits = Arc::new(AtomicUsize::new(0));
+        let clear_hits = Arc::new(AtomicUsize::new(0));
+        let wrong_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let sh = set_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"estimatedTime":3})))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let ch = clear_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"estimatedTime": null})))
+                .respond_with(move |_: &_| {
+                    ch.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let wh = wrong_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/1"))
+                .respond_with(move |_: &_| {
+                    wh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_est_time", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "estimatedTime": 3})).unwrap();
+        outbox::enqueue(&conn, "set_est_time", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "estimatedTime": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "set + clear ops must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(set_hits.load(Ordering::SeqCst), 1, "set op must PATCH estimatedTime as an INTEGER (3, not 3.0)");
+        assert_eq!(clear_hits.load(Ordering::SeqCst), 1, "clear op must PATCH estimatedTime null");
+        assert_eq!(wrong_hits.load(Ordering::SeqCst), 0, "no other path may receive an estimatedTime PATCH");
+    }
+
+    #[tokio::test]
+    async fn item_set_prio_ops_replay_as_priority_patches() {
+        // priority string ("high") = set, null = clear; both ops replay on one
+        // run with per-endpoint hit counters + the mis-target pin.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        let set_hits = Arc::new(AtomicUsize::new(0));
+        let clear_hits = Arc::new(AtomicUsize::new(0));
+        let wrong_hits = Arc::new(AtomicUsize::new(0));
+        {
+            let sh = set_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"priority":"high"})))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let ch = clear_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"priority": null})))
+                .respond_with(move |_: &_| {
+                    ch.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let wh = wrong_hits.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/1"))
+                .respond_with(move |_: &_| {
+                    wh.fetch_add(1, Ordering::SeqCst);
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','simple','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_prio", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "priority": "high"})).unwrap();
+        outbox::enqueue(&conn, "set_prio", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "priority": null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 2, "set + clear ops must both replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(set_hits.load(Ordering::SeqCst), 1, "set op must PATCH priority string at the card's path");
+        assert_eq!(clear_hits.load(Ordering::SeqCst), 1, "clear op must PATCH priority null");
+        assert_eq!(wrong_hits.load(Ordering::SeqCst), 0, "no other path may receive a priority PATCH");
     }
 }
 

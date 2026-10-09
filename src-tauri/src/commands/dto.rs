@@ -457,6 +457,8 @@ mod tests {
             reminder_datetime: Some("2026-10-01T09:00:00.000Z".into()),
             reminder_notified: Some(true),
             recurrence: None,
+            description: None,
+            estimated_time: None,
         };
         let dto = ItemDto::from(row);
         assert_eq!(dto.start_date.as_deref(), Some("2026-10-01"));
@@ -490,6 +492,8 @@ mod tests {
             reminder_datetime: None,
             reminder_notified: None,
             recurrence: Some("{\"rrule\":\"FREQ=WEEKLY;INTERVAL=1\"}".into()),
+            description: None,
+            estimated_time: None,
         };
         let dto: ItemDto = row.clone().into();
         let v = serde_json::to_value(&dto).unwrap();
