@@ -776,7 +776,7 @@ describe('KanbanBoard details (P8 task 2)', () => {
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 
-  it('start date Clear row then Save forwards an explicit startDate null', async () => {
+  it('start date Clear row then Save forwards the start-clear sentinel ("" )', async () => {
     const reload = vi.fn(async () => {});
     render(<KanbanBoard checklistId="b1" items={withStart} reload={reload} />);
     await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
@@ -787,8 +787,9 @@ describe('KanbanBoard details (P8 task 2)', () => {
     fireEvent.click(screen.getByText('Clear'));
     expect(dateTriggerText('Start date')).toBe('Pick a date');
     fireEvent.click(screen.getByText('Save date'));
-    // touched-clear: the startDate key IS forwarded (explicit null clears)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-01', startDate: null }));
+    // touched-clear: the startDate key IS forwarded; '' = the sentinel the
+    // inner maps to a present-null payload (F1 fix)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-01', startDate: '' }));
     expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_target_date')).toHaveLength(1);
   });
 });

@@ -465,6 +465,9 @@ pub(crate) fn set_item_status_inner(
 /// no startDate key); the push arm then issues a second startDate PATCH after
 /// the targetDate PATCH. The row's start_date column itself is backfilled by
 /// reconcile at group close (the server is the source of truth for it).
+/// A SOME of the empty string is the P8 review-F1 explicit-clear sentinel: the
+/// key authors PRESENT with a null value (upstream clear). A real start date
+/// is never ''.
 pub(crate) fn set_item_target_date_inner(
     conn: &mut Connection,
     checklist_id: &str,
@@ -478,7 +481,16 @@ pub(crate) fn set_item_target_date_inner(
         "checklist_id": checklist_id, "item_local_id": item_local_id, "targetDate": target_date
     });
     if let Some(s) = &start_date {
-        payload["startDate"] = serde_json::json!(s);
+        // P8 review F1: '' is the explicit-clear SENTINEL — a literal null is
+        // inexpressible at the tauri boundary (present-null and absent both
+        // deserialize to Option::None; nested Options flatten on Null). ''
+        // authors a PRESENT-NULL "startDate" key (the set_date push arm's
+        // Some(_) branch then PATCHes {"startDate": null} = upstream clear).
+        payload["startDate"] = if s.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(s)
+        };
     }
     outbox::enqueue(&tx, "set_date", "checklist_item", item_local_id, &payload)?;
     tx.commit()?;
@@ -3951,6 +3963,47 @@ mod tests {
         assert!(e.to_string().contains("not found"), "priority rejects unknown item, got: {e}");
         let ops = outbox::next_batch(&conn, 10).unwrap();
         assert_eq!(ops.len(), 0, "no op may enqueue for an unknown item");
+    }
+
+    #[tokio::test]
+    async fn set_item_target_date_inner_empty_start_date_sentinel_is_present_null_clear() {
+        // P8 review F1: the UI's touched-CLEAR save forwards "" (a literal null
+        // is inexpressible at the tauri boundary — present-null and absent both
+        // flatten to Option::None). "" must author a startDate key that is
+        // PRESENT with a NULL value — the set_date arm's Some(_) branch then
+        // PATCHes {"startDate": null} (clear). An ABSENT key would be the
+        // legacy no-op shape this fence exists to prevent.
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, Some("2026-10-01".into()), Some("".into())).unwrap();
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert!(payload.get("startDate").is_some(), "sentinel '': startDate key must be PRESENT in the set_date payload");
+        assert!(payload["startDate"].is_null(), "sentinel '': startDate value must be null (upstream clear shape)");
+        assert_eq!(payload["targetDate"], "2026-10-01");
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn set_item_target_date_inner_present_string_start_date_keeps_string() {
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        set_item_target_date_inner(&mut conn, &list.id, &it.local_id, Some("2026-10-01".into()), Some("2026-10-04".into())).unwrap();
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["startDate"], "2026-10-04", "a real start date crosses the payload as a string");
     }
 
     #[tokio::test]

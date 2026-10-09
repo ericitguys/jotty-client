@@ -146,10 +146,13 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     setMenuFor(null);
     // empty picker = clear (null clears server-side; the badge disappears on reload).
     // P8 task 2 — the Start date rides the SAME set_item_target_date op: the
-    // touched Start picker forwards its value ('' = explicit null clear), and
-    // an UNTOUCHED one keeps the legacy 3-arg shape (the wrapper forwards the
+    // touched Start picker forwards its value RAW ('' = explicit-clear
+    // SENTINEL; never normalized to null — a literal null at this invoke
+    // boundary is indistinguishable from an absent key, tauri Option<String>
+    // flattens it, so the sentinel '' is the only expressible clear) and the
+    // untouched picker keeps the legacy 3-arg shape (the wrapper forwards the
     // key only when !== undefined, so the byte-frozen 3-key fences hold).
-    await api.setItemTargetDate(checklistId, localId, dateVal || null, startDateTouched ? (startDateVal || null) : undefined);
+    await api.setItemTargetDate(checklistId, localId, dateVal || null, startDateTouched ? startDateVal : undefined);
     await reload();
   };
   const saveReminder = async (localId: string) => {

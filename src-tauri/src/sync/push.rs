@@ -1572,6 +1572,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_date_with_present_null_start_date_clears_via_second_patch() {
+        // P8 review F1 defensive pin: a payload with startDate PRESENT-null is
+        // what set_item_target_date_inner now authors for the UI's touched-CLEAR
+        // save (the tauri boundary flattens literal null, so "" maps to null).
+        // The set_date arm must replay it as two PATCHes: targetDate, then
+        // {"startDate": null}.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let start_hits = Arc::new(AtomicUsize::new(0));
+        let order: Arc<std::sync::Mutex<Vec<&'static str>>> = Default::default();
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "checklists": [{"id":"l1","title":"L","category":"Home","items":[
+                    {"id":"srv-a","index":0,"text":"a","completed":false}
+                ],"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2026-01-01T00:00:00.000Z"}]
+            })))
+            .mount(&s).await;
+        {
+            let th = target_hits.clone();
+            let order = order.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"targetDate":"2026-10-05"})))
+                .respond_with(move |_: &_| {
+                    th.fetch_add(1, Ordering::SeqCst);
+                    order.lock().unwrap().push("targetDate");
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        {
+            let sh = start_hits.clone();
+            let order = order.clone();
+            Mock::given(method("PATCH")).and(path("/api/checklists/l1/items/0"))
+                .and(wiremock::matchers::body_json(serde_json::json!({"startDate":null})))
+                .respond_with(move |_: &_| {
+                    sh.fetch_add(1, Ordering::SeqCst);
+                    order.lock().unwrap().push("startDate");
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"success":true}))
+                })
+                .mount(&s).await;
+        }
+        let mut conn = db();
+        conn.execute("INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1','L','Home','task','2024-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z',0)", []).unwrap();
+        let it = crate::db::items::insert_local(&conn, &crate::db::items::NewItem {
+            checklist_id: "l1".into(), parent_local_id: None, text: "a".into(), status: None, priority: None, target_date: None,
+        }).unwrap();
+        conn.execute("UPDATE checklist_items SET server_path='0', dirty=0 WHERE local_id=?1", [&it.local_id]).unwrap();
+        outbox::enqueue(&conn, "set_date", "checklist_item", &it.local_id,
+            &serde_json::json!({"item_local_id": it.local_id, "checklist_id": "l1", "targetDate": "2026-10-05", "startDate": serde_json::Value::Null})).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        let stats = push_pending(&mut conn, &client).await.unwrap();
+        assert_eq!(stats.pushed, 1, "the present-null startDate op must replay");
+        assert_eq!(stats.conflicts, 0);
+        assert_eq!(outbox::pending_count(&conn).unwrap(), 0);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 1, "targetDate must PATCH");
+        assert_eq!(start_hits.load(Ordering::SeqCst), 1, "startDate null must PATCH");
+        assert_eq!(order.lock().unwrap().as_slice(), &["targetDate", "startDate"],
+            "targetDate must ride FIRST, then startDate null clear");
+    }
+
+    #[tokio::test]
     async fn set_reminder_op_uses_row_server_item_id() {
         // Stable-id preference: the row's server_item_id wins even when the
         // snapshot item at the resolved path carries a DIFFERENT id — the PUT
