@@ -14,6 +14,11 @@ export interface ItemDto {
   // LOCAL-ONLY client-side recurrence (migration v5): raw JSON string
   // {rrule, dtstart, nextDue, ...}; never synced, never in outbox payloads.
   recurrence?: string | null;
+  // P8 card details (ItemDto, commands/dto.rs): nullable like every serde
+  // Option — description = long-form card text, estimatedTime = whole hours
+  // (upstream truncates fractions server-side; never a float on the wire).
+  description?: string | null;
+  estimatedTime?: number | null;
   children: ItemDto[];
 }
 /** Appointments agenda row (Rust AgendaEntryDto, commands/dto.rs — serde

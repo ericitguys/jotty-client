@@ -79,6 +79,18 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   // recurrence menu (task 4): which card's Repeat preset list is open —
   // mirrors dating/reminding, cleared with them on the backdrop tap.
   const [repeating, setRepeating] = useState<string | null>(null);
+  // details sub-panel (P8): which card's Details editor is open + the values
+  // it authors (description textarea + estimated-hours input). estErr gates
+  // the negative-hours inline error (a rejected value never invokes).
+  const [detailFor, setDetailFor] = useState<string | null>(null);
+  const [descVal, setDescVal] = useState('');
+  const [estVal, setEstVal] = useState('');
+  const [estErr, setEstErr] = useState(false);
+  // Start-date picker (P8): prefill mirrors dateVal on the Set-date open; the
+  // touched flag decides whether Save forwards `startDate` at all — untouched
+  // saves keep the legacy 3-arg invoke shape (byte-frozen date fences).
+  const [startDateVal, setStartDateVal] = useState('');
+  const [startDateTouched, setStartDateTouched] = useState(false);
   const TIME_OPTIONS = timeDropdownOptions();
 
   useEffect(() => {
@@ -132,8 +144,12 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const saveDate = async (localId: string) => {
     setDating(null);
     setMenuFor(null);
-    // empty picker = clear (null clears server-side; the badge disappears on reload)
-    await api.setItemTargetDate(checklistId, localId, dateVal || null);
+    // empty picker = clear (null clears server-side; the badge disappears on reload).
+    // P8 task 2 — the Start date rides the SAME set_item_target_date op: the
+    // touched Start picker forwards its value ('' = explicit null clear), and
+    // an UNTOUCHED one keeps the legacy 3-arg shape (the wrapper forwards the
+    // key only when !== undefined, so the byte-frozen 3-key fences hold).
+    await api.setItemTargetDate(checklistId, localId, dateVal || null, startDateTouched ? (startDateVal || null) : undefined);
     await reload();
   };
   const saveReminder = async (localId: string) => {
@@ -161,10 +177,52 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     await api.setItemRecurrence(checklistId, localId, preset);
     await reload();
   };
+  // Details sub-panel actions (P8): description Save commits + closes (empty
+  // = null clear); priority/est-hours commits close too (the menu idiom —
+  // every committing action closes). A NEGATIVE hours value stays open with
+  // the inline error and never invokes; empty hours = null (clear).
+  const saveDescription = async (localId: string) => {
+    setDetailFor(null);
+    setMenuFor(null);
+    const v = descVal.trim();
+    await api.setDescription(checklistId, localId, v === '' ? null : v);
+    await reload();
+  };
+  const pickPriority = async (localId: string, priority: 'critical' | 'high' | 'medium' | 'low' | null) => {
+    setDetailFor(null);
+    setMenuFor(null);
+    await api.setPriority(checklistId, localId, priority);
+    await reload();
+  };
+  const saveEstTime = async (localId: string) => {
+    const raw = estVal.trim();
+    if (raw === '') {
+      setEstErr(false);
+      setDetailFor(null);
+      setMenuFor(null);
+      await api.setEstimatedTime(checklistId, localId, null);
+      await reload();
+      return;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      // inline error, NO invoke, panel stays open (the WebKitGTK half-save trap
+      // never re-enters: a rejected value cannot silently clear the hours)
+      setEstErr(true);
+      return;
+    }
+    setEstErr(false);
+    setDetailFor(null);
+    setMenuFor(null);
+    // upstream truncates fractional hours server-side; we truncate BEFORE the
+    // invoke (whole hours cross the op payload as JSON integers only)
+    await api.setEstimatedTime(checklistId, localId, Math.trunc(n));
+    await reload();
+  };
 
   return (
     <div className="kanban-board">
-      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setRepeating(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
+      {(menuFor || renaming || addingTo) && <div className="kanban-backdrop" onClick={() => { setMenuFor(null); setRenaming(null); setDating(null); setReminding(null); setRepeating(null); setDetailFor(null); setReminderDate(''); setReminderTime(''); closeAddForm(); }} />}
       {cols.map((col) => (
         <div className="kanban-col" key={col.id}
              onDragOver={(e) => e.preventDefault()}
@@ -234,7 +292,31 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                 </button>
                 {menuFor === item.localId && (
                   <div className="kanban-menu" onClick={(e) => e.stopPropagation()}>
-                    {dating === item.localId ? (
+                    {detailFor === item.localId ? (
+                      <div className="kanban-detail-edit" onKeyDown={(e: KeyboardEvent) => { if (e.key === 'Escape') setDetailFor(null); }}>
+                        {/* P8 details sub-panel (task 2): description/priority/
+                            est-hours in ONE panel (no mode swaps inside). The
+                            textarea is multiline — Enter NEVER commits (kanban
+                            keydown Enter-guard contract; only Save does).
+                            Container-level Escape closes; no new badges. */}
+                        <textarea aria-label="Card description" value={descVal} rows={4}
+                                  onChange={(e) => setDescVal(e.target.value)} />
+                        <button aria-label="Save description" onClick={() => saveDescription(item.localId)}>Save</button>
+                        <button onClick={() => setDetailFor(null)}>Back</button>
+                        <div className="kanban-detail-priority">
+                          <button onClick={() => pickPriority(item.localId, 'critical')}>critical</button>
+                          <button onClick={() => pickPriority(item.localId, 'high')}>high</button>
+                          <button onClick={() => pickPriority(item.localId, 'medium')}>medium</button>
+                          <button onClick={() => pickPriority(item.localId, 'low')}>low</button>
+                          <button onClick={() => pickPriority(item.localId, null)}>Clear priority</button>
+                        </div>
+                        <span className="kanban-detail-label">Estimated hours</span>
+                        <input type="number" min={0} step={1} aria-label="Estimated hours" value={estVal}
+                               onChange={(e) => { setEstVal(e.target.value); setEstErr(false); }} />
+                        {estErr && <p className="kanban-est-error">Estimated hours must not be negative</p>}
+                        <button onClick={() => saveEstTime(item.localId)}>Save hours</button>
+                      </div>
+                    ) : dating === item.localId ? (
                       <div className="kanban-date-edit">
                         {/* WebKitGTK eradication (v0.22.2): the native date
                             calendar commits a pick but never closes and keeps
@@ -243,6 +325,14 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                             showClear: '' = clear here (saveDate semantics). */}
                         <DateDropdown value={dateVal} onChange={setDateVal}
                                       placeholder="Pick a date" ariaLabel="Date (clearable)"
+                                      showClear />
+                        {/* P8 task 2: the Start date rides the SAME set_date op —
+                            the touched picker forwards its value ('' = explicit
+                            null clear) alongside targetDate on Save. */}
+                        <span className="kanban-date-label">Start date</span>
+                        <DateDropdown value={startDateVal}
+                                      onChange={(v) => { setStartDateVal(v); setStartDateTouched(true); }}
+                                      placeholder="Pick a date" ariaLabel="Start date"
                                       showClear />
                         <button onClick={() => saveDate(item.localId)}>Save date</button>
                         <button onClick={() => setDating(null)}>Back</button>
@@ -278,7 +368,8 @@ export default function KanbanBoard({ checklistId, items, reload }: {
                         {cols.filter((c) => c.id !== col.id).map((c) => (
                           <button key={c.id} onClick={() => move(item.localId, c.id)}>Move to {c.label}</button>
                         ))}
-                        <button onClick={() => { setDateVal(item.targetDate ?? ''); setDating(item.localId); }}>Set date</button>
+                        <button onClick={() => { setDescVal(item.description ?? ''); setEstVal(item.estimatedTime != null ? String(item.estimatedTime) : ''); setEstErr(false); setDetailFor(item.localId); }}>Details</button>
+                        <button onClick={() => { setDateVal(item.targetDate ?? ''); setStartDateVal(item.startDate ?? ''); setStartDateTouched(false); setDating(item.localId); }}>Set date</button>
                         <button onClick={() => {
                           if (item.reminderDatetime) {
                             const local = toLocalInput(item.reminderDatetime); // 'YYYY-MM-DDTHH:mm'

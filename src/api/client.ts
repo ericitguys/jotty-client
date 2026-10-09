@@ -45,6 +45,17 @@ export const setItemTargetDate = (checklistId: string, itemLocalId: string, targ
 // server-side. Invoke keys mirror the Rust command params exactly
 // (checklist_id/item_local_id/datetime -> camelCase; NOT reminderDatetime).
 export const setItemReminder = (checklistId: string, itemLocalId: string, datetime: string | null) => invoke<void>('set_item_reminder', { checklistId, itemLocalId, datetime });
+// P8 card details (task 2): description / whole-hour estimate / priority
+// setters — null clears server-side (the queued op payload keeps the key with
+// a null value; the push arm PATCHes {"<field>": null}). Invoke keys mirror
+// the Rust command params exactly (checklist_id/item_local_id/estimated_time
+// -> camelCase; NOT e.g. hours), following setItemTargetDate's arg-casing law.
+export const setDescription = (checklistId: string, itemLocalId: string, description: string | null) =>
+  invoke<void>('set_item_description', { checklistId, itemLocalId, description });
+export const setEstimatedTime = (checklistId: string, itemLocalId: string, estimatedTime: number | null) =>
+  invoke<void>('set_item_est_time', { checklistId, itemLocalId, estimatedTime });
+export const setPriority = (checklistId: string, itemLocalId: string, priority: 'critical' | 'high' | 'medium' | 'low' | 'none' | null) =>
+  invoke<void>('set_item_priority', { checklistId, itemLocalId, priority });
 // Client-side card recurrence (task 4): preset is one of the rust engine's
 // Preset::key literals ('daily'|'weekly'|'biweekly'|'monthly'|'yearly') or
 // null to clear. Invoke keys mirror the Rust command params exactly

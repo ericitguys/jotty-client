@@ -69,6 +69,10 @@ pub struct ItemDto {
     pub reminder_datetime: Option<String>,
     pub reminder_notified: Option<bool>,
     pub recurrence: Option<String>,
+    // P8 card details (task 2): description text + whole-hour estimate; both
+    // arrive NULL for legacy rows (migration v6) and serialize null when clear.
+    pub description: Option<String>,
+    pub estimated_time: Option<i64>,
     pub children: Vec<ItemDto>,
 }
 
@@ -90,6 +94,8 @@ impl From<items::ItemRow> for ItemDto {
             reminder_datetime: r.reminder_datetime,
             reminder_notified: r.reminder_notified,
             recurrence: r.recurrence.clone(),
+            description: r.description,
+            estimated_time: r.estimated_time,
             children: Vec::new(),
         }
     }
@@ -502,6 +508,48 @@ mod tests {
         row2.recurrence = None;
         let v2 = serde_json::to_value(&Into::<ItemDto>::into(row2)).unwrap();
         assert!(v2.get("recurrence").is_none() || v2["recurrence"].is_null());
+    }
+
+    #[test]
+    fn item_dto_carries_details_fields() {
+        // P8 task 2: the TS contract (src/api/types.ts) mirrors these two
+        // fields exactly — description (text|null) + estimatedTime (integer
+        // hours; serde camelCase; null = cleared).
+        use crate::db::items::ItemRow;
+        let row = ItemRow {
+            local_id: "i2".into(),
+            checklist_id: "l1".into(),
+            parent_id: None,
+            text: "T".into(),
+            completed: false,
+            position: 1,
+            server_path: Some("1".into()),
+            dirty: false,
+            status: None,
+            priority: Some("low".into()),
+            target_date: None,
+            start_date: None,
+            server_item_id: None,
+            reminder_datetime: None,
+            reminder_notified: None,
+            recurrence: None,
+            description: Some("hello".into()),
+            estimated_time: Some(2),
+        };
+        let dto = ItemDto::from(row.clone());
+        assert_eq!(dto.description.as_deref(), Some("hello"));
+        assert_eq!(dto.estimated_time, Some(2));
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["description"], "hello");
+        assert_eq!(v["estimatedTime"], serde_json::json!(2), "wire key estimatedTime (camelCase), INTEGER hours");
+        // a cleared card keeps both fields null on the wire (key always present)
+        let mut row2 = row;
+        row2.local_id = "i3".into();
+        row2.description = None;
+        row2.estimated_time = None;
+        let v2 = serde_json::to_value(&Into::<ItemDto>::into(row2)).unwrap();
+        assert!(v2["description"].is_null());
+        assert!(v2["estimatedTime"].is_null());
     }
 }
 

@@ -596,3 +596,199 @@ describe('KanbanBoard recurrence (task 4)', () => {
     expect(document.querySelector('.kanban-recurrence')).toBeNull();
   });
 });
+
+// ---- P8 card details (task 2): Details sub-panel + Start-date row -----------
+// Sub-panel idiom: the same menu swap as dating/reminding/repeating (mode
+// `detailFor`). Detail ops ride set_item_description / set_item_priority /
+// set_item_est_time (null = clear, empty = clear). The Start date row rides
+// the EXISTING set_item_target_date command — no second date invoke — and the
+// Start picker forwards `startDate` ONLY when touched (untouched saves keep
+// the byte-frozen 3-key invoke shape pinned by the v0.22.2 date fences above).
+
+const withDetails = [
+  { ...items[0], description: 'hello', estimatedTime: 3 },
+];
+const withStart = [
+  { ...items[0], startDate: '2026-10-02' },
+];
+
+describe('KanbanBoard details (P8 task 2)', () => {
+  it('menu rows order: Details sits between Move-to and Set date', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    // default branch top-level rows only (no sub-panel open): Move-to…,
+    // Details, Set date, Set reminder, Repeat, Rename, Delete
+    const texts = Array.from(document.querySelectorAll('.kanban-menu > button')).map((b) => b.textContent ?? '');
+    const moveTo = texts.findIndex((t) => t.startsWith('Move to '));
+    expect(moveTo).toBeGreaterThanOrEqual(0);
+    expect(texts.indexOf('Details')).toBeGreaterThan(moveTo);
+    expect(texts.indexOf('Details')).toBeLessThan(texts.indexOf('Set date'));
+  });
+
+  it('Details opens the sub-panel; description + estimated hours prefill from the card', async () => {
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    expect(document.querySelector('.kanban-detail-edit')).not.toBeNull();
+    // RTL law: input values assert via toHaveValue (getByText never matches a value)
+    expect(screen.getByRole('textbox', { name: 'Card description' })).toHaveValue('hello');
+    expect(screen.getByRole('spinbutton', { name: 'Estimated hours' })).toHaveValue(3);
+    expect(screen.getByRole('button', { name: 'critical' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'high' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'medium' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'low' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear priority' })).toBeInTheDocument();
+  });
+
+  it('Details Save invokes set_item_description once with the edited value, closes, reloads', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Card description' }), { target: { value: 'hello edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save description' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_description', { checklistId: 'b1', itemLocalId: 'i1', description: 'hello edited' }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_description')).toHaveLength(1);
+    expect(document.querySelector('.kanban-detail-edit')).toBeNull();
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('empty description Save sends null (clear)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    // i1 carries no description: prefill '' -> Save = clear (null)
+    expect(screen.getByRole('textbox', { name: 'Card description' })).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Save description' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_description', { checklistId: 'b1', itemLocalId: 'i1', description: null }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('priority picks invoke set_item_priority; Clear priority sends null', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.click(screen.getByRole('button', { name: 'medium' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_priority', { checklistId: 'b1', itemLocalId: 'i1', priority: 'medium' }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    // commit closes the menu (same idiom as every committing menu action); reopen
+    expect(document.querySelector('.kanban-detail-edit')).toBeNull();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear priority' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_priority', { checklistId: 'b1', itemLocalId: 'i1', priority: null }));
+  });
+
+  it('estimated hours save truncates fractions to whole hours (2.5 -> 2)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Estimated hours' }), { target: { value: '2.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save hours' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_est_time', { checklistId: 'b1', itemLocalId: 'i1', estimatedTime: 2 }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('estimated hours save with an empty input sends null (clear)', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Estimated hours' }), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save hours' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_est_time', { checklistId: 'b1', itemLocalId: 'i1', estimatedTime: null }));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('negative estimated hours shows an inline error and never invokes', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Estimated hours' }), { target: { value: '-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save hours' }));
+    expect(screen.getByText('Estimated hours must not be negative')).toBeInTheDocument();
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_est_time')).toBe(false);
+    expect(document.querySelector('.kanban-detail-edit')).not.toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('Details Back and Escape close the panel without invoking', async () => {
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.click(screen.getByText('Back'));
+    // Back never invokes: menu rows return (the menu itself stays open)
+    expect(document.querySelector('.kanban-detail-edit')).toBeNull();
+    expect(screen.getByText('Details')).toBeInTheDocument();
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_description')).toBe(false);
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_est_time')).toBe(false);
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_priority')).toBe(false);
+    // Escape (from the textarea; the container guard catches it) closes too —
+    // menu remains open underneath, rows visible again
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Card description' }), { key: 'Escape' });
+    expect(document.querySelector('.kanban-detail-edit')).toBeNull();
+    expect(screen.getByText('Details')).toBeInTheDocument();
+  });
+
+  it('description textarea keeps Enter local (multiline, never saves)', async () => {
+    render(<KanbanBoard checklistId="b1" items={withDetails} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    // kanban keydown Enter-guard contract: the TEXTAREA is multiline — Enter
+    // must never commit (only the Save button does)
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Card description' }), { key: 'Enter' });
+    expect(document.querySelector('.kanban-detail-edit')).not.toBeNull();
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_description')).toBe(false);
+  });
+
+  it('date panel gains a Start date picker; saving sends both dates in ONE invoke', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withStart} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Set date'));
+    // second DateDropdown sits beside the target-date one (label = text node)
+    expect(screen.getByText('Start date')).toBeInTheDocument();
+    expect(dateTriggerText('Start date')).toBe(dateLabel('2026-10-02'));
+    pickDate('Start date', '2026-10-04');
+    fireEvent.click(screen.getByText('Save date'));
+    // BOTH dates ride the EXISTING set_item_target_date op (no second invoke):
+    // the touched Start picker forwards its value; the untouched target
+    // picker keeps its prefill.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-01', startDate: '2026-10-04' }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_target_date')).toHaveLength(1);
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_description')).toBe(false);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it('start date Clear row then Save forwards an explicit startDate null', async () => {
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={withStart} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Set date'));
+    expect(dateTriggerText('Start date')).toBe(dateLabel('2026-10-02'));
+    fireEvent.click(screen.getByRole('button', { name: 'Start date' }));
+    fireEvent.click(screen.getByText('Clear'));
+    expect(dateTriggerText('Start date')).toBe('Pick a date');
+    fireEvent.click(screen.getByText('Save date'));
+    // touched-clear: the startDate key IS forwarded (explicit null clears)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_item_target_date', { checklistId: 'b1', itemLocalId: 'i1', targetDate: '2026-10-01', startDate: null }));
+    expect(invoke.mock.calls.filter((c) => c[0] === 'set_item_target_date')).toHaveLength(1);
+  });
+});

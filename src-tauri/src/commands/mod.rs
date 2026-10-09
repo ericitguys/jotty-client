@@ -485,6 +485,77 @@ pub(crate) fn set_item_target_date_inner(
     Ok(())
 }
 
+// ---- P8 card detail commands (task 2): description / estimatedTime / priority ----
+// ONE tx each: row write (dirty=1 — the LOCAL edit owns the server write until
+// the queued op replays) + outbox enqueue (invariant 1). Op kinds + payload
+// keys mirror EXACTLY what sync/push.rs replays (T1 arms): set_note_desc reads
+// payload["description"], set_est_time reads payload["estimatedTime"].as_i64()
+// (INTEGER hours — the command layer never sees fractions; the UI truncates),
+// set_prio reads payload["priority"]. A null value keeps the key PRESENT (the
+// push arm maps null -> client None -> PATCH {"<field>": null} = upstream clear).
+// Gate (mirrors set_item_text_inner's shape): item-generic — upstream PATCH
+// accepts these fields on ANY checklist item, so there is NO list-type gate
+// (boards-only is a UI concern); the ONLY error path is the unknown item.
+pub(crate) fn set_item_description_inner(
+    conn: &mut Connection,
+    checklist_id: &str,
+    item_local_id: &str,
+    description: Option<String>,
+) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    items::get(&tx, item_local_id)?
+        .ok_or_else(|| AppError::Other(format!("item {item_local_id} not found")))?;
+    tx.execute(
+        "UPDATE checklist_items SET description=?2, dirty=1 WHERE local_id=?1",
+        rusqlite::params![item_local_id, description],
+    )?;
+    outbox::enqueue(&tx, "set_note_desc", "checklist_item", item_local_id, &serde_json::json!({
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "description": description
+    }))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn set_item_est_time_inner(
+    conn: &mut Connection,
+    checklist_id: &str,
+    item_local_id: &str,
+    estimated_time: Option<i64>,
+) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    items::get(&tx, item_local_id)?
+        .ok_or_else(|| AppError::Other(format!("item {item_local_id} not found")))?;
+    tx.execute(
+        "UPDATE checklist_items SET estimated_time=?2, dirty=1 WHERE local_id=?1",
+        rusqlite::params![item_local_id, estimated_time],
+    )?;
+    outbox::enqueue(&tx, "set_est_time", "checklist_item", item_local_id, &serde_json::json!({
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "estimatedTime": estimated_time
+    }))?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn set_item_priority_inner(
+    conn: &mut Connection,
+    checklist_id: &str,
+    item_local_id: &str,
+    priority: Option<String>,
+) -> AppResult<()> {
+    let tx = conn.transaction()?;
+    items::get(&tx, item_local_id)?
+        .ok_or_else(|| AppError::Other(format!("item {item_local_id} not found")))?;
+    tx.execute(
+        "UPDATE checklist_items SET priority=?2, dirty=1 WHERE local_id=?1",
+        rusqlite::params![item_local_id, priority],
+    )?;
+    outbox::enqueue(&tx, "set_prio", "checklist_item", item_local_id, &serde_json::json!({
+        "checklist_id": checklist_id, "item_local_id": item_local_id, "priority": priority
+    }))?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Kanban card reminder (appointments T3): set/clear reminder_datetime + enqueue
 /// the "set_reminder" op. One tx (invariant 1). Payload shape
 /// {checklist_id, item_local_id, datetime} — datetime null = clear (the replay
@@ -1093,6 +1164,43 @@ pub async fn set_item_target_date(
 ) -> Result<(), String> {
     let mut conn = state.db.lock().await;
     set_item_target_date_inner(&mut conn, &checklist_id, &item_local_id, target_date, start_date).map_err(|e| e.to_string())
+}
+
+// P8 card details (task 2): description/estimatedTime/priority setters — null
+// clears server-side (the op payload keeps the key, null value; the push arm
+// PATCHes {"<field>": null}). Item-generic gates inside (no list-type check);
+// invoke keys mirror the Rust params exactly (camelCase).
+#[tauri::command]
+pub async fn set_item_description(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    description: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    set_item_description_inner(&mut conn, &checklist_id, &item_local_id, description).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_item_est_time(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    estimated_time: Option<i64>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    set_item_est_time_inner(&mut conn, &checklist_id, &item_local_id, estimated_time).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_item_priority(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    priority: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().await;
+    set_item_priority_inner(&mut conn, &checklist_id, &item_local_id, priority).map_err(|e| e.to_string())
 }
 
 /// Set/clear a kanban card's reminder (appointments T3): the local row's
@@ -3709,6 +3817,140 @@ mod tests {
         let ops = outbox::next_batch(&conn, 10).unwrap();
         let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
         assert!(payload["targetDate"].is_null());
+    }
+
+    // ---- P8 task 2: card detail commands (description / estimatedTime / priority) ----
+    // ONE tx each (row write dirty=1 + outbox enqueue, invariant 1). The op
+    // kinds + payload keys mirror EXACTLY what sync/push.rs replays (T1):
+    // set_note_desc reads payload["description"], set_est_time reads
+    // payload["estimatedTime"].as_i64() (INTEGER hours — the command layer
+    // never sees fractions), set_prio reads payload["priority"]. Gates mirror
+    // set_item_text_inner's shape: item-generic (upstream PATCH accepts these
+    // fields on ANY checklist item; boards-only is a UI concern), the ONLY
+    // error path is the unknown item.
+
+    #[tokio::test]
+    async fn set_item_description_inner_updates_row_and_enqueues() {
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        // set: row description updated + dirty, ONE set_note_desc op (entity_id = local_id)
+        set_item_description_inner(&mut conn, &list.id, &it.local_id, Some("prep the car".into())).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.description.as_deref(), Some("prep the car"));
+        assert!(r.dirty);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "set_note_desc");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, it.local_id);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["checklist_id"], list.id.as_str());
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+        assert_eq!(payload["description"], "prep the car");
+
+        // clear (None): row NULLs the column, second op payload carries null
+        // (push arm maps null -> None -> PATCH {"description": null} upstream)
+        set_item_description_inner(&mut conn, &list.id, &it.local_id, None).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert!(r.description.is_none());
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert!(payload["description"].is_null());
+    }
+
+    #[tokio::test]
+    async fn set_item_est_time_inner_updates_row_and_enqueues() {
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        // set: row estimated_time updated + dirty, ONE set_est_time op; the
+        // payload pins the INTEGER wire shape (as_i64 — the shape the arm reads)
+        set_item_est_time_inner(&mut conn, &list.id, &it.local_id, Some(3)).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.estimated_time, Some(3));
+        assert!(r.dirty);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "set_est_time");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, it.local_id);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["checklist_id"], list.id.as_str());
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+        assert_eq!(payload["estimatedTime"], serde_json::json!(3), "hours cross the wire as JSON INTEGER (never a float)");
+        assert_eq!(payload["estimatedTime"].as_i64(), Some(3));
+
+        // clear (None): row NULLs the column, second op payload carries null
+        set_item_est_time_inner(&mut conn, &list.id, &it.local_id, None).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert!(r.estimated_time.is_none());
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert!(payload["estimatedTime"].is_null());
+    }
+
+    #[tokio::test]
+    async fn set_item_priority_inner_updates_row_and_enqueues() {
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let it = items::insert_local(&conn, &items::NewItem {
+            checklist_id: list.id.clone(), parent_local_id: None, text: "card".into(),
+            status: None, priority: None, target_date: None,
+        }).unwrap();
+
+        // set: row priority updated + dirty, ONE set_prio op (upstream enum
+        // literal rides verbatim: critical|high|medium|low|none)
+        set_item_priority_inner(&mut conn, &list.id, &it.local_id, Some("high".into())).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert_eq!(r.priority.as_deref(), Some("high"));
+        assert!(r.dirty);
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].op_type, "set_prio");
+        assert_eq!(ops[0].entity, "checklist_item");
+        assert_eq!(ops[0].entity_id, it.local_id);
+        let payload: serde_json::Value = serde_json::from_str(&ops[0].payload).unwrap();
+        assert_eq!(payload["checklist_id"], list.id.as_str());
+        assert_eq!(payload["item_local_id"], it.local_id.as_str());
+        assert_eq!(payload["priority"], "high");
+
+        // clear (None): row NULLs the column, second op payload carries null
+        // (push arm maps null -> None -> PATCH {"priority": null} upstream)
+        set_item_priority_inner(&mut conn, &list.id, &it.local_id, None).unwrap();
+        let r = items::get(&conn, &it.local_id).unwrap().unwrap();
+        assert!(r.priority.is_none());
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 2);
+        let payload: serde_json::Value = serde_json::from_str(&ops[1].payload).unwrap();
+        assert!(payload["priority"].is_null());
+    }
+
+    #[tokio::test]
+    async fn set_item_detail_inners_reject_unknown_item_without_enqueue() {
+        // the gate mirrors set_item_text_inner's shape: the ONLY error path is
+        // the unknown item — refused BEFORE any row write or op enqueue
+        // (an Update on an absent local_id would silently write 0 rows).
+        let mut conn = db();
+        let list = checklists::insert_local_list(&conn, &checklists::NewChecklist { title: "B".into(), category: "Home".into() }).unwrap();
+        let e = set_item_description_inner(&mut conn, &list.id, "ghost", Some("d".into())).unwrap_err();
+        assert!(e.to_string().contains("not found"), "description rejects unknown item, got: {e}");
+        let e = set_item_est_time_inner(&mut conn, &list.id, "ghost", Some(2)).unwrap_err();
+        assert!(e.to_string().contains("not found"), "est time rejects unknown item, got: {e}");
+        let e = set_item_priority_inner(&mut conn, &list.id, "ghost", Some("low".into())).unwrap_err();
+        assert!(e.to_string().contains("not found"), "priority rejects unknown item, got: {e}");
+        let ops = outbox::next_batch(&conn, 10).unwrap();
+        assert_eq!(ops.len(), 0, "no op may enqueue for an unknown item");
     }
 
     #[tokio::test]
