@@ -69,12 +69,14 @@ pub fn upsert_list_from_server(conn: &Connection, c: &ServerChecklist) -> AppRes
         }
         conn.execute(
             "UPDATE checklists SET title=?2, category=?3, list_type=?4, created_at=?5, updated_at=?6, dirty=0 WHERE id=?1",
-            rusqlite::params![c.id, c.title, c.category, c.list_type.clone().unwrap_or_else(|| "regular".into()), c.created_at, c.updated_at],
+            // audit 2.2: default to upstream's plain-list type, not undocumented "regular"
+            rusqlite::params![c.id, c.title, c.category, c.list_type.clone().unwrap_or_else(|| "simple".into()), c.created_at, c.updated_at],
         )?;
     } else {
         conn.execute(
             "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES (?1,?2,?3,?4,?5,?6,0)",
-            rusqlite::params![c.id, c.title, c.category, c.list_type.clone().unwrap_or_else(|| "regular".into()), c.created_at, c.updated_at],
+            // audit 2.2: default to upstream's plain-list type, not undocumented "regular"
+            rusqlite::params![c.id, c.title, c.category, c.list_type.clone().unwrap_or_else(|| "simple".into()), c.created_at, c.updated_at],
         )?;
     }
     items::reconcile(conn, &c.id, &items::flatten(&c.items))?;
@@ -174,6 +176,37 @@ mod tests {
             fts_hits(&conn).is_empty(),
             "tombstoned checklist must not remain searchable (audit 2.1: lists_fts row must be purged)"
         );
+    }
+
+    #[test]
+    fn upserts_missing_list_type_as_simple() {
+        let conn = db();
+        let c = ServerChecklist {
+            id: "srv-simple".into(),
+            title: "Plain List".into(),
+            category: "Work".into(),
+            list_type: None,
+            items: vec![ServerItem::simple("alpha")],
+            statuses: None,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+        };
+        assert!(upsert_list_from_server(&conn, &c).unwrap());
+        assert_eq!(get_checklist(&conn, "srv-simple").unwrap().unwrap().list_type, "simple");
+
+        // UPDATE arm: later server update still without list_type defaults to simple
+        let c2 = ServerChecklist {
+            id: "srv-simple".into(),
+            title: "Plain List Updated".into(),
+            category: "Work".into(),
+            list_type: None,
+            items: vec![ServerItem::simple("alpha"), ServerItem::simple("beta")],
+            statuses: None,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-02-01T00:00:00.000Z".into(),
+        };
+        assert!(upsert_list_from_server(&conn, &c2).unwrap());
+        assert_eq!(get_checklist(&conn, "srv-simple").unwrap().unwrap().list_type, "simple");
     }
 
     #[test]
