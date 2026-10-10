@@ -866,6 +866,14 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+#sync-badge .sync-stale {
+  color: var(--amber);
+  opacity: 0.85;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* waiting-to-transcribe chip (2026-09-30 offline-voice run): OUTSIDE the sync
    footer (a child failure there unmounted the whole bar) — same bar look. */
 .voice-pending-chip {

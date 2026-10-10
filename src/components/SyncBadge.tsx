@@ -12,14 +12,17 @@ export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {
   const syncStatus = useStore((s) => s.syncStatus);
   const updateInfo = useStore((s) => s.updateInfo);
   const hideBadge = useStore((s) => s.prefs?.hideConnectionIndicator === 'enable');
+  const stale = useStore((s) => s.stalePieces);
   const [conflicts, setConflicts] = useState(0);
   useEffect(() => {
     api.listConflicts().then((c) => setConflicts(Array.isArray(c) ? c.length : 0));
   }, [syncStatus]);
   if (!syncStatus || hideBadge) return null;
   const state = conflicts > 0 ? 'conflict' : syncStatus.pending > 0 ? 'pending' : 'synced';
+  const shownError = syncStatus.lastPullError ?? syncStatus.lastError;
+  const anyStale = stale && (stale.categories || stale.prefs || stale.branding);
   return (
-    <footer id="sync-badge" className={state} title={syncStatus.lastError ?? undefined}>
+    <footer id="sync-badge" className={state} title={shownError ?? undefined}>
       {updateInfo?.available && (
         <button className="update-chip" onClick={onOpenSettings}><Icon name="arrow-up" size={11}/> {updateInfo.latest}</button>
       )}
@@ -27,7 +30,8 @@ export default function SyncBadge({ onOpenConflicts, onOpenSettings }: {
       {state === 'conflict' && <button onClick={onOpenConflicts}>{conflicts} conflicts</button>}
       {state === 'pending' && <span>{syncStatus.pending} pending</span>}
       {state === 'synced' && <span>synced</span>}
-      {syncStatus.lastError && <span className="sync-error">— {syncStatus.lastError}</span>}
+      {anyStale && <span className="sync-stale">· stale data</span>}
+      {shownError && <span className="sync-error">— {shownError}</span>}
       <button onClick={() => api.triggerSync()}>sync now</button>
     </footer>
   );

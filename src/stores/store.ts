@@ -30,6 +30,7 @@ interface AppState {
   refreshUpdate: () => Promise<void>;
   prefs: T.UserPrefs | null;
   branding: T.Branding | null;
+  stalePieces: { categories: boolean; prefs: boolean; branding: boolean };
   /** In-app theme override (0.10.8): null = follow the site mirror. */
   themeOverride: T.ThemeOverride | null;
   setThemeOverride: (v: T.ThemeOverride | null) => void;
@@ -91,6 +92,7 @@ export const useStore = create<AppState>((set, get) => ({
   updateInfo: null,
   prefs: null,
   branding: null,
+  stalePieces: { categories: false, prefs: false, branding: false },
   themeOverride: (() => {
     try { return (localStorage.getItem('jotty.theme-override') as T.ThemeOverride | null) ?? null; }
     catch { return null; }
@@ -121,7 +123,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   refreshAll: async () => {
-    const [connection, notes, checklists, categories, syncStatus, prefs, branding] = await Promise.all([
+    const [connection, notes, checklists, categoriesResult, syncStatus, prefsResult, brandingResult] = await Promise.all([
       api.getConnection(), api.listNotes(), api.listChecklists(),
       // listCategories is a LIVE server fetch: offline it fails, and an unguarded
       // rejection killed the WHOLE refresh — connection stayed null and the app
@@ -131,9 +133,18 @@ export const useStore = create<AppState>((set, get) => ({
       api.getPrefs().catch(() => null),
       api.getBranding().catch(() => null),
     ]);
-    set({ connection, notes, checklists, syncStatus });
+    // Staleness is only meaningful while online: an offline start (connection
+    // null) intentionally fails live fetches, so clear/keep flags false.
+    const online = !!connection;
+    const stalePieces = {
+      categories: categoriesResult === null && online,
+      prefs: prefsResult === null && online,
+      branding: brandingResult === null && online,
+    };
+    set({ connection, notes, checklists, syncStatus, stalePieces });
     // Mirror-only fields overwrite only on a successful fetch so a transient
     // failure keeps the last known value (offline-safe, no flicker).
+    const categories = categoriesResult;
     if (categories) set({ categories });
     else if (!get().categories) {
       // Cold-start offline fallback: there is no last-known value to preserve,
@@ -141,7 +152,9 @@ export const useStore = create<AppState>((set, get) => ({
       // derivation the server performs on its own rows (api/categories.ts).
       set({ categories: deriveCategories(notes ?? [], checklists ?? []) });
     }
+    const prefs = prefsResult;
     if (prefs) set({ prefs });
+    const branding = brandingResult;
     if (branding) set({ branding });
   },
   selectNote: (id) => {
