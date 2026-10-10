@@ -3266,8 +3266,6 @@ mod tests {
     // underlying sync failure with a stable stage-prefixed error string.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resolve_conflict_server_stages_sync_error() {
-        use crate::jotty::client::JottyClient;
-        use crate::keys::MockKeyStore;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
