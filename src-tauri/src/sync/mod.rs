@@ -299,10 +299,7 @@ mod tests {
             .mount(&s).await;
 
         let conn = db();
-        let app = tauri::Builder::<tauri::Wry>::default()
-            .any_thread()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
+        let app = tauri::test::mock_app();
         let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
         *state.client.write().await = Some(JottyClient::new(&s.uri(), "ck").unwrap());
         app.manage(state);
