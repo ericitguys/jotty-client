@@ -263,7 +263,7 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
         <button onClick={add}>Add</button>
       </div>
       {isBoard ? (
-        <KanbanBoard checklistId={checklistId} items={items} reload={reload} />
+        <KanbanBoard key={checklistId} checklistId={checklistId} items={items} reload={reload} />
       ) : (
       <ul>
         {openTop.map(renderRow)}

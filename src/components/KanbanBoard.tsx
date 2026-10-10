@@ -98,6 +98,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
   const [colNewColor, setColNewColor] = useState<string | null>(null);
   const [colRenameLabel, setColRenameLabel] = useState('');
   const [colError, setColError] = useState<string | null>(null);
+  const [colsGen, setColsGen] = useState(0);
   const PALETTE = ['#3b82f6','#ef4444','#22c55e','#eab308','#a855f7','#ec4899','#14b8a6','#f97316'];
 
   useEffect(() => {
@@ -113,7 +114,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
       } catch { /* offline: cache stays */ }
     })();
     return () => { cancelled = true; };
-  }, [checklistId]);
+  }, [checklistId, colsGen]);
 
   const cols: BoardStatusDto[] = columns ?? [];
   const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
@@ -221,12 +222,21 @@ export default function KanbanBoard({ checklistId, items, reload }: {
       setEstErr(true);
       return;
     }
+    // safe-integer bound: the truncated hour count crossing the tauri i64 wire
+    // must fit |n| ≤ 2^53-1. A value like 9e18 is not exactly representable as a
+    // JSON integer and trips the invoke arg boundary — reject rather than fail
+    // silently on the backend.
+    const truncated = Math.trunc(n);
+    if (!Number.isSafeInteger(truncated)) {
+      setEstErr(true);
+      return;
+    }
     setEstErr(false);
     setDetailFor(null);
     setMenuFor(null);
     // upstream truncates fractional hours server-side; we truncate BEFORE the
     // invoke (whole hours cross the op payload as JSON integers only)
-    await api.setEstimatedTime(checklistId, localId, Math.trunc(n));
+    await api.setEstimatedTime(checklistId, localId, truncated);
     await reload();
   };
 
@@ -251,6 +261,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     try {
       await api.addBoardColumn(checklistId, colNewLabel.trim(), colNewColor);
       closeColMenu();
+      setColsGen((g) => g + 1);
       await reload();
     } catch (e) {
       setColError(String(e));
@@ -261,6 +272,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     try {
       await api.updateBoardColumn(checklistId, col.id, colRenameLabel.trim(), null, null);
       closeColMenu();
+      setColsGen((g) => g + 1);
       await reload();
     } catch (e) {
       setColError(String(e));
@@ -270,6 +282,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     try {
       await api.updateBoardColumn(checklistId, col.id, null, null, !col.autoComplete);
       closeColMenu();
+      setColsGen((g) => g + 1);
       await reload();
     } catch (e) {
       setColError(String(e));
@@ -279,6 +292,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     try {
       await api.moveBoardColumn(checklistId, col.id, direction);
       closeColMenu();
+      setColsGen((g) => g + 1);
       await reload();
     } catch (e) {
       setColError(String(e));
@@ -288,6 +302,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     try {
       await api.deleteBoardColumn(checklistId, col.id);
       closeColMenu();
+      setColsGen((g) => g + 1);
       await reload();
     } catch (e) {
       setColError(String(e));
@@ -345,7 +360,7 @@ export default function KanbanBoard({ checklistId, items, reload }: {
               <div key={item.localId}
                    className={`kanban-card${item.completed || col.autoComplete ? ' completed-item' : ''}${menuFor === item.localId ? ' menu-open' : ''}${dragId === item.localId ? ' dragging' : ''}`}
                    draggable
-                   onDragStart={(e) => { setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
+                   onDragStart={(e) => { setColMenuFor(null); setDragId(item.localId); e.dataTransfer.setData('text/plain', item.localId); }}
                    onDragEnd={() => setDragId(null)}>
                 {renaming === item.localId ? (
                   <input value={renameText} autoFocus

@@ -988,3 +988,62 @@ describe('KanbanBoard column editor (P9)', () => {
     expect(s).toHaveProperty('autoComplete');
   });
 });
+
+// ---- P8/P9 audit round (kimi): F1, F3, F4 fences ------------------------------
+// F2 lives in ChecklistView.test.tsx because the fix is the parent-level mount
+// key; an isolated KanbanBoard rerender cannot observe the keyed remount.
+
+describe('KanbanBoard column editor live-state (P9 review round)', () => {
+  it('F1: adding a column re-fetches the board (fetch_task_board called at least twice)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      if (cmd === 'add_board_column') return Promise.resolve();
+      return Promise.resolve({});
+    });
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    expect(invoke.mock.calls.filter((c) => c[0] === 'fetch_task_board').length).toBe(1);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    fireEvent.change(screen.getByPlaceholderText('New column name'), { target: { value: 'Review' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add column' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('add_board_column', { checklistId: 'b1', label: 'Review', color: null }));
+    await waitFor(() => expect(invoke.mock.calls.filter((c) => c[0] === 'fetch_task_board').length).toBeGreaterThanOrEqual(2));
+  });
+
+  it('F3: dragging a card closes the column menu', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    await waitFor(() => expect(screen.getByText('To Do')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Column actions' })[0]);
+    expect(document.querySelector('.kanban-col-head .kanban-menu')).not.toBeNull();
+    const card = screen.getByText('alpha').closest('.kanban-card') as HTMLElement;
+    const dt = { getData: (t: string) => (t === 'text/plain' ? 'i1' : ''), setData: () => {} };
+    fireEvent.dragStart(card, { dataTransfer: dt });
+    await waitFor(() => expect(document.querySelector('.kanban-col-head .kanban-menu')).toBeNull());
+  });
+
+  it('F4: oversized est-hours value shows inline error and never invokes', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(board);
+      if (cmd === 'fetch_task_board') return Promise.resolve(board);
+      return Promise.resolve({});
+    });
+    const reload = vi.fn(async () => {});
+    render(<KanbanBoard checklistId="b1" items={items} reload={reload} />);
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Card actions' })[0]);
+    fireEvent.click(screen.getByText('Details'));
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Estimated hours' }), { target: { value: '9e18' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save hours' }));
+    expect(screen.getByText('Estimated hours must not be negative')).toBeInTheDocument();
+    expect(invoke.mock.calls.some((c) => c[0] === 'set_item_est_time')).toBe(false);
+    expect(document.querySelector('.kanban-detail-edit')).not.toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+  });
+});

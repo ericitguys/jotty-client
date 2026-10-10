@@ -439,4 +439,27 @@ describe('ChecklistView', () => {
     fireEvent.blur(titleInput);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_checklist', { id: 'l1', title: 'Renamed', category: 'Home' }));
   });
+
+  it('F2: switching checklistId remounts the board and clears the column menu', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_checklist') {
+        return Promise.resolve({
+          id: 'l1', title: 'Board A', category: 'Home', updatedAt: null, dirty: false, listType: 'kanban',
+          items: [
+            { localId: 'i1', checklistId: 'l1', parentLocalId: null, text: 'a', completed: false, position: 0, dirty: false, status: 'todo', priority: null, targetDate: null, children: [] },
+          ],
+        });
+      }
+      if (cmd === 'get_board_columns' || cmd === 'fetch_task_board') {
+        return Promise.resolve({ checklistId: 'l1', statuses: [{ id: 'todo', label: 'To do', color: null, order: 0, autoComplete: false }] });
+      }
+      return Promise.resolve({});
+    });
+    const { rerender } = render(<ChecklistView checklistId="l1" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Column actions' }));
+    expect(document.querySelector('.kanban-col-head .kanban-menu')).not.toBeNull();
+    rerender(<ChecklistView checklistId="l2" />);
+    await waitFor(() => expect(document.querySelector('.kanban-col-head .kanban-menu')).toBeNull());
+  });
 });
