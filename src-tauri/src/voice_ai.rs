@@ -58,6 +58,16 @@ pub struct VoiceAiClient {
     suffix: Suffix,
 }
 
+pub fn is_permanent_error(e: &AppError) -> bool {
+    matches!(
+        e,
+        AppError::Api {
+            status: 400 | 402 | 404 | 413 | 422,
+            ..
+        }
+    )
+}
+
 pub fn is_auth_error(e: &AppError) -> bool {
     matches!(e, AppError::Api { status: 401 | 403, .. })
 }
@@ -342,6 +352,7 @@ pub struct RetryStats {
     pub staging_retried: usize,
     pub staging_succeeded: usize,
     pub notes_filled: usize,
+    pub permanent_marked: usize,
 }
 
 /// Auto-retry pass (spec §6): staging rows in transcription_failed (NOT
@@ -363,7 +374,12 @@ pub async fn retry_pending(
                 voice::set_transcript(conn, &rec.id, &text)?;
                 stats.staging_succeeded += 1;
             }
-            Err(e) => voice::mark_failed(conn, &rec.id, is_auth_error(&e), &e.to_string())?,
+            Err(e) if is_auth_error(&e) => voice::mark_failed(conn, &rec.id, true, &e.to_string())?,
+            Err(e) if is_permanent_error(&e) => {
+                voice::mark_failed_permanent(conn, &rec.id, &e.to_string())?;
+                stats.permanent_marked += 1;
+            }
+            Err(e) => voice::mark_failed(conn, &rec.id, false, &e.to_string())?,
         }
     }
     let pending: Vec<(String, String)> = {
@@ -377,9 +393,20 @@ pub async fn retry_pending(
         rows
     };
     for (id, path) in pending {
-        if let Ok(text) = transcribe_file(ai, std::path::Path::new(&path), language).await {
-            crate::commands::update_note_inner(conn, &id, None, Some(text), None)?;
-            stats.notes_filled += 1;
+        match transcribe_file(ai, std::path::Path::new(&path), language).await {
+            Ok(text) => {
+                crate::commands::update_note_inner(conn, &id, None, Some(text), None)?;
+                stats.notes_filled += 1;
+            }
+            Err(e) if is_auth_error(&e) => {
+                log::warn!("voice retry note {id}: auth error, leaving empty: {e}");
+            }
+            Err(e) if is_permanent_error(&e) => {
+                log::warn!("voice retry note {id}: permanent error, leaving empty: {e}");
+            }
+            Err(_) => {
+                // transient: leave empty, retry next sync
+            }
         }
     }
     Ok(stats)
@@ -886,5 +913,80 @@ mod tests {
         let rec = crate::db::voice::get(&conn, "r1").unwrap().unwrap();
         assert_eq!(rec.state, crate::db::voice::ST_FAILED);
         assert!(rec.last_error.as_deref().unwrap().contains("read recording"));
+    }
+
+    #[tokio::test]
+    async fn is_permanent_error_table() {
+        use crate::error::AppError;
+        let permanent = |status| AppError::Api { status, body: "x".into() };
+        assert!(is_permanent_error(&permanent(400)));
+        assert!(is_permanent_error(&permanent(402)));
+        assert!(is_permanent_error(&permanent(404)));
+        assert!(is_permanent_error(&permanent(413)));
+        assert!(is_permanent_error(&permanent(422)));
+        assert!(!is_permanent_error(&permanent(401)), "auth path is separate");
+        assert!(!is_permanent_error(&permanent(403)), "auth path is separate");
+        assert!(!is_permanent_error(&permanent(429)));
+        assert!(!is_permanent_error(&permanent(500)));
+        assert!(!is_permanent_error(&permanent(503)));
+        // Http (transport/timeout) is transient, never permanent.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        });
+        let http_err = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(1))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(!is_permanent_error(&AppError::Http(http_err)));
+        assert!(!is_permanent_error(&AppError::Other("weird".into())));
+    }
+
+    #[tokio::test]
+    async fn retry_pending_permanent_400_becomes_failed_permanent_and_stops() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/api/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+            .mount(&s).await;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("r.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db_conn();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        crate::db::voice::mark_failed(&conn, "r1", false, "earlier").unwrap();
+        let stats = retry_pending(&mut conn, &client_at(&s.uri()), None).await.unwrap();
+        assert_eq!(stats.staging_retried, 1);
+        assert_eq!(stats.staging_succeeded, 0);
+        assert_eq!(stats.permanent_marked, 1);
+        let rec = crate::db::voice::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(rec.state, crate::db::voice::ST_FAILED_PERM);
+        assert!(rec.last_error.as_deref().unwrap().contains("400"));
+        // a follow-up retry leaves the row untouched
+        let stats2 = retry_pending(&mut conn, &client_at(&s.uri()), None).await.unwrap();
+        assert_eq!(stats2.staging_retried, 0, "permanent rows are excluded from retry");
+        assert_eq!(stats2.permanent_marked, 0);
+        let rec2 = crate::db::voice::get(&conn, "r1").unwrap().unwrap();
+        assert_eq!(rec2.state, crate::db::voice::ST_FAILED_PERM);
+    }
+
+    #[tokio::test]
+    async fn retry_pending_401_stays_failed_auth_and_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("r.wav");
+        std::fs::write(&wav, b"RIFF").unwrap();
+        let mut conn = db_conn();
+        crate::db::voice::create_staging(&conn, "r1", wav.to_string_lossy().as_ref()).unwrap();
+        crate::db::voice::mark_recorded(&conn, "r1", 2.0).unwrap();
+        crate::db::voice::mark_failed(&conn, "r1", true, "api error 401").unwrap();
+        let stats = retry_pending(&mut conn, &client_at("http://127.0.0.1:1"), None).await.unwrap();
+        assert_eq!(stats.staging_retried, 0, "auth rows never consume the retry loop");
+        assert_eq!(crate::db::voice::get(&conn, "r1").unwrap().unwrap().state, crate::db::voice::ST_FAILED_AUTH);
     }
 }

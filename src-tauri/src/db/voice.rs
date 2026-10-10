@@ -8,6 +8,8 @@ pub const ST_RECORDING: &str = "recording";
 pub const ST_RECORDED: &str = "recorded";
 pub const ST_TRANSCRIBING: &str = "transcribing";
 pub const ST_TRANSCRIBED: &str = "transcribed";
+pub const ST_FAILED_PERM: &str = "transcription_failed_permanent";
+
 pub const ST_FAILED: &str = "transcription_failed";
 pub const ST_FAILED_AUTH: &str = "transcription_failed_auth";
 
@@ -107,6 +109,14 @@ pub fn mark_failed(conn: &Connection, id: &str, auth: bool, err: &str) -> AppRes
     conn.execute(
         "UPDATE voice_recordings SET state=?2, last_error=?3 WHERE id=?1",
         rusqlite::params![id, state, err],
+    )?;
+    Ok(())
+}
+
+pub fn mark_failed_permanent(conn: &Connection, id: &str, err: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE voice_recordings SET state=?2, last_error=?3 WHERE id=?1",
+        rusqlite::params![id, ST_FAILED_PERM, err],
     )?;
     Ok(())
 }

@@ -368,7 +368,7 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
     }
   };
 
-  const failed = rec?.state === 'transcription_failed' || rec?.state === 'transcription_failed_auth';
+  const failed = rec?.state === 'transcription_failed' || rec?.state === 'transcription_failed_auth' || rec?.state === 'transcription_failed_permanent';
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const boardEnabled = !!connection && !!currentText().trim() && !busy && !extracting && phase === 'review';
 
@@ -404,7 +404,9 @@ export default function VoiceNoteReview({ mode, recording, noteId, onClose, onSa
               <p className="error">
                 {rec?.state === 'transcription_failed_auth'
                   ? `Transcription failed — check the AI server API key in Settings. ${rec?.lastError ?? ''}`
-                  : `Transcription failed — will retry after the next sync. ${rec?.lastError ?? ''}`}
+                  : rec?.state === 'transcription_failed_permanent'
+                    ? `Transcription failed permanently — ${rec?.lastError ?? 'unsupported request'}`
+                    : `Transcription failed — will retry after the next sync. ${rec?.lastError ?? ''}`}
               </p>
             )}
             {notice && <p className="voice-hint">{notice}</p>}

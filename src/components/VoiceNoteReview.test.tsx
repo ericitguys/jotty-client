@@ -94,6 +94,33 @@ describe('VoiceNoteReview', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_transcribe', { recordingId: 'r1' }));
   });
 
+  it('failed auth transcription shows the API-key message', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcription_failed_auth', rawTranscript: null, lastError: '401 unauthorized' });
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByText(/check the AI server API key/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/401 unauthorized/)).toBeInTheDocument());
+    expect(screen.getByText('Retry transcription')).toBeInTheDocument();
+  });
+
+  it('failed permanent transcription shows the permanent message and lastError', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_stop_recording') return Promise.resolve(recordedRow);
+      if (cmd === 'voice_transcribe') return Promise.resolve({ ...recordedRow, state: 'transcription_failed_permanent', rawTranscript: null, lastError: '413 file too large' });
+      return Promise.resolve(null);
+    });
+    render(<VoiceNoteReview mode="new" onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByText('Stop'));
+    await waitFor(() => expect(screen.getByText(/Transcription failed permanently/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/413 file too large/)).toBeInTheDocument());
+  });
+
   it('failed transcription shows the retry button and error text, retry re-calls', async () => {
     invoke.mockImplementation((cmd: string) => {
       if (cmd === 'voice_start_recording') return Promise.resolve(recordedRow);

@@ -77,7 +77,7 @@ export interface UserPrefs {
 export interface VoiceRecordingDto {
   id: string; path: string; durationSecs: number;
   rawTranscript: string | null; tidiedTranscript: string | null;
-  state: 'recording' | 'recorded' | 'transcribing' | 'transcribed' | 'transcription_failed' | 'transcription_failed_auth';
+  state: 'recording' | 'recorded' | 'transcribing' | 'transcribed' | 'transcription_failed' | 'transcription_failed_auth' | 'transcription_failed_permanent';
   lastError: string | null; createdAt: string;
 }
 export interface AiSettingsDto {
