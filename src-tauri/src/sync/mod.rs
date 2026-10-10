@@ -6,6 +6,25 @@ use rusqlite::Connection;
 use crate::error::AppResult;
 use crate::jotty::client::JottyClient;
 
+// Runtime-specific bridge for the voice-notes retry dispatch. voice_ai::maybe_retry
+// is not generic over the Tauri runtime, so this sealed trait lets do_sync stay
+// generic while still spawning the real retry on the production Wry runtime.
+pub(crate) mod retry_dispatch {
+    use tauri::Runtime;
+    pub trait DispatchRetry: Runtime {
+        fn dispatch_voice_retry(app: tauri::AppHandle<Self>);
+    }
+    impl DispatchRetry for tauri::Wry {
+        fn dispatch_voice_retry(app: tauri::AppHandle<tauri::Wry>) {
+            tauri::async_runtime::spawn(async move { crate::voice_ai::maybe_retry(app).await });
+        }
+    }
+    #[cfg(test)]
+    impl DispatchRetry for tauri::test::MockRuntime {
+        fn dispatch_voice_retry(_app: tauri::AppHandle<tauri::test::MockRuntime>) {}
+    }
+}
+
 #[derive(Debug, Default, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
@@ -58,19 +77,25 @@ impl SyncReport {
 use rusqlite::OptionalExtension;
 use tauri::Manager;
 
-pub fn spawn_scheduler(app: tauri::AppHandle) {
+pub fn spawn_scheduler<R>(app: tauri::AppHandle<R>)
+where
+    R: tauri::Runtime + retry_dispatch::DispatchRetry + 'static,
+{
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
-            if let Err(e) = scheduler_tick(&app).await {
+            if let Err(e) = scheduler_tick::<R>(&app).await {
                 log::warn!("scheduler tick failed: {e}");
             }
         }
     });
 }
 
-pub async fn scheduler_tick(app: &tauri::AppHandle) -> AppResult<()> {
+pub async fn scheduler_tick<R>(app: &tauri::AppHandle<R>) -> AppResult<()>
+where
+    R: tauri::Runtime + retry_dispatch::DispatchRetry,
+{
     let state = app.state::<crate::state::AppState>();
     // skip if not connected or another sync is running
     if state.syncing.load(std::sync::atomic::Ordering::SeqCst) { return Ok(()); }
@@ -112,10 +137,28 @@ pub async fn scheduler_tick(app: &tauri::AppHandle) -> AppResult<()> {
         }
     };
     if !due { return Ok(()); }
-    do_sync(app).await
+    do_sync::<R>(app).await
 }
 
-pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
+pub async fn do_sync<R>(app: &tauri::AppHandle<R>) -> AppResult<()>
+where
+    R: tauri::Runtime + retry_dispatch::DispatchRetry,
+{
+    fn truncate_ellipsis(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+        }
+    }
+    fn format_errors(errors: &[String]) -> String {
+        if errors.len() <= 2 {
+            errors.join(" | ")
+        } else {
+            format!("{} | {} (+{} more)", errors[0], errors[1], errors.len() - 2)
+        }
+    }
+
     let state = app.state::<crate::state::AppState>();
     if state.syncing.swap(true, std::sync::atomic::Ordering::SeqCst) { return Ok(()); }
     let result = {
@@ -138,6 +181,29 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
         })
     };
     state.syncing.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // audit 4.2: surface pull-side (and other non-outbox) sync failures in the
+    // badge via a dedicated sync_state key. do_sync's Ok(()) return contract is
+    // preserved; callers that need failure details read this key.
+    {
+        let conn = state.db.lock().await;
+        let stored = match &result {
+            Ok(report) if !report.errors.is_empty() => {
+                Some(truncate_ellipsis(&format_errors(&report.errors), 300))
+            }
+            Ok(_) => None,
+            Err(e) => Some(truncate_ellipsis(&e.to_string(), 300)),
+        };
+        if let Some(value) = stored {
+            conn.execute(
+                "INSERT INTO sync_state(key,value) VALUES ('last_pull_error',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [value],
+            )?;
+        } else {
+            conn.execute("DELETE FROM sync_state WHERE key='last_pull_error'", [])?;
+        }
+    }
+
     if let Ok(report) = &result {
         use tauri::Emitter;
         let _ = app.emit("sync-updated", serde_json::to_value(report).unwrap_or_default());
@@ -146,8 +212,7 @@ pub async fn do_sync(app: &tauri::AppHandle) -> AppResult<()> {
     // reachable — give the AI transcription queue a chance. Spawned: do_sync's
     // callers (scheduler + manual trigger) must not block on AI latency.
     if result.is_ok() {
-        let app2 = app.clone();
-        tauri::async_runtime::spawn(async move { crate::voice_ai::maybe_retry(app2).await });
+        retry_dispatch::DispatchRetry::dispatch_voice_retry(app.clone());
     }
     Ok(())
 }
@@ -206,5 +271,81 @@ mod tests {
         assert_eq!(o.as_slice(), &["push", "pull"], "push must precede pull");
         // note survived (pushed, then pull LWW saw our newer updatedAt)
         assert!(notes::get(&conn, "n1").unwrap().is_some());
+    }
+
+    // audit 4.2 RED: do_sync persists pull failures under a dedicated sync_state
+    // key and clears it after a fully successful sync; sync_status surfaces it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn do_sync_persists_and_clears_last_pull_error() {
+        use crate::keys::MockKeyStore;
+        use crate::state::AppState;
+        use wiremock::matchers::{method, path};
+
+        fn db() -> rusqlite::Connection {
+            let dir = tempfile::tempdir().unwrap();
+            let c = open(&dir.path().join("t.db")).unwrap();
+            std::mem::forget(dir);
+            migrations::run(&c).unwrap();
+            c
+        }
+
+        // 1) failing pull: do_sync returns Ok but records the error.
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/notes"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("server down"))
+            .mount(&s).await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"checklists":[]})))
+            .mount(&s).await;
+
+        let conn = db();
+        let app = tauri::Builder::<tauri::Wry>::default()
+            .any_thread()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let state = AppState::new(conn, Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap();
+        *state.client.write().await = Some(JottyClient::new(&s.uri(), "ck").unwrap());
+        app.manage(state);
+
+        assert!(do_sync(&app.handle()).await.is_ok());
+
+        let st = app.state::<AppState>();
+        let conn = st.db.lock().await;
+        let stored: Option<String> = conn
+            .query_row("SELECT value FROM sync_state WHERE key='last_pull_error'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        let err = stored.unwrap_or_default();
+        assert!(
+            err.contains("server down") || err.contains("pull failed"),
+            "last_pull_error should capture the pull failure, got: {err}"
+        );
+        let status = crate::commands::sync_status_inner(&conn, false).unwrap();
+        assert!(
+            status.last_pull_error.as_deref().unwrap_or_default().contains("server down")
+                || status.last_pull_error.as_deref().unwrap_or_default().contains("pull failed"),
+            "SyncStatusDto.last_pull_error should surface the error"
+        );
+        drop(conn);
+
+        // 2) successful pull: the key is cleared.
+        let s2 = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/notes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"notes":[]})))
+            .mount(&s2).await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"checklists":[]})))
+            .mount(&s2).await;
+        *st.client.write().await = Some(JottyClient::new(&s2.uri(), "ck").unwrap());
+        assert!(do_sync(&app.handle()).await.is_ok());
+
+        let conn = st.db.lock().await;
+        let stored: Option<String> = conn
+            .query_row("SELECT value FROM sync_state WHERE key='last_pull_error'", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(stored.is_none(), "last_pull_error should be cleared after a clean sync, got: {stored:?}");
+        let status = crate::commands::sync_status_inner(&conn, false).unwrap();
+        assert!(status.last_pull_error.is_none());
     }
 }

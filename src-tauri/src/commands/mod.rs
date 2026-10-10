@@ -1029,21 +1029,38 @@ pub(crate) fn list_conflicts_inner(conn: &Connection) -> AppResult<Vec<ConflictD
     Ok(rows)
 }
 
+fn stage_err(keep: &str, stage: &str, e: AppError) -> AppError {
+    AppError::Other(format!("resolve_conflict failed — keep={keep} stage={stage} — {e}"))
+}
+
 // Ruling C: keep=="server" → outbox::mark_done + do_sync via app handle (pull
 // re-imports server state); keep=="mine" → raw UPDATE outbox SET state='pending',
 // attempts=0 WHERE seq=?1 (outbox.rs is NOT in this task's Files list).
-pub(crate) async fn inner_resolve_conflict(
+pub(crate) async fn inner_resolve_conflict<R>(
     state: &AppState,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     seq: i64,
     keep: &str,
-) -> AppResult<()> {
+) -> AppResult<()>
+where
+    R: tauri::Runtime + crate::sync::retry_dispatch::DispatchRetry,
+{
     match keep {
         "server" => {
             let conn = state.db.lock().await;
-            outbox::mark_done(&conn, seq)?;
+            outbox::mark_done(&conn, seq).map_err(|e| stage_err(keep, "outbox", e))?;
             drop(conn);
-            crate::sync::do_sync(app).await?;
+            crate::sync::do_sync::<R>(app).await.map_err(|e| stage_err(keep, "sync", e))?;
+            // audit 4.2: do_sync preserves its Ok(()) contract and records pull
+            // failures under sync_state.last_pull_error. A server-side conflict
+            // resolution that fails to re-import server state is reported here.
+            let conn = state.db.lock().await;
+            let last_pull_error: Option<String> = conn
+                .query_row("SELECT value FROM sync_state WHERE key='last_pull_error'", [], |r| r.get(0))
+                .optional()?;
+            if let Some(msg) = last_pull_error {
+                return Err(stage_err(keep, "sync", AppError::Other(msg)));
+            }
             Ok(())
         }
         "mine" => {
@@ -1051,14 +1068,15 @@ pub(crate) async fn inner_resolve_conflict(
             // rowless delete conflicts are terminal (the row was removed at enqueue
             // time and can never re-resolve) — keep-mine dismisses as DONE instead
             // of requeueing into the same conflict loop (v0.21.3).
-            if keep_mine_rowless_delete(&conn, seq)? {
+            if keep_mine_rowless_delete(&conn, seq).map_err(|e| stage_err(keep, "inspect", e))? {
                 Ok(())
             } else {
-                conn.execute("UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1", [seq])?;
+                conn.execute("UPDATE outbox SET state='pending', attempts=0 WHERE seq=?1", [seq])
+                    .map_err(|e| stage_err(keep, "requeue", AppError::from(e)))?;
                 Ok(())
             }
         }
-        _ => Err(AppError::Other(format!("unknown keep '{keep}'"))),
+        _ => Err(stage_err(keep, "unknown", AppError::Other(format!("unknown keep '{keep}'")))),
     }
 }
 
@@ -1152,6 +1170,9 @@ pub(crate) fn sync_status_inner(conn: &Connection, syncing: bool) -> AppResult<S
     let last_sync_at: Option<String> = conn
         .query_row("SELECT value FROM sync_state WHERE key='last_sync_at'", [], |r| r.get(0))
         .optional()?;
+    let last_pull_error: Option<String> = conn
+        .query_row("SELECT value FROM sync_state WHERE key='last_pull_error'", [], |r| r.get(0))
+        .optional()?;
     // newest recorded failure across pending + conflict rows (FIFO head is what
     // blocks the queue, so order by seq — first failed op is the blocker)
     let last_error: Option<String> = conn
@@ -1161,7 +1182,7 @@ pub(crate) fn sync_status_inner(conn: &Connection, syncing: bool) -> AppResult<S
             |r| r.get(0),
         )
         .optional()?;
-    Ok(SyncStatusDto { pending, last_sync_at, syncing, last_error })
+    Ok(SyncStatusDto { pending, last_sync_at, syncing, last_error, last_pull_error })
 }
 
 pub(crate) fn get_settings_inner(conn: &Connection) -> AppResult<SettingsDto> {
@@ -3221,6 +3242,7 @@ mod tests {
         // no failures -> clean
         let s = sync_status_inner(&conn, false).unwrap();
         assert!(s.last_error.is_none());
+        assert!(s.last_pull_error.is_none());
         // two failed ops: the FIFO head (lowest seq) is the reported blocker
         outbox::enqueue(&conn, "update", "note", "n1", &serde_json::json!({})).unwrap();
         outbox::enqueue(&conn, "update", "note", "n2", &serde_json::json!({})).unwrap();
@@ -3229,6 +3251,53 @@ mod tests {
         let s = sync_status_inner(&conn, false).unwrap();
         assert_eq!(s.pending, 2);
         assert_eq!(s.last_error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn stage_err_formats_exact_prefix() {
+        let err = stage_err("server", "sync", AppError::Other("pull endpoint boom".into()));
+        assert_eq!(
+            err.to_string(),
+            "resolve_conflict failed — keep=server stage=sync — pull endpoint boom"
+        );
+    }
+
+    // audit 3.2 integration: resolving a conflict with keep="server" must surface the
+    // underlying sync failure with a stable stage-prefixed error string.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resolve_conflict_server_stages_sync_error() {
+        use crate::jotty::client::JottyClient;
+        use crate::keys::MockKeyStore;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let s = MockServer::start().await;
+        // pull endpoint 500s -> do_sync's report collects the pull failure
+        Mock::given(method("GET")).and(path("/api/notes"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("pull endpoint boom"))
+            .mount(&s).await;
+        Mock::given(method("GET")).and(path("/api/checklists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"checklists":[]})))
+            .mount(&s).await;
+
+        let conn = db();
+        outbox::enqueue(&conn, "update", "note", "n1", &serde_json::json!({})).unwrap();
+        outbox::mark_conflict(&conn, 1, "pre-existing conflict error").unwrap();
+
+        let app = tauri::test::mock_app();
+        let state = test_state_with_client(&s.uri()).await;
+        app.manage(state);
+
+        let err = inner_resolve_conflict(&*app.state::<AppState>(), app.handle(), 1, "server").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.starts_with("resolve_conflict failed — keep=server stage=sync —"),
+            "error must carry stage prefix, got: {msg}"
+        );
+        assert!(
+            msg.contains("pull endpoint boom") || msg.contains("pull failed") || msg.contains("500"),
+            "error must include underlying pull failure, got: {msg}"
+        );
     }
 
     // ---- offline-launch fix: get_connection must report CONFIGURED
