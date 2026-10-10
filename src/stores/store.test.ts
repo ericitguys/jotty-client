@@ -22,6 +22,54 @@ beforeEach(() => {
   });
 });
 
+describe('store.stalePieces', () => {
+  it('marks categories stale when server is reachable but listCategories fails', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instanceUrl: 'http://srv', version: '1' });
+      if (cmd === 'list_categories') return Promise.reject(new Error('boom'));
+      if (cmd === 'get_prefs') return Promise.resolve({
+        preferredTheme: null, defaultNoteFilter: null, defaultChecklistFilter: null,
+        checklistItemClickAction: null, hideConnectionIndicator: null, pinnedNotes: [], pinnedLists: [],
+      });
+      if (cmd === 'get_branding') return Promise.resolve({ name: null, iconDataUrl: null, themeColor: null });
+      return Promise.resolve([]);
+    });
+    await useStore.getState().refreshAll();
+    expect(useStore.getState().stalePieces).toEqual({ categories: true, prefs: false, branding: false });
+  });
+
+  it('clears stale flags after a fully successful refresh', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instanceUrl: 'http://srv', version: '1' });
+      if (cmd === 'list_categories') return Promise.reject(new Error('boom'));
+      return Promise.resolve([]);
+    });
+    await useStore.getState().refreshAll();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve({ instanceUrl: 'http://srv', version: '1' });
+      if (cmd === 'list_categories') return Promise.resolve({ notes: [], checklists: [] });
+      if (cmd === 'get_prefs') return Promise.resolve({
+        preferredTheme: null, defaultNoteFilter: null, defaultChecklistFilter: null,
+        checklistItemClickAction: null, hideConnectionIndicator: null, pinnedNotes: [], pinnedLists: [],
+      });
+      if (cmd === 'get_branding') return Promise.resolve({ name: null, iconDataUrl: null, themeColor: null });
+      return Promise.resolve([]);
+    });
+    await useStore.getState().refreshAll();
+    expect(useStore.getState().stalePieces).toEqual({ categories: false, prefs: false, branding: false });
+  });
+
+  it('does not mark stale on an offline start (connection is null)', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_connection') return Promise.resolve(null);
+      if (cmd === 'list_categories') return Promise.reject(new Error('offline'));
+      return Promise.resolve([]);
+    });
+    await useStore.getState().refreshAll();
+    expect(useStore.getState().stalePieces).toEqual({ categories: false, prefs: false, branding: false });
+  });
+});
+
 describe('store.createBoard', () => {
   it('createBoard calls create_task_board, refreshes, and selects the new board', async () => {
     invoke.mockImplementation((cmd: string) => {

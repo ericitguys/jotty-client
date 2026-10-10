@@ -52,7 +52,7 @@ export interface SearchResultsDto {
   notes: { id: string; title: string; snippet: string }[];
   checklists: { id: string; title: string; itemText: string }[];
 }
-export interface SyncStatusDto { pending: number; lastSyncAt: string | null; syncing: boolean; lastError: string | null; }
+export interface SyncStatusDto { pending: number; lastSyncAt: string | null; syncing: boolean; lastError: string | null; lastPullError: string | null; }
 /** trigger_sync's report (Rust SyncReportDto, commands/dto.rs — serde
  * camelCase). NOT the "sync-updated" event payload: that serializes
  * sync::PullStats SNAKE_CASE (enrichment_errors/notes_applied/lists_applied/
