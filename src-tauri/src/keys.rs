@@ -148,30 +148,45 @@ mod tests {
         assert_eq!(ks.get().unwrap(), None);
     }
 
-    // ---- P10: legacy plaintext migration (android) ----
-    // The legacy plaintext file is `${SERVICE}-${account}.key` under the app
-    // data dir (old mobile_store shape). Migration: empty keystore =>
-    // set + delete file; keystore already set => file deleted, keystore value
-    // PRESERVED (stale copy must never overwrite the live keystore key);
-    // no file => no-op.
-    //
-    // The real android-cfg wiring cannot run on this host — this source-shape
-    // fence pins lib.rs to the load-bearing ORDER: builder registration and
-    // BOTH accounts' migration happen in setup BEFORE AppState::new
-    // (restore_connection then reads migrated credentials). Comment bodies are
-    // stripped first (root-cause comments carry the asserted literals — repo
-    // precedent).
+    // ---- P10: legacy plaintext migration (android), v0.30.1 hotfix shape ----
+    // Registration law since v0.30.1: lib.rs must NOT call
+    // set_android_keyring_credential_builder() — the ndk-context path —
+    // because tao 0.35 / wry 0.55 never initialize ndk-context and the
+    // context getter PANICS (v0.30.0 field report: app opens and instantly
+    // closes). The builder registers from Kotlin: MainActivity.onCreate
+    // calls the android-keyring JNI export (io.crates.keyring.Keyring
+    // shim, loadLibrary("jotty_client_lib")) BEFORE super.onCreate(), so
+    // it is installed before this Tauri runtime starts. lib.rs's law: the
+    // BOTH-accounts legacy migration runs BEFORE AppState::new
+    // (restore_connection then reads migrated credentials). The
+    // gen/android fences skip on hosts without the generated project
+    // (gen/ is gitignored; only the android build host carries it).
+    // Comment bodies are stripped first (root-cause comments carry the
+    // asserted literals — repo precedent).
     #[test]
-    fn librs_registers_android_builder_and_migrates_before_appstate() {
+    fn android_keyring_registration_shape_kotlin_before_rust_startup() {
         let src = std::fs::read_to_string("src/lib.rs").unwrap();
         let code: String = src
             .lines()
             .map(|l| l.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
-        let builder_at = code
-            .find("set_android_keyring_credential_builder")
-            .expect("lib.rs must register the android keyring builder");
+        assert!(
+            code.find("set_android_keyring_credential_builder").is_none(),
+            "lib.rs must NOT call the ndk-context registration (tao/wry never initialize ndk-context — it panics; v0.30.0 crash)"
+        );
+        assert!(
+            code.contains("ANDROID_KEYRING_JNI_HOLD"),
+            "lib.rs must hold the android-keyring JNI symbol via the link-hold static (nothing else references the crate; archive granularity drops its code object — symbol vanishes from the cdylib and the Kotlin shim gets UnsatisfiedLinkError)"
+        );
+        assert!(
+            code.contains("\"keyring-builder-status\""),
+            "lib.rs must gate the legacy plaintext migration on the keyring-builder-status marker"
+        );
+        assert!(
+            code.contains("unwrap_or(false)"),
+            "the marker read must fail-CLOSED (missing marker = migration skipped, plaintext kept)"
+        );
         let migrate_at = code
             .find("keys_migrate_legacy")
             .expect("lib.rs must wire the legacy plaintext migration");
@@ -182,12 +197,52 @@ mod tests {
             .find("state::AppState::new(")
             .expect("lib.rs must construct AppState");
         assert!(
-            builder_at < appstate_at,
-            "android builder must be installed BEFORE AppState::new (restore_connection reads keys through it)"
-        );
-        assert!(
             migrate_at < appstate_at,
             "legacy migration must run BEFORE AppState::new (restore_connection then reads migrated keys)"
+        );
+
+        // gen/android fences (android build host only — gen/ is gitignored).
+        let main_activity =
+            std::path::Path::new("gen/android/app/src/main/java/page/jotty/desktop/MainActivity.kt");
+        if !main_activity.exists() {
+            return;
+        }
+        let kt_src = std::fs::read_to_string(main_activity).unwrap();
+        let kt: String = kt_src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reg_at = kt
+            .find("Keyring.setAndroidKeyringCredentialBuilder")
+            .expect("MainActivity must call the Keyring shim registration");
+        let super_at = kt
+            .find("super.onCreate")
+            .expect("MainActivity must call super.onCreate");
+        assert!(
+            reg_at < super_at,
+            "keyring builder must be registered BEFORE super.onCreate (the Rust runtime starts inside it)"
+        );
+        assert!(
+            kt.contains(r#"writeKeyringMarker("ok")"#) && kt.contains(r#"writeKeyringMarker("failed")"#),
+            "MainActivity must write the keyring-builder-status marker on BOTH outcomes (gates lib.rs's migration)"
+        );
+        let keyring_kt =
+            std::path::Path::new("gen/android/app/src/main/java/io/crates/keyring/Keyring.kt");
+        let ksrc_src = std::fs::read_to_string(keyring_kt)
+            .expect("io.crates.keyring.Keyring shim must exist (native binding to the crate's JNI export)");
+        let ksrc: String = ksrc_src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            ksrc.contains(r#"System.loadLibrary("jotty_client_lib")"#),
+            "Keyring.kt must load the cdylib jotty_client_lib (where the crate's JNI export lives)"
+        );
+        assert!(
+            ksrc.contains("external fun setAndroidKeyringCredentialBuilder(context: Context)"),
+            "Keyring.kt must declare the crate's JNI entry point"
         );
     }
 

@@ -15,6 +15,33 @@ pub use sync::spawn_scheduler;
 
 use tauri::Manager;
 
+// P10 (v0.30.1): LINK-HOLD for the android-keyring crate's Java export.
+// The Kotlin Keyring shim (MainActivity.onCreate, before super.onCreate)
+// binds to this symbol by name — but nothing in Rust calls it anymore (the
+// ndk-context registration fn panics; see setup below), and rustc's archive
+// member granularity drops an unreferenced dependency's code object: the
+// v0.30.1 verify-build proved the symbol MISSING from the cdylib without a
+// Rust-side reference. This static takes the function's address (never
+// calls it) — the data relocation pulls the rlib member and keeps the
+// symbol exported from libjotty_client_lib.so. no_mangle + pub so no
+// dead-code pass can drop it.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub static ANDROID_KEYRING_JNI_HOLD: unsafe extern "system" fn(
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+) = {
+    extern "system" {
+        fn Java_io_crates_keyring_Keyring_00024Companion_setAndroidKeyringCredentialBuilder(
+            env: *mut std::ffi::c_void,
+            class: *mut std::ffi::c_void,
+            context: *mut std::ffi::c_void,
+        );
+    }
+    Java_io_crates_keyring_Keyring_00024Companion_setAndroidKeyringCredentialBuilder
+};
+
 // Mobile entry point (Android): the wry Android runtime calls `run` through the
 // mobile_entry_point attribute; desktop builds are unaffected.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,27 +51,47 @@ pub fn run() {
         .setup(|app| {
             let db_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&db_dir)?;
-            // P10: route keyring to the system AndroidKeyStore-backed builder
-            // BEFORE any Entry exists (restore_connection below reads keys).
-            // Failure is LOUD (logged) — no plaintext fallback reappears.
-            #[cfg(target_os = "android")]
-            if let Err(e) = android_keyring::set_android_keyring_credential_builder() {
-                log::error!("android keyring builder init failed: {e}");
-            }
-            // P10: one-time legacy plaintext migration (both accounts). The
-            // migration fn keeps the plaintext file on any keystore failure,
-            // so a retry next startup is always safe.
+            // P10 (v0.30.1 hotfix): the AndroidKeyStore CredentialBuilder is
+            // NOT registered from Rust. The ndk-context registration fn
+            // panics under tao 0.35 / wry 0.55 (nothing in the Tauri stack
+            // initializes ndk-context — v0.30.0 shipped exactly that crash:
+            // app opens and instantly closes on every launch). Registration
+            // happens in Kotlin: MainActivity.onCreate calls the android-
+            // keyring JNI export via the io.crates.keyring.Keyring shim
+            // BEFORE super.onCreate() starts this runtime. What remains
+            // here: the one-time legacy plaintext migration (both accounts),
+            // GATED on the Kotlin-confirmed registration. keyring's default
+            // builder on android is the in-memory mock — a migration run
+            // without the REAL AndroidKeyStore builder would "succeed"
+            // against the mock and delete the only plaintext copy
+            // (permanent key loss at next process). The marker file
+            // (keyring-builder-status) is written by MainActivity.onCreate
+            // BEFORE this runtime starts; a missing/non-ok marker = the
+            // registration was never confirmed = keep plaintext, skip the
+            // migration, retry next launch.
+            // The migration fn itself keeps the plaintext file on any
+            // keystore failure, so a retry next startup is always safe.
             #[cfg(target_os = "android")]
             {
-                for (account, label) in [
-                    (keys::ACCOUNT, "api-key"),
-                    (keys::AI_ACCOUNT, "openwebui-key"),
-                ] {
-                    match keys::keys_migrate_legacy(&db_dir, account, &keys::OsKeyStore) {
-                        Ok(Some(_)) => log::info!("legacy plaintext key migrated to AndroidKeyStore: {label}"),
-                        Ok(None) => {}
-                        Err(e) => log::warn!("legacy key migration skipped (kept plaintext): {e}"),
+                let status_path = db_dir.join("keyring-builder-status");
+                let registered = std::fs::read_to_string(&status_path)
+                    .map(|s| s.trim() == "ok")
+                    .unwrap_or(false);
+                if registered {
+                    for (account, label) in [
+                        (keys::ACCOUNT, "api-key"),
+                        (keys::AI_ACCOUNT, "openwebui-key"),
+                    ] {
+                        match keys::keys_migrate_legacy(&db_dir, account, &keys::OsKeyStore) {
+                            Ok(Some(_)) => log::info!("legacy plaintext key migrated to AndroidKeyStore: {label}"),
+                            Ok(None) => {}
+                            Err(e) => log::warn!("legacy key migration skipped (kept plaintext): {e}"),
+                        }
                     }
+                } else {
+                    log::error!(
+                        "android keyring builder not confirmed (marker missing or failed) — legacy plaintext migration skipped, files kept"
+                    );
                 }
             }
             let conn = db::open(&db_dir.join("jotty.db"))?;
