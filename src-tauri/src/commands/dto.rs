@@ -295,6 +295,9 @@ pub struct SyncStatusDto {
     // most recent outbox failure (pending or conflict rows), None when clean —
     // surfaced in the badge so "sync now does nothing" becomes "sync failed: <why>"
     pub last_error: Option<String>,
+    // audit 4.2: pull-side failures that never enter the outbox queue now surface
+    // in the badge via a dedicated sync_state key.
+    pub last_pull_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -550,6 +553,29 @@ mod tests {
         let v2 = serde_json::to_value(&Into::<ItemDto>::into(row2)).unwrap();
         assert!(v2["description"].is_null());
         assert!(v2["estimatedTime"].is_null());
+    }
+
+    #[test]
+    fn sync_status_dto_serializes_last_pull_error_camel_case() {
+        let dto = SyncStatusDto {
+            pending: 0,
+            last_sync_at: Some("2026-10-10T12:00:00Z".into()),
+            syncing: false,
+            last_error: None,
+            last_pull_error: Some("pull endpoint returned 500".into()),
+        };
+        let v = serde_json::to_value(&dto).unwrap();
+        assert_eq!(v["lastPullError"], "pull endpoint returned 500");
+        assert!(v.get("last_pull_error").is_none(), "snake_case key must not leak");
+        let empty = SyncStatusDto {
+            pending: 0,
+            last_sync_at: None,
+            syncing: false,
+            last_error: None,
+            last_pull_error: None,
+        };
+        let v2 = serde_json::to_value(&empty).unwrap();
+        assert!(v2["lastPullError"].is_null());
     }
 }
 
