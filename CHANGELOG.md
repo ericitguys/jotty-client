@@ -1,3 +1,26 @@
+## v0.31.0 — Audit-deferral batch: error surfacing + retry classification (2026-10-10)
+
+All five findings accepted in item #5 ("audit accepted-for-v1 items") implemented and verified.
+
+### Changed
+- **Conflict resolution errors are stage-prefixed**: `resolve_conflict` failures now read
+  `resolve_conflict failed — keep=<k> stage=outbox|sync|inspect|requeue — <cause>` instead of an opaque string, so "try again" vs "data loss" is tellable.
+- **Pull-side sync failures now reach the UI**: a failed pull is recorded in the app's sync state,
+  cleared after the next fully successful sync; the sync badge prefers showing this pull error over
+  the push-queue error. Previously pull failures were invisible (badge showed only queue errors).
+- **Voice transcription errors are classified**: bad-request-class failures (400/402/404/413/422)
+  are terminal — marked as permanently failed, no longer retried on every sync, and get their own
+  message in the review dialog. Auth failures (401/403) keep fail-fast behavior; transient errors
+  (5xx/timeouts) keep retrying after each successful sync.
+- **List type default fixed**: checklists created from a server payload that omits `type` now default
+  to upstream's `"simple"` instead of the undocumented `"regular"`.
+- **Stale-data indicator**: on a connected-but-erroring server, the sync badge shows a subtle
+  "· stale data" chip when categories/preferences/branding could not be refreshed; flags clear on
+  success or when offline (intentional graceful start).
+
+### Verification
+cargo 395+1i · vitest 678/678 · tsc clean · warning census 18 Δ0
+
 ## v0.14.1 — Android app renamed to "Jotty Mobile" (2026-09-22)
 
 The Android launcher shows **Jotty Mobile** in the app drawer and recents (was "jotty-desktop"). Desktop unchanged.
