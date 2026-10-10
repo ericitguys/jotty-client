@@ -116,7 +116,12 @@ export default function KanbanBoard({ checklistId, items, reload }: {
     return () => { cancelled = true; };
   }, [checklistId, colsGen]);
 
-  const cols: BoardStatusDto[] = columns ?? [];
+  // Column render order = the `order` field, not the payload's array order:
+  // upstream persists statuses as a literal YAML array (insertion order — its
+  // own web UI sorts defensively: Kanban.tsx `statuses.sort((a,b) => a.order
+  // - b.order)`), so a same-array-order render shows a moved column stuck in
+  // place until some other remount refetches a luckily-sorted array.
+  const cols: BoardStatusDto[] = (columns ?? []).slice().sort((a, b) => a.order - b.order);
   const top = items.filter((i) => i.parentLocalId === null).sort((a, b) => a.position - b.position);
   const validIds = new Set(cols.map((c) => c.id));
   const firstId = cols.slice().sort((a, b) => a.order - b.order)[0]?.id;

@@ -1047,3 +1047,32 @@ describe('KanbanBoard column editor live-state (P9 review round)', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 });
+
+describe('KanbanBoard column render order (P9 audit follow-up)', () => {
+  it('renders columns by their order field even when the payload array is not order-sorted', async () => {
+    // The upstream wire returns the statuses ARRAY in its literal YAML insertion
+    // order (server-side sort none: toApiTask -> taskStatuses). A move swaps the
+    // `order` values; the next fetch may deliver the array unsroted — the board
+    // must render sorted regardless. (mutation caught by the P8P9 audit round)
+    const unsorted = {
+      checklistId: 'b1',
+      statuses: [
+        { id: 'todo', label: 'To Do', color: null, order: 1, autoComplete: false },
+        { id: 'in_progress', label: 'In Progress', color: '#3b82f6', order: 0, autoComplete: false },
+        { id: 'completed', label: 'Completed', color: null, order: 2, autoComplete: true },
+      ],
+    };
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_board_columns') return Promise.resolve(unsorted);
+      if (cmd === 'fetch_task_board') return Promise.resolve(unsorted);
+      return Promise.resolve({});
+    });
+    render(<KanbanBoard checklistId="b1" items={items} reload={async () => {}} />);
+    const heads = await waitFor(() => {
+      const els = Array.from(document.querySelectorAll('.kanban-col-head .kanban-col-title'));
+      expect(els.length).toBe(3);
+      return els.map((e) => e.textContent);
+    });
+    expect(heads).toEqual(['In Progress', 'To Do', 'Completed']);
+  });
+});
