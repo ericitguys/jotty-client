@@ -184,8 +184,8 @@ mod tests {
             "lib.rs must gate the legacy plaintext migration on the keyring-builder-status marker"
         );
         assert!(
-            code.contains("unwrap_or(false)"),
-            "the marker read must fail-CLOSED (missing marker = migration skipped, plaintext kept)"
+            code.contains("marker == \"ok\""),
+            "the marker read must fail-CLOSED (any non-ok value = migration skipped, plaintext kept)"
         );
         let migrate_at = code
             .find("keys_migrate_legacy")
