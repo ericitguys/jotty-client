@@ -16,32 +16,27 @@ pub use sync::spawn_scheduler;
 
 use tauri::Manager;
 
-// P10 (v0.30.1): LINK-HOLD for the android-keyring crate's Java export.
-// The Kotlin Keyring shim (MainActivity.onCreate, before super.onCreate)
-// binds to this symbol by name — but nothing in Rust calls it anymore (the
-// ndk-context registration fn panics; see setup below), and rustc's archive
-// member granularity drops an unreferenced dependency's code object: the
-// v0.30.1 verify-build proved the symbol MISSING from the cdylib without a
-// Rust-side reference. This static takes the function's address (never
-// calls it) — the data relocation pulls the rlib member and keeps the
-// symbol exported from libjotty_client_lib.so. no_mangle + pub so no
-// dead-code pass can drop it.
+// P10 (v0.30.4 REWRITE): LINK-HOLD for the android-keyring crate's Java
+// export. The Kotlin Keyring shim binds to this symbol by name; nothing in
+// Rust calls it (the ndk-context registrar panics — see setup). WITHOUT any
+// Rust-side reference the linker drops the crate's code objects entirely;
+// WITH an `extern { }`-block declaration the reference stays UNDEFINED — lld
+// scans dependency archives before this crate's object (link order), never
+// rescans, and for shared output leaves the symbol as a dynamic UNDEF while
+// still EMITTING the hold's eager data relocation: the v0.30.1–v0.30.3
+// builds shipped `U Java_io_...` and the Phone's dlopen refused the whole
+// library at Rust.<clinit> ("cannot locate symbol referenced by
+// libjotty_client_lib.so") — the insta-close survived the hotfix. THE FIX:
+// reference the crate's OWN fn item by crate path (a real rustc-level
+// reference — the defining CGU is required codegen, not an archive-scan
+// maybe) and never call it.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub static ANDROID_KEYRING_JNI_HOLD: unsafe extern "system" fn(
-    *mut std::ffi::c_void,
-    *mut std::ffi::c_void,
-    *mut std::ffi::c_void,
-) = {
-    extern "system" {
-        fn Java_io_crates_keyring_Keyring_00024Companion_setAndroidKeyringCredentialBuilder(
-            env: *mut std::ffi::c_void,
-            class: *mut std::ffi::c_void,
-            context: *mut std::ffi::c_void,
-        );
-    }
-    Java_io_crates_keyring_Keyring_00024Companion_setAndroidKeyringCredentialBuilder
-};
+pub static ANDROID_KEYRING_JNI_HOLD: extern "system" fn(
+    jni::JNIEnv<'_>,
+    jni::objects::JObject<'_>,
+    jni::objects::JObject<'_>,
+) = android_keyring::Java_io_crates_keyring_Keyring_00024Companion_setAndroidKeyringCredentialBuilder;
 
 // Mobile entry point (Android): the wry Android runtime calls `run` through the
 // mobile_entry_point attribute; desktop builds are unaffected.

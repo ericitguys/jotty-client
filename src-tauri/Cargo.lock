@@ -2212,7 +2212,7 @@ dependencies = [
 
 [[package]]
 name = "jotty-client"
-version = "0.30.3"
+version = "0.30.4"
 dependencies = [
  "android-keyring",
  "base64 0.22.1",
@@ -2220,6 +2220,7 @@ dependencies = [
  "cpal",
  "gtk",
  "hound",
+ "jni 0.21.1",
  "keyring",
  "log",
  "reqwest 0.12.28",
