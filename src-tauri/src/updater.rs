@@ -1,5 +1,9 @@
 //! Self-update: check github releases, download the platform package, install.
-//! Linux: the .rpm via dnf+polkit. Windows: the NSIS -setup.exe, silent (/S).
+//! Linux: detect the owning package family — the deb/rpm database that has
+//! the app installed (dpkg vs rpm, strongest signal: how THIS copy got here),
+//! falling back to package-manager presence; a running AppImage is a no-system
+//! install (family None). .deb → pkexec apt-get, .rpm → pkexec dnf (polkit
+//! prompts). Windows: the NSIS -setup.exe, silent (/S).
 //!
 //! Pure helpers (parse/compare) are unit-testable; I/O fns take injected
 //! api base / client / command runner so tests never touch the network
@@ -15,8 +19,9 @@ pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub available: bool,
-    /// Platform-appropriate asset URL: the platform package — .rpm (linux),
-    /// NSIS -setup.exe (windows), .apk (android).
+    /// Platform-appropriate asset URL: the platform package — .deb/.rpm per
+    /// the detected Linux family (None when no system install), NSIS
+    /// -setup.exe (windows), .apk (android).
     pub download_url: Option<String>,
 }
 
@@ -27,6 +32,73 @@ pub struct UpdateInfo {
 pub enum DesktopFlavor {
     Linux,
     Windows,
+}
+
+/// The deb-vs-rpm family of a Linux install: decides WHICH release asset is
+/// offered (check) and which installer runs (install). FIELD BUG 2026-10-18:
+/// the updater was rpm/dnf-only — on Ubuntu (a .deb install), the rpm pick +
+/// `pkexec /usr/bin/dnf` died with "Error accessing /usr/bin/dnf" (exit 127)
+/// and no deb system could ever self-update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxFamily {
+    Deb,
+    Rpm,
+}
+
+/// Pure family picker over the host probes. Order: a package database that
+/// OWNS the running install wins (matches how this copy actually got here);
+/// `dpkg_owns_app` = Some(true) → Deb, `rpm_owns_app` = Some(true) → Rpm.
+/// When neither db claims the app (or the probe tool is missing — None),
+/// fall back to manager presence: dnf → Rpm, apt → Deb. Both owners claiming
+/// is container noise — DEB wins (the Ubuntu fleet is the user base). No
+/// signal at all → None (AppImage run or unknown packaging: no system install
+/// to feed; the caller offers nothing).
+pub fn linux_family(
+    dpkg_owns_app: Option<bool>,
+    rpm_owns_app: Option<bool>,
+    dnf_present: bool,
+    apt_present: bool,
+) -> Option<LinuxFamily> {
+    if dpkg_owns_app == Some(true) {
+        return Some(LinuxFamily::Deb);
+    }
+    if rpm_owns_app == Some(true) {
+        return Some(LinuxFamily::Rpm);
+    }
+    if dnf_present {
+        return Some(LinuxFamily::Rpm);
+    }
+    if apt_present {
+        return Some(LinuxFamily::Deb);
+    }
+    None
+}
+
+fn probe_ok(program: &str, args: &[&str]) -> Option<bool> {
+    use std::process::Stdio;
+    std::process::Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .map(|s| s.success())
+}
+
+/// Host probe (runtime path; NOT unit-tested — thin over `linux_family`).
+/// APPIMAGE env is set for ANY run from an AppImage (the mounted squashfs
+/// binary still reports the env var), and for those a deb/rpm install would
+/// be wrong — the family is None and the updater offers no in-app install.
+pub fn linux_family_of_host() -> Option<LinuxFamily> {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return None;
+    }
+    linux_family(
+        probe_ok("dpkg", &["-s", "jotty-desktop"]),
+        probe_ok("rpm", &["-q", "jotty-desktop"]),
+        probe_ok("dnf", &["--version"]).unwrap_or(false),
+        probe_ok("apt-get", &["--version"]).unwrap_or(false),
+    )
 }
 
 pub fn desktop_flavor() -> DesktopFlavor {
@@ -62,16 +134,28 @@ pub(crate) fn is_newer(current: &str, latest_tag: &str) -> Result<bool, String> 
     Ok(lat > cur)
 }
 
-/// The desktop package pick for a release, per flavor: Linux = the .rpm;
-/// Windows = prefer the NSIS `*-setup.exe`, fall back to any .exe
-/// (blockmaps/other assets never match). None = this release carries no
-/// package of our kind (up to date, not an error).
-pub(crate) fn pick_desktop_asset(assets: &[GhAsset], flavor: DesktopFlavor) -> Option<String> {
+/// The desktop package pick for a release, per flavor + Linux family:
+/// Linux = the family's package (.deb for Deb, .rpm for Rpm; family None =
+/// nothing offered). Windows = prefer the NSIS `*-setup.exe`, fall back to
+/// any .exe (blockmaps/other assets never match). None = this release
+/// carries no package of our kind (up to date, not an error).
+pub(crate) fn pick_desktop_asset(
+    assets: &[GhAsset],
+    flavor: DesktopFlavor,
+    family: Option<LinuxFamily>,
+) -> Option<String> {
     match flavor {
-        DesktopFlavor::Linux => assets
-            .iter()
-            .find(|a| a.name.ends_with(".rpm"))
-            .map(|a| a.browser_download_url.clone()),
+        DesktopFlavor::Linux => {
+            let ext = match family {
+                Some(LinuxFamily::Deb) => ".deb",
+                Some(LinuxFamily::Rpm) => ".rpm",
+                None => return None,
+            };
+            assets
+                .iter()
+                .find(|a| a.name.ends_with(ext))
+                .map(|a| a.browser_download_url.clone())
+        }
         DesktopFlavor::Windows => {
             let exes: Vec<&GhAsset> = assets.iter().filter(|a| a.name.ends_with(".exe")).collect();
             let picked = exes
@@ -88,9 +172,19 @@ pub(crate) fn pick_desktop_asset(assets: &[GhAsset], flavor: DesktopFlavor) -> O
 /// (a release without a package is "up to date" for our purposes but still
 /// reports its tag).
 pub(crate) fn parse_release(v: &Value) -> Result<(String, Option<String>), String> {
+    parse_release_with(v, desktop_flavor(), linux_family_of_host())
+}
+
+/// The pure core of `parse_release` — flavor + family as parameters so the
+/// asset pick is unit-testable from any host.
+pub(crate) fn parse_release_with(
+    v: &Value,
+    flavor: DesktopFlavor,
+    family: Option<LinuxFamily>,
+) -> Result<(String, Option<String>), String> {
     let rel: GhRelease = serde_json::from_value(v.clone())
         .map_err(|e| format!("unexpected release payload: {e}"))?;
-    let pkg = pick_desktop_asset(&rel.assets, desktop_flavor());
+    let pkg = pick_desktop_asset(&rel.assets, flavor, family);
     Ok((rel.tag_name, pkg))
 }
 
@@ -220,23 +314,47 @@ pub async fn download(
     Ok(dest)
 }
 
-/// Run the system install. `runner` executes (program, args) and returns the
-/// exit code — injected so tests assert the exact command shape without
-/// touching pkexec/dnf. Non-zero exit is an Err carrying stderr.
-pub fn install_with(
+/// Rpm-family system install: pkexec → dnf with the FULL binary path (polkit
+/// prompts for the root password in the desktop session). `runner` executes
+/// (program, args) and returns the exit code — injected so tests assert the
+/// exact command shape without touching pkexec/dnf. Non-zero exit is an Err
+/// carrying stderr.
+pub fn install_rpm_with(
     rpm_path: &std::path::Path,
+    runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
+) -> Result<(), String> {
+    run_pkexec_install(rpm_path, "/usr/bin/dnf", "dnf install failed", runner)
+}
+
+/// Deb-family system install: pkexec → apt-get with the FULL binary path.
+/// apt-get resolves the local package AND any missing dependencies (dpkg -i
+/// would not); `-y` keeps it non-interactive under polkit. Same injected
+/// runner contract as the rpm arm.
+pub fn install_deb_with(
+    deb_path: &std::path::Path,
+    runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
+) -> Result<(), String> {
+    run_pkexec_install(deb_path, "/usr/bin/apt-get", "apt-get install failed", runner)
+}
+
+/// Shared body of the two Linux arms: `pkexec <manager> install -y <pkg>`.
+fn run_pkexec_install(
+    pkg_path: &std::path::Path,
+    manager: &str,
+    fail_label: &str,
     runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
 ) -> Result<(), String> {
     let out = runner(
         "pkexec",
-        &["/usr/bin/dnf", "install", "-y", &rpm_path.to_string_lossy()],
+        &[manager, "install", "-y", &pkg_path.to_string_lossy()],
     )
     .map_err(|e| format!("cannot launch installer: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
         Err(format!(
-            "dnf install failed ({}): {}",
+            "{} ({}): {}",
+            fail_label,
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         ))
@@ -277,15 +395,24 @@ fn plain_runner(
         .map_err(|e| e.to_string())
 }
 
-/// The real install dispatch (per host OS).
-pub fn install(rpm_path: &std::path::Path) -> Result<(), String> {
+/// The real install dispatch (per host OS + detected Linux family).
+pub fn install(pkg_path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        install_windows_with(rpm_path, &plain_runner)
+        install_windows_with(pkg_path, &plain_runner)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        install_with(rpm_path, &plain_runner)
+        match linux_family_of_host() {
+            Some(LinuxFamily::Deb) => install_deb_with(pkg_path, &plain_runner),
+            Some(LinuxFamily::Rpm) => install_rpm_with(pkg_path, &plain_runner),
+            None => Err(
+                "cannot update: no deb/rpm system install detected on this machine \
+                 (AppImage run or unknown packaging) — install the package from \
+                 the release page instead"
+                    .into(),
+            ),
+        }
     }
 }
 
@@ -332,20 +459,28 @@ mod tests {
 
     #[test]
     fn parse_release_finds_the_rpm_asset() {
-        let (tag, url) = parse_release(&release_json("v0.7.0", &[
-            ("jotty-desktop_0.7.0_amd64.deb", "https://x/deb"),
-            ("jotty-desktop-0.7.0-1.x86_64.rpm", "https://x/rpm"),
-            ("jotty-desktop_0.7.0_amd64.AppImage", "https://x/ai"),
-        ])).unwrap();
+        let (tag, url) = parse_release_with(
+            &release_json("v0.7.0", &[
+                ("jotty-desktop_0.7.0_amd64.deb", "https://x/deb"),
+                ("jotty-desktop-0.7.0-1.x86_64.rpm", "https://x/rpm"),
+                ("jotty-desktop_0.7.0_amd64.AppImage", "https://x/ai"),
+            ]),
+            DesktopFlavor::Linux,
+            Some(LinuxFamily::Rpm),
+        ).unwrap();
         assert_eq!(tag, "v0.7.0");
         assert_eq!(url.as_deref(), Some("https://x/rpm"));
     }
 
     #[test]
     fn parse_release_without_rpm_asset_reports_none() {
-        let (tag, url) = parse_release(&release_json("v0.7.0", &[
-            ("jotty-desktop_0.7.0_amd64.deb", "https://x/deb"),
-        ])).unwrap();
+        let (tag, url) = parse_release_with(
+            &release_json("v0.7.0", &[
+                ("jotty-desktop_0.7.0_amd64.deb", "https://x/deb"),
+            ]),
+            DesktopFlavor::Linux,
+            Some(LinuxFamily::Rpm),
+        ).unwrap();
         assert_eq!(tag, "v0.7.0");
         assert!(url.is_none());
     }
@@ -451,11 +586,17 @@ mod tests {
     #[tokio::test]
     async fn check_detects_an_update() {
         let server = wiremock::MockServer::start().await;
+        // BOTH desktop packages ride the mock release: the host's detected
+        // family decides the pick (rpm on dnf hosts, deb on apt hosts) —
+        // pin only the family-consistent shape here, not a hard asset.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/repos/ericitguys/jotty-client/releases/latest"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(release_json(
                 "v0.7.0",
-                &[("jotty-desktop-0.7.0-1.x86_64.rpm", "https://x/rpm")],
+                &[
+                    ("jotty-desktop_0.7.0_amd64.deb", "https://x/jotty-desktop_0.7.0_amd64.deb"),
+                    ("jotty-desktop-0.7.0-1.x86_64.rpm", "https://x/jotty-desktop-0.7.0-1.x86_64.rpm"),
+                ],
             )))
             .mount(&server)
             .await;
@@ -463,7 +604,8 @@ mod tests {
         assert!(info.available);
         assert_eq!(info.latest, "v0.7.0");
         assert_eq!(info.current, "0.6.1");
-        assert_eq!(info.download_url.as_deref(), Some("https://x/rpm"));
+        let url = info.download_url.expect("a probed desktop host gets a package url");
+        assert!(url.ends_with(".deb") || url.ends_with(".rpm"), "family-matched pick: {url}");
     }
 
     #[tokio::test]
@@ -550,15 +692,109 @@ mod tests {
         assert_eq!(std::fs::read(dest2).unwrap(), b"newer");
     }
 
+    // ---- linux: family detection + deb arm (FIELD BUG 2026-10-18: the
+    // updater was rpm/dnf-only — on Ubuntu, pkexec /usr/bin/dnf exits 127
+    // and a deb install can never self-update) ----
+
     #[test]
-    fn install_runs_pkexec_dnf_with_the_full_path() {
+    fn linux_family_owns_db_beats_everything_deb_wins_the_tie() {
+        // the database that OWNS the running install is the strongest signal
+        assert_eq!(linux_family(Some(true), None, false, false), Some(LinuxFamily::Deb));
+        assert_eq!(linux_family(None, Some(true), true, true), Some(LinuxFamily::Rpm));
+        // both db's claim the app: DEB wins (ruled — Ubuntu fleet is the user
+        // base; a dpdb claim on an rpm-managed box is container noise)
+        assert_eq!(linux_family(Some(true), Some(true), true, true), Some(LinuxFamily::Deb));
+    }
+
+    #[test]
+    fn linux_family_falls_back_to_manager_presence_then_none() {
+        // neither db reachable/claiming: dnf → rpm, apt → deb, nothing → None
+        assert_eq!(linux_family(None, None, true, true), Some(LinuxFamily::Rpm));
+        assert_eq!(linux_family(None, None, false, true), Some(LinuxFamily::Deb));
+        assert_eq!(linux_family(Some(false), Some(false), false, false), None);
+        assert_eq!(linux_family(None, None, false, false), None);
+    }
+
+    #[test]
+    fn linux_pick_follows_the_family() {
+        let rel: GhRelease = serde_json::from_value(release_json("v0.31.2", &[
+            ("jotty-desktop_0.31.2_amd64.deb", "https://x/deb"),
+            ("jotty-desktop-0.31.2-1.x86_64.rpm", "https://x/rpm"),
+        ])).unwrap();
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux, Some(LinuxFamily::Deb)).as_deref(),
+            Some("https://x/deb")
+        );
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux, Some(LinuxFamily::Rpm)).as_deref(),
+            Some("https://x/rpm")
+        );
+        // no family (AppImage run / unknown packaging): nothing is offered —
+        // the deb/rpm arms would both be wrong for this install
+        assert_eq!(pick_desktop_asset(&rel.assets, DesktopFlavor::Linux, None), None);
+        // missing the family's asset -> None (release without that package)
+        let deb_only: GhRelease = serde_json::from_value(release_json("v0.31.2", &[
+            ("jotty-desktop_0.31.2_amd64.deb", "https://x/deb"),
+        ])).unwrap();
+        assert_eq!(pick_desktop_asset(&deb_only.assets, DesktopFlavor::Linux, Some(LinuxFamily::Rpm)), None);
+    }
+
+    #[test]
+    fn parse_release_with_pins_flavor_and_family() {
+        let rel = release_json("v0.31.2", &[
+            ("jotty-desktop_0.31.2_amd64.deb", "https://x/deb"),
+            ("jotty-desktop-0.31.2-1.x86_64.rpm", "https://x/rpm"),
+        ]);
+        let (tag, url) = parse_release_with(&rel, DesktopFlavor::Linux, Some(LinuxFamily::Deb)).unwrap();
+        assert_eq!(tag, "v0.31.2");
+        assert_eq!(url.as_deref(), Some("https://x/deb"));
+        let (_, url_rpm) = parse_release_with(&rel, DesktopFlavor::Linux, Some(LinuxFamily::Rpm)).unwrap();
+        assert_eq!(url_rpm.as_deref(), Some("https://x/rpm"));
+        let (_, url_win) = parse_release_with(&rel, DesktopFlavor::Windows, None).unwrap();
+        assert_eq!(url_win, None);
+    }
+
+    #[test]
+    fn install_deb_runs_pkexec_aptget_with_the_full_path() {
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let calls2 = calls.clone();
         let runner = move |program: &str, args: &[&str]| {
             calls2.lock().unwrap().push((program.to_string(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
             Ok(std::process::Output { status: std::os::unix::process::ExitStatusExt::from_raw(0), stdout: vec![], stderr: vec![] })
         };
-        install_with(std::path::Path::new("/tmp/x/jotty-0.7.0-1.x86_64.rpm"), &runner).unwrap();
+        install_deb_with(std::path::Path::new("/tmp/x/jotty-desktop_0.31.2_amd64.deb"), &runner).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "pkexec");
+        assert_eq!(
+            calls[0].1,
+            vec!["/usr/bin/apt-get", "install", "-y", "/tmp/x/jotty-desktop_0.31.2_amd64.deb"]
+        );
+    }
+
+    #[test]
+    fn install_deb_surfaces_aptget_failure_with_stderr() {
+        let runner = |_program: &str, _args: &[&str]| {
+            Ok(std::process::Output {
+                status: std::os::unix::process::ExitStatusExt::from_raw(256),
+                stdout: vec![],
+                stderr: b"dpkg error: dependency problems".to_vec(),
+            })
+        };
+        let err = install_deb_with(std::path::Path::new("/tmp/x.deb"), &runner).unwrap_err();
+        assert!(err.contains("apt-get install failed"), "got: {err}");
+        assert!(err.contains("dpkg error: dependency problems"));
+    }
+
+    #[test]
+    fn install_rpm_runs_pkexec_dnf_with_the_full_path() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls2 = calls.clone();
+        let runner = move |program: &str, args: &[&str]| {
+            calls2.lock().unwrap().push((program.to_string(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+            Ok(std::process::Output { status: std::os::unix::process::ExitStatusExt::from_raw(0), stdout: vec![], stderr: vec![] })
+        };
+        install_rpm_with(std::path::Path::new("/tmp/x/jotty-0.7.0-1.x86_64.rpm"), &runner).unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "pkexec");
@@ -574,7 +810,7 @@ mod tests {
                 stderr: b"nothing provides".to_vec(),
             })
         };
-        let err = install_with(std::path::Path::new("/tmp/x.rpm"), &runner).unwrap_err();
+        let err = install_rpm_with(std::path::Path::new("/tmp/x.rpm"), &runner).unwrap_err();
         assert!(err.contains("dnf install failed"));
         assert!(err.contains("nothing provides"));
     }
@@ -589,7 +825,7 @@ mod tests {
             ("jotty-desktop_0.23.0_amd64.AppImage", "https://x/ai"),
         ])).unwrap();
         assert_eq!(
-            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows).as_deref(),
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows, None).as_deref(),
             Some("https://x/setup")
         );
     }
@@ -603,47 +839,40 @@ mod tests {
         ])).unwrap();
         // no -setup asset: the plain exe beats the (non-matching) blockmap
         assert_eq!(
-            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows).as_deref(),
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Windows, None).as_deref(),
             Some("https://x/plain-exe")
         );
         let none: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
             ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
         ])).unwrap();
-        assert!(pick_desktop_asset(&none.assets, DesktopFlavor::Windows).is_none());
+        assert!(pick_desktop_asset(&none.assets, DesktopFlavor::Windows, None).is_none());
     }
 
-    #[test]
-    fn linux_flavor_still_picks_the_rpm() {
-        let rel: GhRelease = serde_json::from_value(release_json("v0.23.0", &[
-            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
-            ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
-        ])).unwrap();
-        assert_eq!(
-            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux).as_deref(),
-            Some("https://x/rpm")
-        );
-    }
-
-    // runtime dispatch: parse_release must consult THIS host's flavor — on the
-    // linux dev box that's the rpm arm (an exe-only release parses url:None).
+    // runtime dispatch: parse_release consults THIS host (flavor + family
+    // probe). On desktop hosts the family probe resolves (dev box: apt-family
+    // or rpm-family — either way the deb+rpm release yields SOME package);
+    // exe-only releases yield None on non-windows hosts either way.
     #[test]
     fn parse_release_uses_the_runtime_flavor_for_the_desktop_pick() {
-        let exe_only = release_json("v0.23.0", &[
-            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
+        let exe_only = release_json("v0.31.2", &[
+            ("jotty-desktop_0.31.2_x64-setup.exe", "https://x/setup"),
         ]);
-        let with_rpm = release_json("v0.23.0", &[
-            ("jotty-desktop_0.23.0_x64-setup.exe", "https://x/setup"),
-            ("jotty-desktop_0.23.0-1.x86_64.rpm", "https://x/rpm"),
+        let with_deb_and_rpm = release_json("v0.31.2", &[
+            ("jotty-desktop_0.31.2_amd64.deb", "https://x/jotty-desktop_0.31.2_amd64.deb"),
+            ("jotty-desktop-0.31.2-1.x86_64.rpm", "https://x/jotty-desktop-0.31.2-1.x86_64.rpm"),
         ]);
-        #[cfg(target_os = "windows")]
-        {
+        if cfg!(target_os = "windows") {
             assert_eq!(parse_release(&exe_only).unwrap().1.as_deref(), Some("https://x/setup"));
-            assert_eq!(parse_release(&with_rpm).unwrap().1.as_deref(), Some("https://x/setup"));
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
+            assert_eq!(parse_release(&with_deb_and_rpm).unwrap().1.as_deref(), Some("https://x/setup"));
+        } else {
             assert_eq!(parse_release(&exe_only).unwrap().1.as_deref(), None);
-            assert_eq!(parse_release(&with_rpm).unwrap().1.as_deref(), Some("https://x/rpm"));
+            let got = parse_release(&with_deb_and_rpm).unwrap().1;
+            assert!(got.is_some(), "deb+rpm release must yield a package on a probed linux host");
+            let got = got.unwrap();
+            assert!(
+                got.ends_with(".deb") || got.ends_with(".rpm"),
+                "runtime pick must match the host family: {got:?}"
+            );
         }
     }
 
