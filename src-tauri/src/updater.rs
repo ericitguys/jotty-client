@@ -137,13 +137,16 @@ pub(crate) fn is_newer(current: &str, latest_tag: &str) -> Result<bool, String> 
 /// The desktop package pick for a release, per flavor + Linux family:
 /// Linux = the family's package (.deb for Deb, .rpm for Rpm; family None =
 /// nothing offered). Windows = prefer the NSIS `*-setup.exe`, fall back to
-/// any .exe (blockmaps/other assets never match). None = this release
+/// any .exe (blockmaps/other assets never match). Assets must carry the
+/// app's filename prefix (p19/F5) — a non-app package riding the release
+/// (debug symbols, plugin bundles) can never be offered. None = this release
 /// carries no package of our kind (up to date, not an error).
 pub(crate) fn pick_desktop_asset(
     assets: &[GhAsset],
     flavor: DesktopFlavor,
     family: Option<LinuxFamily>,
 ) -> Option<String> {
+    let owned = assets.iter().filter(|a| a.name.starts_with("jotty-desktop"));
     match flavor {
         DesktopFlavor::Linux => {
             let ext = match family {
@@ -151,13 +154,13 @@ pub(crate) fn pick_desktop_asset(
                 Some(LinuxFamily::Rpm) => ".rpm",
                 None => return None,
             };
-            assets
-                .iter()
-                .find(|a| a.name.ends_with(ext))
+            owned
+                .filter(|a| a.name.ends_with(ext))
+                .next()
                 .map(|a| a.browser_download_url.clone())
         }
         DesktopFlavor::Windows => {
-            let exes: Vec<&GhAsset> = assets.iter().filter(|a| a.name.ends_with(".exe")).collect();
+            let exes: Vec<&GhAsset> = owned.filter(|a| a.name.ends_with(".exe")).collect();
             let picked = exes
                 .iter()
                 .find(|a| a.name.contains("-setup"))
@@ -188,9 +191,14 @@ pub(crate) fn parse_release_with(
     Ok((rel.tag_name, pkg))
 }
 
-/// Pick the APK asset for this device: prefer arm64, fall back to the only .apk.
+/// Pick the APK asset for this device: prefer arm64, fall back to the only
+/// app-prefixed .apk (p19/F5: the jotty-desktop prefix keeps a non-app .apk
+/// riding the release from ever being offered; the preview-era names carry it).
 fn pick_apk_asset(assets: &[GhAsset]) -> Option<String> {
-    let apks: Vec<&GhAsset> = assets.iter().filter(|a| a.name.ends_with(".apk")).collect();
+    let apks: Vec<&GhAsset> = assets
+        .iter()
+        .filter(|a| a.name.starts_with("jotty-desktop") && a.name.ends_with(".apk"))
+        .collect();
     let picked = match apks.iter().find(|a| a.name.contains("arm64")) {
         Some(a) => a,
         None => apks.first()?,
@@ -314,27 +322,43 @@ pub async fn download(
     Ok(dest)
 }
 
-/// Rpm-family system install: pkexec → dnf with the FULL binary path (polkit
-/// prompts for the root password in the desktop session). `runner` executes
-/// (program, args) and returns the exit code — injected so tests assert the
-/// exact command shape without touching pkexec/dnf. Non-zero exit is an Err
-/// carrying stderr.
+/// The package manager binary for a detected Linux family, probed at install
+/// time (p19/F3, 2026-10-18 audit): an rpm-owned host can lack dnf (yum-only
+/// installs) and a deb-owned host can lack apt-get — falling back (dnf→yum,
+/// apt-get→apt) beats repeating the /usr/bin/<missing> exit-127 class; None
+/// = refuse with a clear error instead of spawning a guaranteed 127.
+/// Pure over its probes so the choice is unit-testable.
+pub fn rpm_manager(dnf_present: bool, yum_present: bool) -> Option<&'static str> {
+    if dnf_present { Some("/usr/bin/dnf") } else if yum_present { Some("/usr/bin/yum") } else { None }
+}
+
+pub fn deb_manager(apt_get_present: bool, apt_present: bool) -> Option<&'static str> {
+    if apt_get_present { Some("/usr/bin/apt-get") } else if apt_present { Some("/usr/bin/apt") } else { None }
+}
+
+/// Rpm-family system install: pkexec → the manager with the FULL binary path
+/// (polkit prompts for the root password in the desktop session). `runner`
+/// executes (program, args) and returns the exit code — injected so tests
+/// assert the exact command shape without touching pkexec/dnf. Non-zero exit
+/// is an Err carrying stderr.
 pub fn install_rpm_with(
+    manager: &str,
     rpm_path: &std::path::Path,
     runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
 ) -> Result<(), String> {
-    run_pkexec_install(rpm_path, "/usr/bin/dnf", "dnf install failed", runner)
+    run_pkexec_install(rpm_path, manager, "rpm install failed", runner)
 }
 
-/// Deb-family system install: pkexec → apt-get with the FULL binary path.
-/// apt-get resolves the local package AND any missing dependencies (dpkg -i
-/// would not); `-y` keeps it non-interactive under polkit. Same injected
-/// runner contract as the rpm arm.
+/// Deb-family system install: pkexec → the manager with the FULL binary path.
+/// apt-get (or apt) resolves the local package AND any missing dependencies
+/// (dpkg -i would not); `-y` keeps it non-interactive under polkit. Same
+/// injected runner contract as the rpm arm.
 pub fn install_deb_with(
+    manager: &str,
     deb_path: &std::path::Path,
     runner: &dyn Fn(&str, &[&str]) -> Result<std::process::Output, String>,
 ) -> Result<(), String> {
-    run_pkexec_install(deb_path, "/usr/bin/apt-get", "apt-get install failed", runner)
+    run_pkexec_install(deb_path, manager, "deb install failed", runner)
 }
 
 /// Shared body of the two Linux arms: `pkexec <manager> install -y <pkg>`.
@@ -395,7 +419,9 @@ fn plain_runner(
         .map_err(|e| e.to_string())
 }
 
-/// The real install dispatch (per host OS + detected Linux family).
+/// The real install dispatch (per host OS + detected Linux family). The
+/// manager binary is probed HERE (p19/F3): dnf→yum / apt-get→apt fallbacks,
+/// with a clear refusal when neither exists on the detected family.
 pub fn install(pkg_path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -404,8 +430,26 @@ pub fn install(pkg_path: &std::path::Path) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         match linux_family_of_host() {
-            Some(LinuxFamily::Deb) => install_deb_with(pkg_path, &plain_runner),
-            Some(LinuxFamily::Rpm) => install_rpm_with(pkg_path, &plain_runner),
+            Some(LinuxFamily::Deb) => {
+                let manager = deb_manager(
+                    probe_ok("apt-get", &["--version"]).unwrap_or(false),
+                    probe_ok("apt", &["--version"]).unwrap_or(false),
+                )
+                .ok_or_else(|| {
+                    "cannot update: this is a deb-managed system but neither apt-get nor apt was found — install the package from the release page instead".to_string()
+                })?;
+                install_deb_with(manager, pkg_path, &plain_runner)
+            }
+            Some(LinuxFamily::Rpm) => {
+                let manager = rpm_manager(
+                    probe_ok("dnf", &["--version"]).unwrap_or(false),
+                    probe_ok("yum", &["--version"]).unwrap_or(false),
+                )
+                .ok_or_else(|| {
+                    "cannot update: this is an rpm-managed system but neither dnf nor yum was found — install the package from the release page instead".to_string()
+                })?;
+                install_rpm_with(manager, pkg_path, &plain_runner)
+            }
             None => Err(
                 "cannot update: no deb/rpm system install detected on this machine \
                  (AppImage run or unknown packaging) — install the package from \
@@ -762,7 +806,7 @@ mod tests {
             calls2.lock().unwrap().push((program.to_string(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
             Ok(std::process::Output { status: std::os::unix::process::ExitStatusExt::from_raw(0), stdout: vec![], stderr: vec![] })
         };
-        install_deb_with(std::path::Path::new("/tmp/x/jotty-desktop_0.31.2_amd64.deb"), &runner).unwrap();
+        install_deb_with("/usr/bin/apt-get", std::path::Path::new("/tmp/x/jotty-desktop_0.31.2_amd64.deb"), &runner).unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "pkexec");
@@ -781,8 +825,9 @@ mod tests {
                 stderr: b"dpkg error: dependency problems".to_vec(),
             })
         };
-        let err = install_deb_with(std::path::Path::new("/tmp/x.deb"), &runner).unwrap_err();
-        assert!(err.contains("apt-get install failed"), "got: {err}");
+        let err = install_deb_with("/usr/bin/apt-get", std::path::Path::new("/tmp/x.deb"), &runner).unwrap_err();
+        // manager-agnostic label since the p19 manager-fallback rework
+        assert!(err.contains("deb install failed"), "got: {err}");
         assert!(err.contains("dpkg error: dependency problems"));
     }
 
@@ -794,7 +839,7 @@ mod tests {
             calls2.lock().unwrap().push((program.to_string(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
             Ok(std::process::Output { status: std::os::unix::process::ExitStatusExt::from_raw(0), stdout: vec![], stderr: vec![] })
         };
-        install_rpm_with(std::path::Path::new("/tmp/x/jotty-0.7.0-1.x86_64.rpm"), &runner).unwrap();
+        install_rpm_with("/usr/bin/dnf", std::path::Path::new("/tmp/x/jotty-0.7.0-1.x86_64.rpm"), &runner).unwrap();
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "pkexec");
@@ -810,12 +855,71 @@ mod tests {
                 stderr: b"nothing provides".to_vec(),
             })
         };
-        let err = install_rpm_with(std::path::Path::new("/tmp/x.rpm"), &runner).unwrap_err();
-        assert!(err.contains("dnf install failed"));
+        let err = install_rpm_with("/usr/bin/dnf", std::path::Path::new("/tmp/x.rpm"), &runner).unwrap_err();
+        // manager-agnostic label since the p19 manager-fallback rework
+        assert!(err.contains("rpm install failed"));
         assert!(err.contains("nothing provides"));
     }
 
-    // ---- windows: desktop flavor pick + NSIS silent install (v0.23.0) ----
+    // ---- p19 audit follow-ups (2026-10-18): manager fallbacks + prefix pin ----
+
+    #[test]
+    fn rpm_manager_falls_back_to_yum_then_refuses() {
+        assert_eq!(rpm_manager(true, false), Some("/usr/bin/dnf"));
+        assert_eq!(rpm_manager(true, true), Some("/usr/bin/dnf"));
+        assert_eq!(rpm_manager(false, true), Some("/usr/bin/yum"));
+        assert_eq!(rpm_manager(false, false), None);
+    }
+
+    #[test]
+    fn deb_manager_falls_back_to_apt_then_refuses() {
+        assert_eq!(deb_manager(true, false), Some("/usr/bin/apt-get"));
+        assert_eq!(deb_manager(false, true), Some("/usr/bin/apt"));
+        assert_eq!(deb_manager(true, true), Some("/usr/bin/apt-get"));
+        assert_eq!(deb_manager(false, false), None);
+    }
+
+    #[test]
+    fn pick_desktop_asset_requires_the_jotty_desktop_prefix() {
+        // a non-app package riding the release must never be offered (p19/F5)
+        let rel: GhRelease = serde_json::from_value(release_json("v0.31.4", &[
+            ("jotty-debug_0.31.4_amd64.deb", "https://x/stray-deb"),
+            ("jotty-desktop_0.31.4_amd64.deb", "https://x/deb"),
+            ("jotty-debug-0.31.4-1.x86_64.rpm", "https://x/stray-rpm"),
+            ("jotty-desktop-0.31.4-1.x86_64.rpm", "https://x/rpm"),
+        ])).unwrap();
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux, Some(LinuxFamily::Deb)).as_deref(),
+            Some("https://x/deb")
+        );
+        assert_eq!(
+            pick_desktop_asset(&rel.assets, DesktopFlavor::Linux, Some(LinuxFamily::Rpm)).as_deref(),
+            Some("https://x/rpm")
+        );
+        let win: GhRelease = serde_json::from_value(release_json("v0.31.4", &[
+            ("other-tool-setup.exe", "https://x/stray"),
+            ("jotty-desktop_0.31.4_x64-setup.exe", "https://x/setup"),
+        ])).unwrap();
+        assert_eq!(
+            pick_desktop_asset(&win.assets, DesktopFlavor::Windows, None).as_deref(),
+            Some("https://x/setup")
+        );
+    }
+
+    #[test]
+    fn pick_apk_asset_requires_the_jotty_desktop_prefix() {
+        // a non-app .apk riding the release must never be offered (p19/F5)
+        let stray_first: GhRelease = serde_json::from_value(release_json("v1", &[
+            ("stray-thing-1.0-android-arm64.apk", "https://x/stray-apk"),
+            ("jotty-desktop-0.10.2-android-arm64.apk", "https://x/apk-arm64"),
+        ])).unwrap();
+        assert_eq!(pick_apk_asset(&stray_first.assets).as_deref(), Some("https://x/apk-arm64"));
+        // ONLY a stray apk -> None (no app package in the release)
+        let stray_only: GhRelease = serde_json::from_value(release_json("v1", &[
+            ("stray-thing-1.0-android-arm64.apk", "https://x/stray-apk"),
+        ])).unwrap();
+        assert_eq!(pick_apk_asset(&stray_only.assets), None);
+    }
 
     #[test]
     fn windows_flavor_prefers_the_nsis_setup_exe() {

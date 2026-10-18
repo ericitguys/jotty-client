@@ -13,8 +13,11 @@
 // block shapes; everything else is markdown.
 
 // Block-level shapes that a legacy (pre-markdown-storage) full-HTML note body
-// starts with. Client getHTML roots only ever emit these.
-const LEGACY_HTML_FIRST_BLOCK = /^<(p|div|h[1-6]|ul|ol|blockquote|pre|table)\b/i;
+// starts with. Client getHTML roots only ever emitted these — the pre-P2 editor
+// had NO table extension and never emitted a bare root <div>, so <table>/<div>
+// openers are MARKDOWN by definition (p19/F2: they render + round-trip
+// losslessly through the remark path).
+const LEGACY_HTML_FIRST_BLOCK = /^<(p|h[1-6]|ul|ol|blockquote|pre)\b/i;
 
 export const isLegacyHtmlDoc = (content: string): boolean => {
   const trimmed = content.trim();

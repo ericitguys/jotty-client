@@ -287,4 +287,21 @@ describe('NoteEditor', () => {
     expect(saved.content).toContain('First paragraph of the field note.');
     expect(saved.content).toContain('edited');
   });
+
+  // p19/F2: a table-OPENING markdown note must not take the legacy raw feed —
+  // Save-flush with no edits stores it verbatim (same fence as span-first).
+  it('table-first markdown: Save-flush with NO edits stores the content verbatim', async () => {
+    const TABLE_MD = '<table><tr><td>cell a</td></tr></table>\n\n**after table in markdown**';
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: TABLE_MD, category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', expect.objectContaining({ id: 'n1' })));
+    const saved = invoke.mock.calls.find((c) => c[0] === 'update_note')?.[1] as { content: string };
+    expect(saved.content).toBe(TABLE_MD);
+  });
 });

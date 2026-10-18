@@ -339,9 +339,20 @@ describe('color/textStyle serialization fix (field bug: toolbar colors lost on s
 
 describe('isLegacyHtmlDoc (FIELD BUG 2026-10-18 #2: span-first markdown misread as legacy HTML)', () => {
   it('claims only block-level HTML documents (the shapes the old client emitted)', () => {
-    for (const head of ['<p>x', '<p> x', '<h1>H</h1>', '<ul><li>', '<ol><li>', '<blockquote>a', '<pre><code>b', '<table><tr>', '<DIV>x']) {
+    for (const head of ['<p>x', '<p> x', '<h1>H</h1>', '<ul><li>', '<ol><li>', '<blockquote>a', '<pre><code>b']) {
       expect(isLegacyHtmlDoc(`  ${head}`)).toBe(true);
     }
+  });
+
+  // p19/F2 (2026-10-18 audit): the pre-P2 client had NO tables and never
+  // emitted a bare root <div>, so <table>/<div>-opening content can only be
+  // MARKDOWN — it must take the remark path (raw HTML renders + gfm
+  // round-trips losslessly) instead of the legacy raw feed.
+  it('table/div-opening markdown is NOT legacy (p19/F2)', () => {
+    expect(isLegacyHtmlDoc('<table><tr><td>x</td></tr></table>')).toBe(false);
+    expect(isLegacyHtmlDoc('<div class="x">y</div>')).toBe(false);
+    // a table opening AFTER the legacy tag would still be legacy (first tag rules)
+    expect(isLegacyHtmlDoc('<p>then<table>')).toBe(true);
   });
 
   it('markdown opening with inline tags/comments is NOT legacy (the field-note case)', () => {
