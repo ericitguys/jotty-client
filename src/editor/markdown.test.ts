@@ -278,3 +278,60 @@ describe('P2-gap mark serialization fix (portal custom-html-utils.tsx:11-48)', (
     }
   });
 });
+
+// FIELD BUG (2026-10-18): toolbar text color (<span style="color: …">, the
+// Color/textStyle mark) had NO turndown rule → the span was dropped wholesale
+// at note save, offline AND online (the loss happens in this conversion,
+// before SQLite/sync). The fontFamily rule (which handles font-only spans
+// portal-exact) must generalize to color spans; and FontFamily's parse rule
+// consumes the DOM node (priority 1000), so a span carrying BOTH decls parses
+// as fontFamily only — color must survive combined spans too.
+describe('color/textStyle serialization fix (field bug: toolbar colors lost on save)', () => {
+  // Marks across ALL text nodes of the first paragraph (the end-to-end test
+  // colors only part of the paragraph, so the mark can sit on any child).
+  const getMarks = (editor: Editor) => {
+    const json = editor.getJSON() as {
+      content?: Array<{
+        content?: Array<{ marks?: Array<{ type: string; attrs?: Record<string, unknown> }> }>;
+      }>;
+    };
+    return json.content?.[0]?.content?.flatMap((node) => node.marks ?? []) ?? [];
+  };
+
+  it('color: span[style*="color"] serializes as inline HTML (was dropped wholesale)', () => {
+    const md = convertHtmlToMarkdown('<p><span style="color: rgb(255, 0, 0);">bc</span></p>');
+    expect(md).toContain('<span style="color: rgb(255, 0, 0)">bc</span>');
+  });
+
+  it('color: parses back into the textStyle mark and is md-stable across cycles', () => {
+    const md = convertHtmlToMarkdown('<p><span style="color: rgb(255, 0, 0);">bc</span></p>');
+    const editor = editorWith(convertMarkdownToHtml(md));
+    expect(getMarks(editor).find((m) => m.type === 'textStyle')?.attrs?.color).toBe('rgb(255, 0, 0)');
+    expect(convertHtmlToMarkdown(editor.getHTML())).toContain('<span style="color: rgb(255, 0, 0)">bc</span>');
+  });
+
+  it('font+color: both decls serialize; BOTH marks parse back (FontFamily must not consume)', () => {
+    const html = `<p><span style="color: rgb(255, 0, 0); font-family: 'JetBrains Mono', monospace">x</span></p>`;
+    const md = convertHtmlToMarkdown(html);
+    expect(md).toContain('color: rgb(255, 0, 0)');
+    expect(md).toContain("font-family: 'JetBrains Mono', monospace");
+    const marks = getMarks(editorWith(convertMarkdownToHtml(md)));
+    expect(marks.find((m) => m.type === 'textStyle')?.attrs?.color).toBe('rgb(255, 0, 0)');
+    expect(marks.find((m) => m.type === 'fontFamily')).toBeDefined();
+  });
+
+  it('font-only span still parses into fontFamily (consuming:false regression fence)', () => {
+    const marks = getMarks(editorWith("<p><span style=\"font-family: 'JetBrains Mono', monospace\">mono</span></p>"));
+    expect(marks.some((m) => m.type === 'fontFamily')).toBe(true);
+  });
+
+  it('editor end-to-end: setColor → save → reload keeps the color (field repro)', () => {
+    const editor = editorWith('<p>abcdef</p>');
+    editor.commands.setTextSelection({ from: 2, to: 4 });
+    editor.chain().setColor('#ff0000').run();
+    const md = convertHtmlToMarkdown(editor.getHTML());
+    const reloaded = editorWith(convertMarkdownToHtml(md));
+    expect(getMarks(reloaded).find((m) => m.type === 'textStyle')?.attrs?.color).toBe('rgb(255, 0, 0)');
+    expect(convertHtmlToMarkdown(reloaded.getHTML())).toContain('color: rgb(255, 0, 0)');
+  });
+});

@@ -152,16 +152,29 @@ export const createTurndownService = (): TurndownService => {
     },
   });
 
-  // Inline HTML marks (portal custom-html-utils.tsx:126-165 — fontFamily/abbreviation/kbd only).
-  service.addRule('fontFamily', {
-    filter: (node) =>
-      node.nodeName.toLowerCase() === 'span' && (node as HTMLElement).style.fontFamily !== '',
+  // Inline HTML marks (portal custom-html-utils.tsx:126-165 — fontFamily/abbr/kbd).
+  // FIELD BUG 2026-10-18: the portal rule set has NO color rule, so toolbar
+  // text colors (span[style*="color"], the Color/textStyle mark) were dropped
+  // wholesale at markdown save — in EVERY mode (offline, online), because the
+  // loss happens in this conversion before SQLite/sync ever see the note.
+  // Generalized (superset of the portal fontFamily rule): a span carrying
+  // color and/or font-family serializes as raw inline HTML preserving both
+  // decls; font-only spans keep the pinned portal shape exactly.
+  service.addRule('textStyle', {
+    filter: (node) => {
+      if (node.nodeName.toLowerCase() !== 'span') return false;
+      const element = node as HTMLElement;
+      return element.style.fontFamily !== '' || element.style.color !== '';
+    },
     replacement: (content, node) => {
       const element = node as HTMLElement;
-      const fontFamily = element.style.fontFamily;
-      if (!fontFamily) return content;
-      const normalizedFont = fontFamily.replace(/"/g, "'");
-      return `<span style="font-family: ${normalizedFont}">${content}</span>`;
+      const decls: string[] = [];
+      if (element.style.color) decls.push(`color: ${element.style.color}`);
+      if (element.style.fontFamily) {
+        const normalizedFont = element.style.fontFamily.replace(/"/g, "'");
+        decls.push(`font-family: ${normalizedFont}`);
+      }
+      return `<span style="${decls.join('; ')}">${content}</span>`;
     },
   });
 

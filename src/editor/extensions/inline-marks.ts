@@ -36,8 +36,14 @@ export const FontFamily = Mark.create({
         // Rule-level priority: out-ranks TextStyle's generic span rule
         // (registered earlier in the extension order) so font spans parse
         // as fontFamily. Non-font spans fall through (getAttrs → false).
+        // consuming:false (FIELD BUG 2026-10-18): a span can carry BOTH
+        // font-family and color decls — with the default rule consumption
+        // the fontFamily claim would eat the whole span and the Color
+        // decl would silently drop at parse-back. Non-consuming keeps
+        // both marks parsing from the same element.
         tag: "span[style*='font-family']",
         priority: 1000,
+        consuming: false,
         getAttrs: (node) => {
           if (typeof node === 'string') return false;
           const fontFamily = (node as HTMLElement).style.fontFamily;
