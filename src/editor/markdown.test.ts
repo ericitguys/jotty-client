@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from './markdown';
+import { isLegacyHtmlDoc } from './contentKind';
 import { noteEditorExtensions } from './extensions';
 
 function editorWith(content: string): Editor {
@@ -333,5 +334,22 @@ describe('color/textStyle serialization fix (field bug: toolbar colors lost on s
     const reloaded = editorWith(convertMarkdownToHtml(md));
     expect(getMarks(reloaded).find((m) => m.type === 'textStyle')?.attrs?.color).toBe('rgb(255, 0, 0)');
     expect(convertHtmlToMarkdown(reloaded.getHTML())).toContain('color: rgb(255, 0, 0)');
+  });
+});
+
+describe('isLegacyHtmlDoc (FIELD BUG 2026-10-18 #2: span-first markdown misread as legacy HTML)', () => {
+  it('claims only block-level HTML documents (the shapes the old client emitted)', () => {
+    for (const head of ['<p>x', '<p> x', '<h1>H</h1>', '<ul><li>', '<ol><li>', '<blockquote>a', '<pre><code>b', '<table><tr>', '<DIV>x']) {
+      expect(isLegacyHtmlDoc(`  ${head}`)).toBe(true);
+    }
+  });
+
+  it('markdown opening with inline tags/comments is NOT legacy (the field-note case)', () => {
+    expect(isLegacyHtmlDoc('<span style="color: rgb(0, 0, 0)"><span style="font-family: Arial">text</span></span>')).toBe(false);
+    for (const head of ['<mark style="background-color: rgb(1,2,3)">hl</mark>', '<kbd>Ctrl</kbd>', '<abbr title="x">H</abbr>', '<u>u</u>', '<sub>1</sub>', '<sup>2</sup>', '<img src="https://x/y.png" style="width: 20px" />', '<!-- drawio-diagram\ndata: AA -->', '<details>\n<summary>s</summary>', 'plain **markdown** first']) {
+      expect(isLegacyHtmlDoc(head)).toBe(false);
+    }
+    expect(isLegacyHtmlDoc('')).toBe(false);
+    expect(isLegacyHtmlDoc('   ')).toBe(false);
   });
 });

@@ -224,4 +224,67 @@ describe('NoteEditor', () => {
     await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
     expect(screen.queryByRole('dialog', { name: 'Attachment URL' })).toBeNull();
   });
+
+  // FIELD BUG 2026-10-18 #2 (prod "test" note): a MARKDOWN note whose first
+  // block is an inline-HTML span tripped the startsWith('<') legacy-HTML
+  // detector — the load site fed raw markdown to TipTap AS HTML (structure
+  // collapsed into one blob) and the Save-flush ran turndown over the raw
+  // markdown string, destroying paragraphs and bullets on the server. The
+  // detector must only claim BLOCK-level HTML documents.
+  const SPAN_MD = [
+    '<span style="color: rgb(0, 0, 0)"><span style="font-family: Arial">First paragraph of the field note.</span></span>',
+    '',
+    '<span style="color: rgb(0, 0, 0)"><span style="font-family: Arial">Second paragraph before the list.</span></span>',
+    '',
+    '-   <span style="color: rgb(0, 0, 0)"><span style="font-family: Arial">a bullet line kept as a list item</span></span>',
+    '',
+    '-   <span style="color: rgb(0, 0, 0)"><span style="font-family: \'Times New Roman\'">second bullet kept too</span></span>',
+  ].join('\n');
+
+  it('span-first markdown: Save-flush with NO edits stores the content verbatim (no legacy double-conversion)', async () => {
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: SPAN_MD, category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(screen.getByDisplayValue('T')).toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
+    // NO edit — Save flushes the untouched loaded value
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_note', expect.objectContaining({ id: 'n1' })));
+    const saved = invoke.mock.calls.find((c) => c[0] === 'update_note')?.[1] as { content: string };
+    expect(saved.content).toBe(SPAN_MD);
+  });
+
+  it('span-first markdown: an EDIT keeps the markdown structure through save (no blob, spans + bullets intact)', async () => {
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: SPAN_MD, category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
+    // one real edit so onUpdate fires and the debounced save runs. jsdom has
+    // no execCommand and blind fireEvent.input doesn't drive ProseMirror —
+    // reach the mounted TipTap instance through the element the EditorContent
+    // rendered and drive the editor's own transaction (append ' edited' to the
+    // last paragraph), exactly how the bubble tests obtain their editor.
+    const editable = document.querySelector('.tiptap') as HTMLElement;
+    const editorFromDom = (editable as unknown as { editor?: { commands: { insertContentAt: (pos: number | 'end', content: string) => void } } }).editor;
+    if (editorFromDom) editorFromDom.commands.insertContentAt('end', ' edited');
+    else console.warn('no editor on dom element — falling back');
+    await new Promise((resolve) => setTimeout(resolve, 1100)); // past the 800ms debounce (real timers)
+    const updates = invoke.mock.calls.filter((c) => c[0] === 'update_note');
+    expect(updates.length).toBeGreaterThan(0);
+    const saved = updates[updates.length - 1][1] as { content: string };
+    // structure fences: paragraphs stay separate, bullets stay list items,
+    // spans survive — a legacy-style double conversion would have space-joined
+    // everything into one line and dissolved the '-   ' markers.
+    expect(saved.content).toContain('\n\n');
+    expect(saved.content).toContain('-   <span');
+    expect(saved.content).toContain('font-family: Arial');
+    expect(saved.content).toContain('First paragraph of the field note.');
+    expect(saved.content).toContain('edited');
+  });
 });

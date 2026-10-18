@@ -8,6 +8,7 @@ import { useStore } from '../stores/store';
 import { noteEditorExtensions } from '../editor/extensions';
 import { applyImageSize } from '../editor/imageResize';
 import { convertHtmlToMarkdown, convertMarkdownToHtml } from '../editor/markdown';
+import { isLegacyHtmlDoc } from '../editor/contentKind';
 import type { FileModalStorage, ImageModalStorage, SlashCommandsStorage, SlashItem, TableModalStorage } from '../editor/slashCommands';
 import { sniffFileAttachment } from '../editor/extensions/rich-blocks';
 import EditorToolbar from './EditorToolbar';
@@ -51,7 +52,10 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   // so every save path persists markdown. Payload shape {id,title,content,category} unchanged.
   const autosave = useAutosave(async (v: { title: string; content: string; category: string }) => {
     if (!loadedId) return;
-    const content = v.content.trim().startsWith('<') ? convertHtmlToMarkdown(v.content) : v.content;
+    // FIELD BUG 2026-10-18 #2: legacy detection via isLegacyHtmlDoc (block-level
+    // first tag), never bare startsWith('<') — markdown opening with an inline
+    // span tag must save verbatim, not be re-turndowned as if it were HTML.
+    const content = isLegacyHtmlDoc(v.content) ? convertHtmlToMarkdown(v.content) : v.content;
     await api.updateNote(loadedId, v.title, content, v.category);
     await refreshAll();
   });
@@ -96,7 +100,10 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
   // string as loaded; once saved it is markdown (onUpdate re-converts).
   const editorContent = useMemo(() => {
     const raw = autosave.value?.content ?? '';
-    return raw.trim().startsWith('<') ? raw : convertMarkdownToHtml(raw);
+    // Same detector fix as the save site: span-first markdown parses AS
+    // MARKDOWN (paragraphs/bullets intact); only block-level HTML documents
+    // take the legacy raw feed.
+    return isLegacyHtmlDoc(raw) ? raw : convertMarkdownToHtml(raw);
   }, [autosave.value?.content]);
 
   const editor = useEditor({
