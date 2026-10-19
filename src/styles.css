@@ -1314,6 +1314,29 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   /* keep sync badge clear of Android gesture navigation */
   #sync-badge { bottom: 20px; right: 12px; max-width: calc(100vw - 70px); }
 
+  /* keyboard (v0.31.5): the editor UI wraps the text. After the MainActivity
+     ime() inset fix the webview physically shrinks while the keyboard is
+     open — the editor box must shrink WITH it and scroll its text INSIDE
+     the box (title + toolbar pinned at top, Save pinned at the box bottom),
+     instead of extending under the keyboard with only the outer column
+     scrolling. Scoped to the open editor on phones; the checklist/agenda
+     view + the wall keep their natural-height overflow behavior, and
+     desktop keeps the min-height floors (base rules). */
+  #app > main:not(.list-only) { display: flex; flex-direction: column; }
+  #note-editor { flex: 1 1 auto; }
+  /* :not([hidden]) keeps the UA hidden display:none winning in markdown mode
+     — an unscoped display:flex here would re-show the TipTap host behind the
+     markdown editor. */
+  /* The chain from the box to the editable is #note-editor > .visual-host >
+     EditorContent's OWN wrapper div > .tiptap — every level must carry the
+     bound or the unmanaged middle div grows to content height again. */
+  #note-editor .visual-host:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  #note-editor .visual-host:not([hidden]) > div { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  #note-editor .visual-host .tiptap { min-height: 0; flex: 1 1 auto; }
+  #note-editor .md-editor { min-height: 0; flex: 1 1 auto; }
+  #note-editor .md-editor-stack { min-height: 0; }
+  #note-editor .md-preview { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+
   /* waiting-to-transcribe chip (2026-09-30): clears the gesture zone the same
      way; stacks above the sync bar instead of beside it (drawer width) */
   .voice-pending-chip { bottom: 56px; right: 12px; left: auto; max-width: calc(100vw - 70px); }

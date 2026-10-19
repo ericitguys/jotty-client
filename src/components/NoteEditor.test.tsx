@@ -304,4 +304,24 @@ describe('NoteEditor', () => {
     const saved = invoke.mock.calls.find((c) => c[0] === 'update_note')?.[1] as { content: string };
     expect(saved.content).toBe(TABLE_MD);
   });
+
+  // v0.31.5 keyboard-box mobile fix: the TipTap host wrapper carries the
+  // .visual-host class (the ≤700px CSS bounds + internally scrolls the editor
+  // box through it; :not([hidden]) keeps markdown mode's UA hidden winning).
+  // jsdom can't verify layout — the structural pin here just locks the CLASS
+  // the CSS targets and the hidden attr's presence; the real box/scroll
+  // geometry is gated by the headless WebKitGTK screenshot probe at 412 +
+  // keyboard-simulated sizes (see the run ledger).
+  it('visual host wrapper: .visual-host class present and unhidden in visual mode', async () => {
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'n1', title: 'T', content: '<p>hi</p>', category: 'Home', updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    render(<NoteEditor noteId="n1" />);
+    await waitFor(() => expect(document.querySelector('.tiptap')).not.toBeNull());
+    const host = document.querySelector('#note-editor .visual-host') as HTMLElement | null;
+    expect(host).not.toBeNull();
+    expect(host!.hasAttribute('hidden')).toBe(false);
+  });
 });

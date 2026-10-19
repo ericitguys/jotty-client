@@ -413,7 +413,7 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
           the raw markdown editor replaces it visually. Edits persist through
           the SAME autosave.setValue path — the Task-2 save boundary
           normalization already passes non-HTML content through verbatim. */}
-      <div hidden={isMarkdownMode}>
+      <div className="visual-host" hidden={isMarkdownMode}>
         <EditorContent editor={editor} />
       </div>
       {isMarkdownMode && (
