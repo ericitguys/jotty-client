@@ -90,8 +90,22 @@ describe('Sidebar section switching', () => {
     expect(screen.getByRole('button', { name: 'Agenda' })).toHaveClass('selected');
   });
 
+  it('the Brain row opens the global graph and highlights when selected', () => {
+    useStore.setState({ listMode: 'notes', selectedNoteId: 'n1', selectedChecklistId: null, selectedCategory: { type: 'notes', path: 'Home' } });
+    const { rerender } = render(<Sidebar />);
+    fireEvent.click(screen.getByRole('button', { name: 'Brain' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('brain');
+    expect(s.brainFocusId).toBeNull();
+    expect(s.selectedNoteId).toBeNull();
+    expect(s.selectedCategory).toBeNull();
+    useStore.setState({ listMode: 'brain' });
+    rerender(<Sidebar />);
+    expect(screen.getByRole('button', { name: 'Brain' })).toHaveClass('selected');
+  });
+
   it('only the active section shows its categories', () => {
-    render(<Sidebar />);
+    const { rerender } = render(<Sidebar />);
     expect(screen.queryByText('Errands')).not.toBeInTheDocument(); // checklist cats hidden in notes mode
     fireEvent.click(screen.getByRole('button', { name: 'Checklists' }));
     expect(screen.getByText('Errands')).toBeInTheDocument();

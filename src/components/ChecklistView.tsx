@@ -204,13 +204,24 @@ export default function ChecklistView({ checklistId }: { checklistId: string }) 
   return (
     <div id="checklist-view">
       <div id="checklist-head">
-        <input
-          className="cl-title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={() => saveMeta()}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
+        <div className="cl-head-row">
+          <input
+            className="cl-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => saveMeta()}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          />
+          <button
+            type="button"
+            className="clv-brain-btn"
+            aria-label="Open in Brain"
+            title="Brain"
+            onClick={() => useStore.getState().setBrainFocus(checklistId)}
+          >
+            <Icon name="graph" size={15} />
+          </button>
+        </div>
         <div className="cl-meta-row">
           {catOptions.length > 0 ? (
             <Dropdown

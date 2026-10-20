@@ -218,6 +218,16 @@ describe('ChecklistView', () => {
     expect(document.getElementById('checklist-head')?.lastElementChild).toBe(meta);
   });
 
+  it('brain button sets brain focus on the checklist', async () => {
+    render(<ChecklistView checklistId="list-uuid-456" />);
+    await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Brain' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('brain');
+    expect(s.brainFocusId).toBe('list-uuid-456');
+    expect(s.selectedChecklistId).toBeNull();
+  });
+
   it('boards render no header counts line or progress bar (plain lists only)', async () => {
     useStore.setState({ checklists: [storeRow({ itemCount: 5, doneCount: 2, listType: 'kanban' })] });
     invoke.mockImplementation((cmd: string) => {

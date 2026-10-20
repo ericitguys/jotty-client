@@ -866,9 +866,19 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.brain-stale {
-  color: var(--amber);
+/* unscoped stale chip base — BrainView and the sync badge share only the amber
+   colour. Badge-specific opacity/max-width/ellipsis stay in the scoped rule above.
+   (Previously this file scoped the stale colour to .brain-stale; the unscoped class
+   lets both chips use .sync-stale with the same base colour.) */
+.sync-stale {
+  color: var(--amber, currentColor);
+}
+#sync-badge .sync-stale {
   opacity: 0.85;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brain-view {
@@ -916,6 +926,225 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 .brain-error {
   padding: 20px;
   color: var(--muted);
+}
+
+/* brain chrome: inspector + legend + entries */
+.brain-inspector {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 260px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  z-index: 10;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-2);
+}
+.brain-inspector-head {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.brain-inspector-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brain-inspector-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.brain-inspector-kind,
+.brain-inspector-category {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.brain-inspector-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.brain-inspector-close:hover {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.brain-inspector-lonely {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.brain-inspector-section h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.brain-inspector-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brain-inspector-section li button {
+  width: 100%;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+}
+.brain-inspector-section li button:hover {
+  background: var(--accent-soft);
+}
+.brain-inspector-neighbour-kind {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.brain-inspector-neighbour-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brain-inspector-suggested .brain-inspector-neighbour-title {
+  flex: 1 1 auto;
+}
+.brain-inspector-suggested-score {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+}
+.brain-inspector-open {
+  margin-top: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.brain-inspector-open:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.brain-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 10;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: var(--shadow-2);
+}
+.brain-legend-counts {
+  font-size: 11px;
+  color: var(--muted);
+}
+.brain-legend-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.brain-legend-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.brain-legend-swatch-line {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* drawer brain row mirrors sidebar action rows */
+.brn-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.brn-row.selected {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* note/checklist header brain buttons */
+.edt-brain-btn,
+.clv-brain-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.edt-brain-btn:hover,
+.clv-brain-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* header layout helpers */
+.note-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 0;
+}
+.cl-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cl-head-row .cl-title {
+  flex: 1;
 }
 
 #sync-badge .sync-stale {
@@ -1395,6 +1624,8 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
 
   /* kanban columns stay readable on phones (board scrolls horizontally) */
   .kanban-col { width: 82vw; max-width: 340px; }
+  /* brain entries are desktop-only: drawer Brain row + header brain buttons */
+  .brn-row, .edt-brain-btn, .clv-brain-btn { display: none; }
 }
 
 /* === P3 task 3: diagram renderers, node views, preview shapes =============

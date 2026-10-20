@@ -5,6 +5,7 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
 import NoteEditor from './NoteEditor';
+import { useStore } from '../stores/store';
 
 beforeEach(() => {
   invoke.mockReset();
@@ -110,6 +111,22 @@ describe('NoteEditor', () => {
     await waitFor(() => expect(document.querySelector('.voice-panel')).not.toBeNull());
     fireEvent.click(screen.getByText('Re-transcribe'));
     expect(onRetranscribe).toHaveBeenCalledWith('n1');
+  });
+
+  it('brain button sets brain focus on the loaded note', async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_note') return Promise.resolve({ id: 'note-uuid-123', title: 'T', content: '<p>hi</p>', category: 'Home', createdAt: null, updatedAt: null, deletedAt: null, dirty: false });
+      if (cmd === 'update_note') return Promise.resolve({});
+      return Promise.resolve(null);
+    });
+    useStore.setState({ listMode: 'notes', selectedNoteId: 'note-uuid-123', brainFocusId: null });
+    render(<NoteEditor noteId="note-uuid-123" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open in Brain' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Brain' }));
+    const s = useStore.getState();
+    expect(s.listMode).toBe('brain');
+    expect(s.brainFocusId).toBe('note-uuid-123');
+    expect(s.selectedNoteId).toBeNull();
   });
 
   it('shows the code language picker in the toolbar', async () => {

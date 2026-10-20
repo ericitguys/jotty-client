@@ -20,6 +20,7 @@ import ImageResizeOverlay from './ImageResizeOverlay';
 import SlashMenu from './SlashMenu';
 import TableToolbar from './TableToolbar';
 import MarkdownEditor from './MarkdownEditor';
+import { Icon } from './icons';
 import type { NoteDto } from '../api/types';
 
 // Place the slash popup just below the `/` block start, clamped-free fixed
@@ -368,6 +369,17 @@ export default function NoteEditor({ noteId, onRetranscribe }: { noteId: string;
 
   return (
     <div id="note-editor">
+      <div className="note-head">
+        <button
+          type="button"
+          className="edt-brain-btn"
+          aria-label="Open in Brain"
+          title="Brain"
+          onClick={() => { if (loadedId) useStore.getState().setBrainFocus(loadedId); }}
+        >
+          <Icon name="graph" size={15} />
+        </button>
+      </div>
       <input
         id="note-title"
         value={autosave.value?.title ?? ''}

@@ -48,6 +48,7 @@ export default function Sidebar({ onOpenSettings }: { onOpenSettings?: () => voi
         </ul>
       )}
       <div className="sidebar-actions">
+        <button className={`brn-row${listMode === 'brain' ? ' selected' : ''}`} onClick={() => setListMode('brain')}><Icon name="graph" size={13}/> Brain</button>
         <button onClick={() => refreshAll()}><Icon name="refresh" size={13}/> Refresh</button>
         {onOpenSettings && <button onClick={onOpenSettings}><Icon name="settings" size={13}/> Settings</button>}
       </div>
