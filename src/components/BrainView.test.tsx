@@ -4,6 +4,7 @@ import { act } from 'react';
 import { useStore, DEFAULT_BRAIN_PREFS } from '../stores/store';
 import type { BrainPrefs } from '../stores/store';
 import BrainView from './BrainView';
+import BrainInspector from './brain/BrainInspector';
 
 const mockBrainFetch = vi.fn();
 vi.mock('../api/client', async () => {
@@ -12,9 +13,23 @@ vi.mock('../api/client', async () => {
 });
 
 vi.mock('./brain/BrainCanvas2D', () => ({
-  default: ({ onOpen }: { onOpen: (n: { id: string; kind: string }) => void }) => (
+  default: ({
+    onOpen,
+    onSelect,
+    nodes,
+  }: {
+    onOpen: (n: { id: string; kind: string }) => void;
+    onSelect: (id: string | null) => void;
+    nodes: { id: string; kind: string; title: string }[];
+  }) => (
     <div data-testid="brain-canvas-stub" className="brain-canvas" data-dimension="2d">
-      <button onDoubleClick={() => onOpen({ id: 'n0', kind: 'note' })} data-testid="mock-node">Open n0</button>
+      <button onClick={() => onSelect(nodes[0]?.id ?? 'n0')} data-testid="mock-node">Select first</button>
+      <button
+        onDoubleClick={() => onOpen({ id: nodes[0]?.id ?? 'n0', kind: nodes[0]?.kind ?? 'note' })}
+        data-testid="mock-open-node"
+      >
+        Open first
+      </button>
     </div>
   ),
 }));
@@ -27,8 +42,9 @@ vi.mock('./brain/BrainScene3D', () => ({
   ),
 }));
 
-const makeResult = (overrides: Partial<{ fromCache: boolean; stale: boolean; status: string; nodeCount: number }> = {}) => {
-  const { fromCache = false, stale = false, status = 'ready', nodeCount = 3 } = overrides;
+const makeResult = (overrides: Partial<{ fromCache: boolean; stale: boolean; status: string; nodeCount: number; edges: { source: string; target: string; kind: string; weight?: number }[] }> = {}) => {
+  const { fromCache = false, stale = false, status = 'ready', nodeCount = 3, edges: edgeOverride } = overrides;
+  const defaultEdges = edgeOverride ?? [];
   return {
     graph: {
       status,
@@ -39,7 +55,7 @@ const makeResult = (overrides: Partial<{ fromCache: boolean; stale: boolean; sta
         title: `Note ${i}`,
         links: i,
       })),
-      edges: [],
+      edges: defaultEdges,
       total: nodeCount,
       truncated: false,
     },
@@ -290,7 +306,64 @@ describe('node open', () => {
     useStore.setState({ notes: [{ id: 'n0', title: 'Note 0', content: '', category: 'Work', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null, dirty: false, audioPath: null, audioDurationSecs: null }] });
     render(<BrainView />);
     await waitFor(() => expect(screen.getByTestId('brain-canvas-stub')).toBeInTheDocument());
-    fireEvent.doubleClick(screen.getByTestId('mock-node'));
+    fireEvent.doubleClick(screen.getByTestId('mock-open-node'));
     expect(useStore.getState().selectedNoteId).toBe('n0');
+  });
+});
+
+describe('BrainView inspector + legend', () => {
+  it('renders inspector on node select with title and kind', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult({ edges: [{ source: 'n0', target: 'n1', kind: 'link' }] }));
+    render(<BrainView />);
+    await waitFor(() => expect(screen.getByTestId('brain-canvas-stub')).toBeInTheDocument());
+    screen.getByTestId('mock-node').click();
+    await waitFor(() => expect(screen.getByRole('complementary', { name: /Brain inspector/i })).toBeInTheDocument());
+    expect(screen.getByText('Note 0')).toBeInTheDocument();
+    expect(document.querySelector('.brain-inspector-kind')?.textContent).toBe('note');
+  });
+
+  it('renders legend with total items, total links, and shown nodes', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult({ nodeCount: 3, edges: [{ source: 'n0', target: 'n1', kind: 'link', weight: 1 }, { source: 'n1', target: 'n2', kind: 'link', weight: 1 }] }));
+    render(<BrainView />);
+    await waitFor(() => expect(screen.getByText(/3 items · 2 links · showing 3/)).toBeInTheDocument());
+  });
+
+  it('shows (unknown) fallback for edge target missing from graph nodes', () => {
+    render(
+      <BrainInspector
+        node={{ id: 'n0', kind: 'note', title: 'Note 0', links: 0 }}
+        edges={[{ source: 'n0', target: 'missing', kind: 'link', weight: 1 }]}
+        onClose={vi.fn()}
+        onPick={vi.fn()}
+        onOpen={vi.fn()}
+        canOpen={() => false}
+        resolveTitle={() => null}
+      />,
+    );
+    expect(screen.getByText(/Links to/)).toBeInTheDocument();
+    expect(screen.getByText('(unknown)')).toBeInTheDocument();
+  });
+
+  it('opens a checklist from the inspector', async () => {
+    mockBrainFetch.mockResolvedValue({
+      graph: {
+        status: 'ready',
+        focus: null,
+        nodes: [{ id: 'c0', kind: 'checklist', title: 'Chk 0', links: 0 }],
+        edges: [],
+        total: 1,
+        truncated: false,
+      },
+      fetchedAt: '2026-10-20T00:00:00Z',
+      fromCache: false,
+      stale: false,
+    });
+    useStore.setState({ checklists: [{ id: 'c0', title: 'Chk 0', items: [], category: 'Work', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null, dirty: false, completed: false, listType: 'simple' }] });
+    render(<BrainView />);
+    await waitFor(() => expect(screen.getByTestId('brain-canvas-stub')).toBeInTheDocument());
+    screen.getByTestId('mock-node').click();
+    await waitFor(() => expect(document.querySelector('.brain-inspector-open')).not.toBeNull());
+    fireEvent.click(document.querySelector('.brain-inspector-open')!);
+    expect(useStore.getState().selectedChecklistId).toBe('c0');
   });
 });

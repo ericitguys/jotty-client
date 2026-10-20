@@ -7,6 +7,7 @@ export interface BrainInspectorProps {
   onPick: (id: string) => void;
   onOpen: (node: BrainVMNode) => void;
   canOpen: (node: BrainVMNode) => boolean;
+  resolveTitle?: (id: string) => { title: string; kind: string } | null;
   stale?: string | null;
 }
 
@@ -21,15 +22,15 @@ interface Neighbour {
 
 const isItemKind = (kind: string) => kind === 'note' || kind === 'checklist';
 
-export default function BrainInspector({ node, edges, onClose, onPick, onOpen, canOpen, stale }: BrainInspectorProps) {
+export default function BrainInspector({ node, edges, onClose, onPick, onOpen, canOpen, resolveTitle, stale }: BrainInspectorProps) {
   const neighbours: Neighbour[] = edges
     .filter((edge) => edge.source === node.id || edge.target === node.id)
     .map((edge) => {
       const outgoing = edge.source === node.id;
       const id = outgoing ? edge.target : edge.source;
-      // For a same-node loop (shouldn't happen), default to outgoing target.
-      const other = { id, title: '(unknown)', kind: 'unknown' };
-      return { ...other, weight: edge.weight, edge, outgoing };
+      const resolved = resolveTitle ? resolveTitle(id) : null;
+      const other = resolved ?? { id, title: '(unknown)', kind: 'unknown' };
+      return { id, ...other, weight: edge.weight, edge, outgoing };
     });
 
   const suggested = neighbours

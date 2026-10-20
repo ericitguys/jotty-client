@@ -4,6 +4,8 @@ import type { BrainPrefs, BrainFilterFlags } from '../stores/store';
 import { brainFetch } from '../api/client';
 import type { BrainFetchResult, BrainNodeWire, BrainEdgeWire } from '../api/client';
 import BrainToolbar from './brain/BrainToolbar';
+import BrainInspector from './brain/BrainInspector';
+import BrainLegend from './brain/BrainLegend';
 import { probeWebGL } from './brain/useWebGLProbe';
 import { brainView, useBrainPalette, searchNodes } from './brain/brainView';
 
@@ -164,6 +166,38 @@ export default function BrainView({ focusId }: Props) {
     setFlyTo({ id, at: Date.now() });
   };
 
+  const selectedNode = useMemo(() => vm.nodes.find((n) => n.id === selectedId) ?? null, [vm.nodes, selectedId]);
+
+  const resolveTitle = useCallback(
+    (id: string): { title: string; kind: string } | null => {
+      const found = graph.nodes.find((n) => n.id === id);
+      if (!found) return null;
+      return { title: found.title, kind: found.kind };
+    },
+    [graph.nodes],
+  );
+
+  const canOpen = useCallback(
+    (node: { id: string; kind: string }) => {
+      if (node.kind !== 'note' && node.kind !== 'checklist') return false;
+      if (node.kind === 'note') return notes.some((n) => n.id === node.id);
+      return checklists.some((c) => c.id === node.id);
+    },
+    [notes, checklists],
+  );
+
+  const handleInspectorPick = (id: string) => {
+    setSelectedId(id);
+  };
+
+  const handleInspectorClose = () => {
+    setSelectedId(null);
+  };
+
+  const handleInspectorOpen = (node: { id: string; kind: string }) => {
+    handleOpen(node);
+  };
+
   const chipText = '· stale data';
   const showStale = !!data && (data.fromCache || data.stale);
 
@@ -202,6 +236,7 @@ export default function BrainView({ focusId }: Props) {
             dimensionDisabled3D={!webglOk}
             onScopeLocalChange={setScopeLocal}
           />
+          <BrainLegend totalNodes={graph.nodes.length} totalEdges={graph.edges.length} shownNodes={vm.nodes.length} />
           <div ref={setCanvasContainer}>
             {runtimeDimension === '2d' ? (
               <Suspense fallback={<div className="brain-loading" />}>
@@ -233,6 +268,17 @@ export default function BrainView({ focusId }: Props) {
               </Suspense>
             )}
           </div>
+          {selectedNode && (
+            <BrainInspector
+              node={selectedNode}
+              edges={vm.edges}
+              onClose={handleInspectorClose}
+              onPick={handleInspectorPick}
+              onOpen={handleInspectorOpen}
+              canOpen={canOpen}
+              resolveTitle={resolveTitle}
+            />
+          )}
         </div>
       )}
     </div>
