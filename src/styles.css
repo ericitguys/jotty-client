@@ -866,6 +866,58 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.brain-stale {
+  color: var(--amber);
+  opacity: 0.85;
+}
+
+.brain-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.brain-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+#brain-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+.brain-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.brain-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.brain-toolbar button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.brain-canvas,
+.brain-canvas-stub {
+  position: absolute;
+  inset: 0;
+}
+.brain-indexing,
+.brain-empty,
+.brain-error {
+  padding: 20px;
+  color: var(--muted);
+}
+
 #sync-badge .sync-stale {
   color: var(--amber);
   opacity: 0.85;

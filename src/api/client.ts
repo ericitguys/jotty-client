@@ -1,6 +1,38 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type * as T from './types';
 
+export interface BrainNodeWire {
+  id: string;
+  kind: string;
+  title: string;
+  category?: string | null;
+  owner?: string | null;
+  links: number;
+  distance?: number | null;
+  tags?: string[] | null;
+}
+
+export interface BrainEdgeWire {
+  source: string;
+  target: string;
+  kind: string;
+  weight?: number | null;
+}
+
+export interface BrainFetchResult {
+  graph: {
+    status: string;
+    focus: string | null;
+    nodes: BrainNodeWire[];
+    edges: BrainEdgeWire[];
+    total: number;
+    truncated: boolean;
+  };
+  fetchedAt: string;
+  fromCache: boolean;
+  stale: boolean;
+}
+
 export const getConnection = () => invoke<T.ConnectInfo | null>('get_connection');
 export const listNotes = () => invoke<T.NoteDto[]>('list_notes');
 export const getNote = (id: string) => invoke<T.NoteDto>('get_note', { id });
@@ -142,6 +174,19 @@ export const setTriageSettings = (confidenceThreshold: number) =>
   invoke<T.TriageSettings>('set_triage_settings', { confidenceThreshold });
 export const getTriageTagVocab = () => invoke<string[]>('triage_tag_vocab');
 export const addTriageTag = (tag: string) => invoke<string[]>('triage_tag_vocab_add', { tag });
+// BrainView link-map fetch (P2). The Rust command already implements the
+// cache-vs-live matrix; the frontend only renders what arrives.
+export const brainFetch = async (q: { focus: string | null; depth: number; limit: number; suggestions: boolean }): Promise<BrainFetchResult> => {
+  const d = Math.trunc(q.depth);
+  const l = Math.trunc(q.limit);
+  if (!Number.isSafeInteger(d) || d < 1 || d > 3 || !Number.isSafeInteger(l) || l < 1 || l > 200) {
+    throw new Error('brain query bounds: depth 1..3, limit 1..200');
+  }
+  return invoke<BrainFetchResult>('brain_fetch', {
+    query: { focus: q.focus, depth: d, limit: l, suggestions: q.suggestions },
+  });
+};
+
 // Tauri asset-protocol URL for a local audio file; the try/catch keeps jsdom
 // tests honest (no __TAURI_INTERNALS__ there) — audioSrc falls back to the
 // raw path, which component tests assert on.

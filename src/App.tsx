@@ -7,6 +7,7 @@ import ChecklistList from './components/ChecklistList';
 import TriageView from './components/TriageView';
 import ChecklistView from './components/ChecklistView';
 import NoteEditor from './components/NoteEditor';
+import BrainView from './components/BrainView';
 import SyncBadge from './components/SyncBadge';
 import VoicePendingBadge from './components/VoicePendingBadge';
 import RecurrenceSweepTimer from './components/RecurrenceSweepTimer';
@@ -26,7 +27,7 @@ type VoiceFlow =
   | { mode: 'retranscribe'; noteId: string };
 
 export default function App() {
-  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, themeOverride, reduceMotion, selectNote, selectChecklist, refreshAll, refreshUpdate } = useStore();
+  const { connection, notes, checklists, selectedNoteId, selectedChecklistId, selectedCategory, listMode, prefs, branding, themeOverride, reduceMotion, selectNote, selectChecklist, refreshAll, refreshUpdate, brainFocusId, brainPrefs, setBrainFocus, setBrainPrefs, setBrainDimension } = useStore();
   const [showConflicts, setShowConflicts] = useState(false);
   const [voice, setVoice] = useState<VoiceFlow | null>(null);
   const [resumeRows, setResumeRows] = useState<VoiceRecordingDto[] | null>(null);
@@ -291,6 +292,8 @@ export default function App() {
         <TriageView notes={inboxNotes} />
       ) : listMode === 'agenda' ? (
         <AgendaView />
+      ) : listMode === 'brain' ? (
+        <BrainView />
       ) : listMode === 'notes' ? (
         <NoteList notes={visibleNotes} onStartVoiceNote={startVoiceNote} onOpenSettings={() => setShowSettings(true)} />
       ) : (

@@ -11,6 +11,38 @@ export const INBOX_CATEGORY = '!INBOX';
 export const isCaptureZone = (category: string | null | undefined): boolean =>
   !!category && (category === INBOX_CATEGORY || category.startsWith(`${INBOX_CATEGORY}/`));
 
+export interface BrainFilterFlags {
+  notes: boolean;
+  checklists: boolean;
+  tags: boolean;
+  ghosts: boolean;
+  suggestions: boolean;
+  orphans: boolean;
+}
+
+export interface BrainPrefs {
+  dimension: '2d' | '3d';
+  colourMode: 'type' | 'category';
+  depth: number;
+  filters: BrainFilterFlags;
+}
+
+export const DEFAULT_BRAIN_FILTERS: BrainFilterFlags = {
+  notes: true,
+  checklists: true,
+  tags: false,
+  ghosts: true,
+  suggestions: false,
+  orphans: true,
+};
+
+export const DEFAULT_BRAIN_PREFS: BrainPrefs = {
+  dimension: '2d',
+  colourMode: 'type',
+  depth: 2,
+  filters: DEFAULT_BRAIN_FILTERS,
+};
+
 interface AppState {
   connection: T.ConnectInfo | null;
   notes: T.NoteDto[];
@@ -21,6 +53,10 @@ interface AppState {
   selectedChecklistId: string | null;
   selectedCategory: CategoryFilter | null;
   listMode: ListMode;
+  /** BrainView focus (P2): the node to centre the graph on. null = global graph. */
+  brainFocusId: string | null;
+  /** BrainView persisted preferences (P2). */
+  brainPrefs: BrainPrefs;
   /** One-shot agenda click-through request (v0.21 scroll-to-item): set by
    * AgendaView BEFORE selectChecklist; consumed by ChecklistView (scroll +
    * clear) once its items resolve — a fresh open's immediate lookup is a
@@ -37,6 +73,10 @@ interface AppState {
   /** Tier B S2: prefers-reduced-motion in-app override (Settings → Appearance checkbox). */
   reduceMotion: boolean;
   setReduceMotion: (v: boolean) => void;
+  /** BrainView state setters (P2). */
+  setBrainFocus: (id: string) => void;
+  setBrainPrefs: (patch: Partial<BrainPrefs>) => void;
+  setBrainDimension: (d: '2d' | '3d') => void;
   refreshAll: () => Promise<void>;
   selectNote: (id: string | null) => void;
   selectChecklist: (id: string | null) => void;
@@ -61,7 +101,7 @@ export interface CategoryFilter {
   path: string;
 }
 
-export type ListMode = 'notes' | 'checklists' | 'agenda';
+export type ListMode = 'notes' | 'checklists' | 'agenda' | 'brain';
 
 export interface VoiceBoardInput {
   recordingId: string | null; // new/resume modes
@@ -78,6 +118,21 @@ export interface VoiceBoardInput {
   appointment?: { title: string; targetDate: string; reminderDatetime: string | null; boardId: string } | null;
 }
 
+function loadBrainPrefs(): BrainPrefs {
+  try {
+    const raw = localStorage.getItem('jotty.brain-prefs');
+    if (!raw) return DEFAULT_BRAIN_PREFS;
+    const stored = JSON.parse(raw) as Partial<BrainPrefs> & { filters?: Partial<BrainFilterFlags> };
+    return {
+      ...DEFAULT_BRAIN_PREFS,
+      ...stored,
+      filters: { ...DEFAULT_BRAIN_FILTERS, ...stored.filters },
+    };
+  } catch {
+    return DEFAULT_BRAIN_PREFS;
+  }
+}
+
 export const useStore = create<AppState>((set, get) => ({
   connection: null,
   notes: [],
@@ -88,6 +143,8 @@ export const useStore = create<AppState>((set, get) => ({
   selectedChecklistId: null,
   selectedCategory: null,
   listMode: 'notes',
+  brainFocusId: null,
+  brainPrefs: loadBrainPrefs(),
   pendingHighlightId: null,
   updateInfo: null,
   prefs: null,
@@ -113,6 +170,19 @@ export const useStore = create<AppState>((set, get) => ({
       if (v) localStorage.setItem('jotty.reduce-motion', 'true');
       else localStorage.removeItem('jotty.reduce-motion');
     } catch { /* storage unavailable */ }
+  },
+  setBrainFocus: (id) => {
+    set({ brainFocusId: id, listMode: 'brain', selectedNoteId: null, selectedChecklistId: null });
+  },
+  setBrainPrefs: (patch) => {
+    const next = { ...get().brainPrefs, ...patch, filters: { ...get().brainPrefs.filters, ...patch.filters } };
+    set({ brainPrefs: next });
+    try {
+      localStorage.setItem('jotty.brain-prefs', JSON.stringify(next));
+    } catch { /* storage unavailable: session-only prefs */ }
+  },
+  setBrainDimension: (d) => {
+    get().setBrainPrefs({ dimension: d });
   },
   refreshUpdate: async () => {
     try {
@@ -159,20 +229,20 @@ export const useStore = create<AppState>((set, get) => ({
   },
   selectNote: (id) => {
     // selecting an entity of a type implies browsing that section
-    set({ selectedNoteId: id, selectedChecklistId: null, listMode: 'notes' });
+    set({ selectedNoteId: id, selectedChecklistId: null, listMode: 'notes', brainFocusId: null });
   },
   selectChecklist: (id) => {
-    set({ selectedChecklistId: id, selectedNoteId: null, listMode: 'checklists' });
+    set({ selectedChecklistId: id, selectedNoteId: null, listMode: 'checklists', brainFocusId: null });
   },
   selectCategory: (c) => {
     // a category click means browsing that section: switch lists + close open items
     set(c
-      ? { selectedCategory: c, listMode: c.type, selectedNoteId: null, selectedChecklistId: null }
-      : { selectedCategory: null });
+      ? { selectedCategory: c, listMode: c.type, selectedNoteId: null, selectedChecklistId: null, brainFocusId: null }
+      : { selectedCategory: null, brainFocusId: null });
   },
   setListMode: (m) => {
     // section header click = browse that section fresh: no filter, nothing open
-    set({ listMode: m, selectedCategory: null, selectedNoteId: null, selectedChecklistId: null });
+    set({ listMode: m, selectedCategory: null, selectedNoteId: null, selectedChecklistId: null, brainFocusId: m === 'brain' ? null : get().brainFocusId });
   },
   setPendingHighlight: (id) => {
     set({ pendingHighlightId: id });
@@ -231,9 +301,7 @@ export const useStore = create<AppState>((set, get) => ({
       let boardId: string;
       if (input.appointment) {
         // Voice → appointment (appointments Task 8): ONE card on the chosen
-        // board, then the date, then the optional reminder. add_item returns
-        // ItemDto (commands add_item → Result<ItemDto, String>), so the localId
-        // chains directly from the return — no read-back needed.
+        // board, then the date, then the optional reminder.
         boardId = input.appointment.boardId;
         const item = await api.addItem(boardId, input.appointment.title, null, null);
         await api.setItemTargetDate(boardId, item.localId, input.appointment.targetDate);

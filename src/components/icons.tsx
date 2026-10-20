@@ -14,7 +14,7 @@ import type { ReactElement } from 'react';
 
 export type IconName =
   | 'mic' | 'plus' | 'search' | 'settings' | 'refresh' | 'trash' | 'x' | 'check' | 'note'
-  | 'list' | 'columns' | 'calendar' | 'bell' | 'menu' | 'back' | 'arrow-up' | 'clock' | 'sun' | 'repeat' | 'more';
+  | 'list' | 'columns' | 'calendar' | 'bell' | 'menu' | 'back' | 'arrow-up' | 'clock' | 'sun' | 'repeat' | 'more' | 'graph';
 
 type IconProps = {
   name: IconName;
@@ -161,6 +161,17 @@ const PATHS: Record<IconName, ReactElement> = {
       <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
       <path d="m7 22-4-4 4-4" />
       <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+    </>
+  ),
+  graph: (
+    <>
+      <circle cx={12} cy={12} r={3} />
+      <circle cx={5} cy={8} r={2} />
+      <circle cx={19} cy={8} r={2} />
+      <circle cx={6} cy={18} r={2} />
+      <path d="M10 11 6.5 9" />
+      <path d="M14 11l3.5-2" />
+      <path d="M10.5 14 8 17" />
     </>
   ),
 };
