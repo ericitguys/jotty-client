@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, Suspense, lazy, useCallback } from 'react';
 import { useStore } from '../stores/store';
 import type { BrainPrefs, BrainFilterFlags } from '../stores/store';
 import { brainFetch } from '../api/client';
 import type { BrainFetchResult, BrainNodeWire, BrainEdgeWire } from '../api/client';
 import BrainToolbar from './brain/BrainToolbar';
-import BrainCanvas2D from './brain/BrainCanvas2D';
+import { probeWebGL } from './brain/useWebGLProbe';
 import { brainView, useBrainPalette, searchNodes } from './brain/brainView';
 
 interface Props {
   focusId?: string | null;
 }
+
+const LazyBrainCanvas2D = lazy(() => import('./brain/BrainCanvas2D'));
+const LazyBrainScene3D = lazy(() => import('./brain/BrainScene3D'));
 
 function nodeToVM(n: BrainNodeWire): { id: string; kind: string; title: string; category?: string | null; links: number; distance?: number | null } {
   return {
@@ -35,12 +38,20 @@ export default function BrainView({ focusId }: Props) {
   const storeFocusId = useStore((s: { brainFocusId: string | null }) => s.brainFocusId);
   const prefs = useStore((s: { brainPrefs: BrainPrefs }) => s.brainPrefs);
   const setBrainPrefs = useStore((s: { setBrainPrefs: (patch: Partial<BrainPrefs>) => void }) => s.setBrainPrefs);
+  const setBrainDimension = useStore((s: { setBrainDimension: (d: '2d' | '3d') => void }) => s.setBrainDimension);
   const selectNote = useStore((s: { selectNote: (id: string | null) => void }) => s.selectNote);
   const selectChecklist = useStore((s: { selectChecklist: (id: string | null) => void }) => s.selectChecklist);
   const notes = useStore((s: { notes: { id: string }[] }) => s.notes);
   const checklists = useStore((s: { checklists: { id: string }[] }) => s.checklists);
 
   const activeFocusId = focusId ?? storeFocusId;
+  const prefersFlat =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    (window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const runtimeDimension: '2d' | '3d' =
+    prefersFlat && prefs.dimension === '3d' ? '2d' : prefs.dimension;
+  const webglOk = useMemo(() => probeWebGL(), [runtimeDimension]);
   const [data, setData] = useState<BrainFetchResult | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -96,6 +107,46 @@ export default function BrainView({ focusId }: Props) {
       });
   };
 
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const attachedRef = useRef<HTMLCanvasElement | null>(null);
+  const observerRef = useRef<MutationObserver | null>(null);
+  const runtimeDimensionRef = useRef(runtimeDimension);
+  const handleLostRef = useRef(() => setBrainDimension('2d'));
+  runtimeDimensionRef.current = runtimeDimension;
+  handleLostRef.current = () => setBrainDimension('2d');
+
+  const attachContextLost = useCallback(() => {
+    const el = canvasRef.current;
+    if (!el || runtimeDimensionRef.current !== '3d') return;
+    const canvas = el.querySelector('canvas');
+    if (!canvas || canvas === attachedRef.current) return;
+    if (attachedRef.current) {
+      attachedRef.current.removeEventListener('webglcontextlost', handleLostRef.current);
+    }
+    attachedRef.current = canvas as HTMLCanvasElement;
+    canvas.addEventListener('webglcontextlost', handleLostRef.current);
+  }, []);
+
+  useEffect(() => {
+    attachContextLost();
+  }, [runtimeDimension, attachContextLost]);
+
+  const setCanvasContainer = useCallback((el: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (attachedRef.current) {
+      attachedRef.current.removeEventListener('webglcontextlost', handleLostRef.current);
+      attachedRef.current = null;
+    }
+    canvasRef.current = el;
+    if (!el || typeof MutationObserver === 'undefined') return;
+    attachContextLost();
+    observerRef.current = new MutationObserver(attachContextLost);
+    observerRef.current.observe(el, { childList: true, subtree: true });
+  }, [attachContextLost]);
+
   const handleSelect = (id: string | null) => {
     setSelectedId(id);
   };
@@ -148,19 +199,40 @@ export default function BrainView({ focusId }: Props) {
             onChangePrefs={setBrainPrefs}
             onSearchPick={handleSearchPick}
             onDimensionChange={(d: '2d' | '3d') => setBrainPrefs({ dimension: d })}
+            dimensionDisabled3D={!webglOk}
             onScopeLocalChange={setScopeLocal}
           />
-          <BrainCanvas2D
-            nodes={vm.nodes}
-            edges={vm.edges}
-            focusId={activeFocusId}
-            selectedId={selectedId}
-            colourMode={prefs.colourMode}
-            palette={palette}
-            flyTo={flyTo}
-            onSelect={handleSelect}
-            onOpen={handleOpen}
-          />
+          <div ref={setCanvasContainer}>
+            {runtimeDimension === '2d' ? (
+              <Suspense fallback={<div className="brain-loading" />}>
+                <LazyBrainCanvas2D
+                  nodes={vm.nodes}
+                  edges={vm.edges}
+                  focusId={activeFocusId}
+                  selectedId={selectedId}
+                  colourMode={prefs.colourMode}
+                  palette={palette}
+                  flyTo={flyTo}
+                  onSelect={handleSelect}
+                  onOpen={handleOpen}
+                />
+              </Suspense>
+            ) : (
+              <Suspense fallback={<div className="brain-loading" />}>
+                <LazyBrainScene3D
+                  nodes={vm.nodes}
+                  edges={vm.edges}
+                  focusId={activeFocusId}
+                  selectedId={selectedId}
+                  colourMode={prefs.colourMode}
+                  palette={palette}
+                  flyTo={flyTo}
+                  onSelect={handleSelect}
+                  onOpen={handleOpen}
+                />
+              </Suspense>
+            )}
+          </div>
         </div>
       )}
     </div>
