@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { act } from 'react';
 import { useStore, DEFAULT_BRAIN_PREFS } from '../stores/store';
 import type { BrainPrefs } from '../stores/store';
 import BrainView from './BrainView';
@@ -12,8 +13,16 @@ vi.mock('../api/client', async () => {
 
 vi.mock('./brain/BrainCanvas2D', () => ({
   default: ({ onOpen }: { onOpen: (n: { id: string; kind: string }) => void }) => (
-    <div data-testid="brain-canvas-stub" className="brain-canvas">
+    <div data-testid="brain-canvas-stub" className="brain-canvas" data-dimension="2d">
       <button onDoubleClick={() => onOpen({ id: 'n0', kind: 'note' })} data-testid="mock-node">Open n0</button>
+    </div>
+  ),
+}));
+
+vi.mock('./brain/BrainScene3D', () => ({
+  default: () => (
+    <div data-testid="brain-canvas-stub" className="brain-canvas" data-dimension="3d">
+      <canvas data-testid="brain-3d-canvas" />
     </div>
   ),
 }));
@@ -42,6 +51,8 @@ const makeResult = (overrides: Partial<{ fromCache: boolean; stale: boolean; sta
 
 beforeEach(() => {
   mockBrainFetch.mockReset();
+  localStorage.clear();
+  cleanup();
   useStore.setState({
     brainFocusId: null,
     brainPrefs: {
@@ -133,6 +144,82 @@ describe('BrainView toolbar', () => {
     const chip = screen.getByRole('button', { name: 'suggestions' });
     expect(chip.getAttribute('aria-pressed')).toBe('false');
   });
+
+  it('3D button is disabled when WebGL probe is false', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult());
+    render(<BrainView />);
+    await waitFor(() => expect(document.querySelector('.brain-toolbar')).toBeInTheDocument());
+    const dimButtons = screen.getAllByRole('button', { name: /3D|2D/ });
+    const button3D = dimButtons.find((b) => b.textContent?.includes('3D'));
+    expect(button3D).not.toBeUndefined();
+    expect((button3D as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('3D button is enabled when WebGL probe is true', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult());
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = vi.fn((type: string) => (type === 'webgl2' ? {} : null)) as unknown as typeof orig;
+    render(<BrainView />);
+    await waitFor(() => expect(document.querySelector('.brain-toolbar')).toBeInTheDocument());
+    const dimButtons = screen.getAllByRole('button', { name: /3D|2D/ });
+    const button3D = dimButtons.find((b) => b.textContent?.includes('3D'));
+    expect(button3D).not.toBeUndefined();
+    expect((button3D as HTMLButtonElement).disabled).toBe(false);
+    HTMLCanvasElement.prototype.getContext = orig;
+  });
+});
+
+describe('BrainView dimension', () => {
+  it('swaps from 2d to 3d via store and renders 3D stub', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult());
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = vi.fn((type: string) => (type === 'webgl2' ? {} : null)) as unknown as typeof orig;
+    render(<BrainView />);
+    await waitFor(() => expect(document.querySelector('.brain-canvas[data-dimension="2d"]')).toBeInTheDocument());
+    useStore.getState().setBrainDimension('3d');
+    await waitFor(() => expect(document.querySelector('.brain-canvas[data-dimension="3d"]')).toBeInTheDocument());
+    HTMLCanvasElement.prototype.getContext = orig;
+  });
+
+  it('auto-2D guard keeps stored pref 3d but renders 2d when coarse pointer', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult());
+    useStore.getState().setBrainPrefs({ dimension: '3d' });
+    const saved = window.matchMedia;
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(pointer: coarse)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      media: query,
+      onchange: null,
+    }));
+    render(<BrainView />);
+    await waitFor(() => expect(document.querySelector('.brain-canvas[data-dimension="2d"]')).toBeInTheDocument());
+    expect(useStore.getState().brainPrefs.dimension).toBe('3d');
+    const raw = localStorage.getItem('jotty.brain-prefs');
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).dimension).toBe('3d');
+    vi.stubGlobal('matchMedia', saved);
+  });
+
+  it('webglcontextlost on 3D canvas downgrades dimension to 2d and persists', async () => {
+    mockBrainFetch.mockResolvedValue(makeResult());
+    useStore.setState({ brainPrefs: { ...useStore.getState().brainPrefs, dimension: '3d' } });
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = vi.fn((type: string) => (type === 'webgl2' ? {} : null)) as unknown as typeof orig;
+    render(<BrainView />);
+    await waitFor(() => expect(document.querySelector('.brain-canvas[data-dimension="3d"]')).toBeInTheDocument());
+    const canvas = document.querySelector('[data-testid="brain-3d-canvas"]') as HTMLCanvasElement | null;
+    await new Promise((r) => setTimeout(r, 0));
+    if (canvas) {
+      act(() => canvas.dispatchEvent(new Event('webglcontextlost', { bubbles: true })));
+    }
+    await waitFor(() => expect(useStore.getState().brainPrefs.dimension).toBe('2d'));
+    expect(JSON.parse(localStorage.getItem('jotty.brain-prefs')!).dimension).toBe('2d');
+    HTMLCanvasElement.prototype.getContext = orig;
+  });
 });
 
 describe('store matrix', () => {
@@ -179,19 +266,12 @@ describe('store matrix', () => {
 });
 
 describe('prefs persistence', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
   it('loads defaults when no stored prefs', () => {
     expect(useStore.getState().brainPrefs.filters.suggestions).toBe(false);
   });
 
   it('merges stored prefs over defaults', () => {
     localStorage.setItem('jotty.brain-prefs', JSON.stringify({ depth: 3, filters: { suggestions: true } }));
-    // reset store to re-run init IIFE
-    useStore.setState({ brainPrefs: useStore.getState().brainPrefs });
-    // re-create module-level init isn't possible without reload, so exercise setter
     useStore.getState().setBrainPrefs({ depth: 3, filters: { ...useStore.getState().brainPrefs.filters, suggestions: true } });
     expect(useStore.getState().brainPrefs.depth).toBe(3);
     expect(useStore.getState().brainPrefs.filters.suggestions).toBe(true);
@@ -200,8 +280,6 @@ describe('prefs persistence', () => {
 
   it('corrupt JSON falls back to defaults on init', () => {
     localStorage.setItem('jotty.brain-prefs', 'not-json');
-    // re-import store module to re-run init; isolatedModules reload trick not guaranteed,
-    // so at least verify loadBrainPrefs via the public brainPrefs value stays defaults.
     expect(useStore.getState().brainPrefs).toEqual(DEFAULT_BRAIN_PREFS);
   });
 });

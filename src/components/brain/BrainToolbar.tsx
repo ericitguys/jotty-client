@@ -11,6 +11,7 @@ interface Props {
   onChangePrefs: (patch: Partial<BrainPrefs>) => void;
   onSearchPick: (id: string) => void;
   onDimensionChange: (d: '2d' | '3d') => void;
+  dimensionDisabled3D: boolean;
   onScopeLocalChange: (v: boolean) => void;
 }
 
@@ -24,6 +25,7 @@ export default function BrainToolbar({
   onChangePrefs,
   onSearchPick,
   onDimensionChange,
+  dimensionDisabled3D,
   onScopeLocalChange,
 }: Props) {
   const [query, setQuery] = useState('');
@@ -71,7 +73,7 @@ export default function BrainToolbar({
         <button
           aria-pressed={prefs.dimension === '3d'}
           onClick={() => onDimensionChange('3d')}
-          disabled
+          disabled={dimensionDisabled3D}
         >
           3D
         </button>

@@ -52,6 +52,14 @@ export const gravityForce = (strength: number): Force =>
     });
   });
 
+export const spreadRadius = (nodes: SimNode[], share = 0.9): number => {
+  const distances = nodes
+    .map((node) => Math.hypot(node.x || 0, node.y || 0))
+    .sort((a, b) => a - b);
+  if (distances.length === 0) return 0;
+  return distances[Math.min(distances.length - 1, Math.floor(distances.length * share))];
+};
+
 const _cellKey = (x: number, y: number) => `${x},${y}`;
 
 export const collideForce = (radiusOf: (node: SimNode) => number, strength = 0.7): Force =>

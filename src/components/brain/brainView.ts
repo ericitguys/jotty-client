@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ForceGraphMethods, LinkObject, NodeObject } from 'react-force-graph-2d';
+export { spreadRadius } from './brainForces';
 
 export type Rgb = [number, number, number];
 
