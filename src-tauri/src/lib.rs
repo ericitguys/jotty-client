@@ -231,6 +231,7 @@ pub fn run() {
             commands::voice_delete_note_audio,
             commands::voice_get_pending_transcriptions,
             commands::voice_retry_pending,
+            commands::brain_fetch,
         ])
         .run(tauri::generate_context!())
         .map(|()| {

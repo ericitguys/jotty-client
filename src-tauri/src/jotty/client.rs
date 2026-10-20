@@ -3,6 +3,14 @@ use crate::jotty::models::{Categories, Created, Health, KanbanBoard, ServerCheck
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+pub(crate) async fn fetch_brain_impl(client: &JottyClient, q: &crate::jotty::brain::BrainQuery) -> AppResult<crate::jotty::brain::BrainResponse> {
+    client.api_get::<crate::jotty::brain::BrainResponse>(
+        &format!("/api/brain?{}", crate::jotty::brain::brain_cache_key(q)),
+    )
+    .await
+}
+
+
 #[derive(Debug, Clone)]
 pub struct JottyClient {
     http: reqwest::Client,

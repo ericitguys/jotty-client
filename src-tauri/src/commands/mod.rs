@@ -4,17 +4,17 @@
 pub mod dto;
 
 use tauri::Manager;
-use crate::db::{board, checklists, items, notes, outbox};
-use crate::error::{AppError, AppResult};
-use crate::jotty::client::JottyClient;
-use crate::state::AppState;
-use dto::{
+use crate::commands::dto::{
     AgendaEntryDto, AiSettingsDto, AppointmentDraftDto, BoardDto, BoardStatusDto, CategoriesDto,
     TriageSettingsDto, TriageSuggestionDto,
     ChecklistDto, ConflictDto, ConnectInfo, ItemDto, ListHit, NoteDto, NoteHit, NoteTranscribeDto,
     SearchResultsDto, SettingsDto, SyncReportDto, SyncStatusDto, TidyDto, VoiceRecordingDto,
     VoiceRetryStatsDto,
 };
+use crate::db::{board, checklists, items, notes, outbox};
+use crate::error::{AppError, AppResult};
+use crate::jotty::client::JottyClient;
+use crate::state::AppState;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 
@@ -1646,6 +1646,53 @@ fn best_effort_set_icon(app: &tauri::AppHandle, bytes: &[u8]) {
 pub async fn search(state: tauri::State<'_, AppState>, query: String) -> Result<SearchResultsDto, String> {
     let conn = state.db.lock().await;
     search_inner(&conn, &query).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrainFetchResult {
+    pub graph: crate::jotty::brain::BrainResponse,
+    pub fetched_at: String,
+    pub from_cache: bool,
+    pub stale: bool,
+}
+
+pub(crate) async fn brain_fetch_inner(
+    state: &AppState,
+    query: crate::jotty::brain::BrainQuery,
+) -> AppResult<BrainFetchResult> {
+    use crate::jotty::brain as brain;
+    let client = state.client.read().await.clone()
+        .ok_or(AppError::NotConnected)?;
+    let key = brain::brain_cache_key(&query);
+    match client.fetch_brain(&query).await {
+        Ok(resp) => {
+            let fetched_at = chrono::Utc::now().to_rfc3339();
+            let conn = state.db.lock().await;
+            brain::brain_snapshot_write(&conn, &key, &resp)?;
+            Ok(BrainFetchResult { graph: resp, fetched_at, from_cache: false, stale: false })
+        }
+        Err(e @ AppError::Api { .. }) => Err(e),
+        Err(e @ AppError::Http(_)) => {
+            let conn = state.db.lock().await;
+            match brain::brain_snapshot_read(&conn, &key)? {
+                Some((graph, fetched_at)) => {
+                    let stale = brain::brain_snapshot_stale(&conn, &fetched_at)?;
+                    Ok(BrainFetchResult { graph, fetched_at, from_cache: true, stale })
+                }
+                None => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+pub async fn brain_fetch(
+    state: tauri::State<'_, AppState>,
+    query: crate::jotty::brain::BrainQuery,
+) -> Result<BrainFetchResult, String> {
+    brain_fetch_inner(&state, query).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5259,5 +5306,145 @@ mod tests {
         assert!(update_board_column_inner(&state, "b1", "todo", Some("X".into()), None, None).await.is_err());
         assert!(delete_board_column_inner(&state, "b1", "todo").await.is_err());
         assert!(move_board_column_inner(&state, "b1", "todo", "down").await.is_err());
+    }
+
+    // ---- BrainView P1: brain_fetch command arms ----
+
+    fn brain_state_no_client() -> AppState {
+        use crate::keys::MockKeyStore;
+        AppState::new(db(), Box::new(MockKeyStore::default()), Box::new(MockKeyStore::default())).unwrap()
+    }
+
+    fn brain_sample_query() -> crate::jotty::brain::BrainQuery {
+        crate::jotty::brain::BrainQuery { focus: None, depth: 2, limit: 60, suggestions: false }
+    }
+
+    fn brain_sample_response() -> crate::jotty::brain::BrainResponse {
+        use crate::jotty::brain::{BrainNode, BrainResponse};
+        BrainResponse {
+            status: "ready".into(),
+            focus: None,
+            nodes: vec![BrainNode { id: "n1".into(), kind: "note".into(), title: "N1".into(), category: None, owner: None, links: 1, distance: None, tags: None }],
+            edges: vec![],
+            total: 1,
+            truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_no_client_errors_not_connected() {
+        let state = brain_state_no_client();
+        let err = brain_fetch_inner(&state, brain_sample_query()).await.unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("not connected"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_live_ok_writes_cache_and_returns_from_cache_false() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/brain"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ready",
+                "nodes": [{"id":"n1","kind":"note","title":"N1","links":1}],
+                "edges": [],
+                "total": 1,
+                "truncated": false,
+            })))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        let q = brain_sample_query();
+        let res = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert!(!res.from_cache);
+        assert!(!res.stale);
+        assert_eq!(res.graph.status, "ready");
+        // cache row exists for the canonical key
+        let key = crate::jotty::brain::brain_cache_key(&q);
+        let conn = state.db.lock().await;
+        let cached = crate::jotty::brain::brain_snapshot_read(&conn, &key).unwrap();
+        assert!(cached.is_some(), "success must write snapshot");
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_connection_error_serves_preseeded_cache_and_leaves_table_when_empty() {
+        // stopped server address = guaranteed connection refused
+        let state = test_state_with_client("http://127.0.0.1:1").await;
+        let q = brain_sample_query();
+        let key = crate::jotty::brain::brain_cache_key(&q);
+        {
+            let conn = state.db.lock().await;
+            crate::jotty::brain::brain_snapshot_write(&conn, &key, &brain_sample_response()).unwrap();
+        }
+        let res = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert!(res.from_cache);
+        assert!(!res.stale);
+        assert_eq!(res.graph, brain_sample_response());
+
+        // no cache for a different key -> original Http error surfaces
+        let q2 = crate::jotty::brain::BrainQuery { focus: Some("other".into()), ..q.clone() };
+        let err = brain_fetch_inner(&state, q2).await.unwrap_err();
+        assert!(matches!(err, AppError::Http(_)), "empty cache must surface connection error, got: {err}");
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_api_error_never_serves_or_overwrites_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/brain"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        let q = brain_sample_query();
+        let key = crate::jotty::brain::brain_cache_key(&q);
+        {
+            let conn = state.db.lock().await;
+            crate::jotty::brain::brain_snapshot_write(&conn, &key, &brain_sample_response()).unwrap();
+        }
+        let err = brain_fetch_inner(&state, q.clone()).await.unwrap_err();
+        assert!(matches!(err, AppError::Api { .. }), "401 must be Api error, got: {err}");
+        let conn = state.db.lock().await;
+        let cached = crate::jotty::brain::brain_snapshot_read(&conn, &key).unwrap().unwrap();
+        assert_eq!(cached.0, brain_sample_response(), "api error must not overwrite cache");
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_stale_follows_outbox_and_last_sync() {
+        let state = test_state_with_client("http://127.0.0.1:1").await;
+        let q = brain_sample_query();
+        let key = crate::jotty::brain::brain_cache_key(&q);
+        {
+            let conn = state.db.lock().await;
+            crate::jotty::brain::brain_snapshot_write(&conn, &key, &brain_sample_response()).unwrap();
+            // seed a pending outbox row
+            conn.execute(
+                "INSERT INTO outbox(seq, op_type, entity, entity_id, payload, attempts, last_error, state) VALUES (1,'update','note','n1','{}',0,NULL,'pending')",
+                [],
+            ).unwrap();
+        }
+        let res = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert!(res.from_cache);
+        assert!(res.stale, "pending outbox row must make snapshot stale");
+
+        // mark done -> not stale
+        {
+            let conn = state.db.lock().await;
+            conn.execute("UPDATE outbox SET state='done' WHERE seq=1", []).unwrap();
+        }
+        let res2 = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert!(res2.from_cache);
+        assert!(!res2.stale, "done outbox row must not make snapshot stale");
+
+        // last_sync_at newer than snapshot -> stale
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO sync_state(key,value) VALUES ('last_sync_at','2099-01-01T00:00:00Z') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [],
+            ).unwrap();
+        }
+        let res3 = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert!(res3.from_cache);
+        assert!(res3.stale, "last_sync_at after fetched_at must make snapshot stale");
     }
 }

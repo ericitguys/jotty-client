@@ -115,6 +115,16 @@ ALTER TABLE checklist_items ADD COLUMN recurrence TEXT;
     ALTER TABLE checklist_items ADD COLUMN description TEXT;
     ALTER TABLE checklist_items ADD COLUMN estimated_time INTEGER;
     "#,
+    // v7 — BrainView link-map snapshots (2026-10-20): last-server-answer cache
+    // per canonicalized query; bounded to 30 rows at write time; read-time
+    // JSON guard treats truncated rows as absent.
+    r#"
+    CREATE TABLE brain_snapshots (
+        cache_key TEXT PRIMARY KEY,
+        response_json TEXT NOT NULL,
+        fetched_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -186,10 +196,10 @@ mod tests {
              VALUES ('it-1','l1',NULL,'card a',1,0,'0',0,'todo','high','2026-10-01','2026-09-30',NULL,NULL,NULL,NULL)",
             [],
         ).unwrap();
-        // upgrade v5 -> v6 through the REAL run()
+        // upgrade v5 -> latest through the REAL run() (now v7)
         run(&conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6, "run() must land exactly on v6 after the v5 seed");
+        assert_eq!(v, 7, "run() must land on the latest version after the v5 seed");
         let (text, status, priority, target_date, recurrence, description, estimated_time): (
             String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>,
         ) = conn.query_row(
