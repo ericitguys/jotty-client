@@ -1,4 +1,4 @@
-import { BrainVMNode, BrainVMEdge, edgeColour, BrainPalette } from './brainView';
+import { BrainVMNode, BrainVMEdge, edgeColour, BrainPalette, useBrainPalette } from './brainView';
 
 export interface BrainLegendProps {
   totalNodes: number;
@@ -9,9 +9,7 @@ export interface BrainLegendProps {
 const SWATCH_KINDS: BrainVMEdge['kind'][] = ['link', 'mention', 'checklist', 'wiki', 'suggested', 'tag'];
 
 export default function BrainLegend({ totalNodes, totalEdges, shownNodes }: BrainLegendProps) {
-  // palette read uses live CSS vars; in jsdom it falls back to the
-  // default palette, which is fine for structural tests.
-const palette: BrainPalette = { primary: [157, 95, 254], foreground: [249, 249, 249], muted: [163, 156, 175], background: [14, 24, 64], card: [27, 34, 51], border: [38, 47, 63] };
+  const palette = useBrainPalette();
   return (
     <div className="brain-legend" aria-label="Brain legend">
       <div className="brain-legend-counts">

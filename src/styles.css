@@ -867,9 +867,7 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   white-space: nowrap;
 }
 /* unscoped stale chip base — BrainView and the sync badge share only the amber
-   colour. Badge-specific opacity/max-width/ellipsis stay in the scoped rule above.
-   (Previously this file scoped the stale colour to .brain-stale; the unscoped class
-   lets both chips use .sync-stale with the same base colour.) */
+   colour. Badge-specific opacity/max-width/ellipsis stay in the scoped rule below. */
 .sync-stale {
   color: var(--amber, currentColor);
 }
@@ -1147,14 +1145,6 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   flex: 1;
 }
 
-#sync-badge .sync-stale {
-  color: var(--amber);
-  opacity: 0.85;
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* waiting-to-transcribe chip (2026-09-30 offline-voice run): OUTSIDE the sync
    footer (a child failure there unmounted the whole bar) — same bar look. */
 .voice-pending-chip {

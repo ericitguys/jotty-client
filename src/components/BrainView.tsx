@@ -71,13 +71,22 @@ export default function BrainView({ focusId }: Props) {
 
   const palette = useBrainPalette();
 
+  const [indexingWhileCached, setIndexingWhileCached] = useState(false);
+
   useEffect(() => {
     const seq = ++seqRef.current;
     setError(null);
+    setIndexingWhileCached(false);
     brainFetch(query)
       .then((result: BrainFetchResult) => {
         if (seq !== seqRef.current) return;
-        setData(result);
+        setData((prev: BrainFetchResult | null) => {
+          if (result.graph.status === 'building' && prev && prev.graph.nodes.length > 0) {
+            setIndexingWhileCached(true);
+            return prev;
+          }
+          return result;
+        });
       })
       .catch((err: Error) => {
         if (seq !== seqRef.current) return;
@@ -98,10 +107,17 @@ export default function BrainView({ focusId }: Props) {
     seqRef.current += 1;
     const seq = seqRef.current;
     setError(null);
+    setIndexingWhileCached(false);
     brainFetch(query)
       .then((result: BrainFetchResult) => {
         if (seq !== seqRef.current) return;
-        setData(result);
+        setData((prev: BrainFetchResult | null) => {
+          if (result.graph.status === 'building' && prev && prev.graph.nodes.length > 0) {
+            setIndexingWhileCached(true);
+            return prev;
+          }
+          return result;
+        });
       })
       .catch((err: Error) => {
         if (seq !== seqRef.current) return;
@@ -198,14 +214,14 @@ export default function BrainView({ focusId }: Props) {
     handleOpen(node);
   };
 
-  const chipText = '· stale data';
-  const showStale = !!data && (data.fromCache || data.stale);
+  const chipText = indexingWhileCached ? '· stale data · server indexing' : '· stale data';
+  const showStale = !!data && (data.fromCache || data.stale || indexingWhileCached);
 
   return (
     <div id="brain" className="brain-view">
       <div className="brain-head">
         <span id="brain-title">Brain</span>
-        {showStale && <span className="brain-stale">{chipText}</span>}
+        {showStale && <span className="sync-stale">{chipText}</span>}
       </div>
 
       {error && (

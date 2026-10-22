@@ -106,15 +106,13 @@ export default function BrainCanvas2D({
 
   const emptyGraphData = useMemo(() => ({ nodes: [] as CanvasNode[], links: [] as CanvasLink[] }), []);
 
-  const graphData = hasContext
-    ? useMemo(
-        () => ({
-          nodes: nodes.map((node) => ({ ...node })) as CanvasNode[],
-          links: edges.map((edge) => ({ ...edge })) as CanvasLink[],
-        }),
-        [nodes, edges],
-      )
-    : emptyGraphData;
+  const graphData = useMemo(
+    () => ({
+      nodes: nodes.map((node) => ({ ...node })) as CanvasNode[],
+      links: edges.map((edge) => ({ ...edge })) as CanvasLink[],
+    }),
+    [nodes, edges],
+  );
 
   useEffect(() => {
     if (!hasContext) return;

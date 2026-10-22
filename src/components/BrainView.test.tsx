@@ -94,13 +94,37 @@ describe('BrainView shell', () => {
   it('renders stale chip exactly "· stale data" when fromCache', async () => {
     mockBrainFetch.mockResolvedValue(makeResult({ fromCache: true }));
     render(<BrainView />);
-    await waitFor(() => expect(document.querySelector('.brain-stale')).toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector('.sync-stale')).toBeInTheDocument());
   });
 
   it('renders stale chip when stale flag is true', async () => {
     mockBrainFetch.mockResolvedValue(makeResult({ stale: true }));
     render(<BrainView />);
-    await waitFor(() => expect(document.querySelector('.brain-stale')).toBeInTheDocument());
+    await waitFor(() => expect(document.querySelector('.sync-stale')).toBeInTheDocument());
+  });
+
+  it('keeps prior ready graph and shows server-indexing chip when a building response arrives', async () => {
+    const { resolve, promise } = (() => {
+      let resolve: (v: ReturnType<typeof makeResult>) => void = () => {};
+      const promise = new Promise<ReturnType<typeof makeResult>>((r) => {
+        resolve = r;
+      });
+      return { resolve, promise };
+    })();
+    mockBrainFetch
+      .mockResolvedValueOnce(makeResult({ status: 'ready', nodeCount: 3 }))
+      .mockReturnValueOnce(promise);
+    render(<BrainView />);
+    await waitFor(() => expect(screen.getByTestId('brain-canvas-stub')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/3 items · 0 links · showing 3/)).toBeInTheDocument());
+
+    // trigger a re-fetch by changing depth -> building response
+    act(() => useStore.getState().setBrainPrefs({ depth: 3 }));
+    resolve(makeResult({ status: 'building', nodeCount: 0 }));
+
+    await waitFor(() => expect(screen.getByText('· stale data · server indexing')).toBeInTheDocument());
+    // prior graph still rendered (legend keeps the 3 ready nodes, not the empty building graph)
+    expect(screen.getByText(/3 items · 0 links · showing 3/)).toBeInTheDocument();
   });
 
   it('shows indexing notice + refresh button when building with no nodes', async () => {

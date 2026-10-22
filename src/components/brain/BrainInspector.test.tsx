@@ -121,7 +121,7 @@ describe('BrainInspector', () => {
         canOpen={() => false}
       />,
     );
-    const ghostBtn = screen.getByRole('button', { name: 'Create ghost' });
+    const ghostBtn = screen.getByRole('button', { name: 'Open' });
     expect(ghostBtn).toBeDisabled();
     expect(ghostBtn).toHaveAttribute('title', 'not written yet');
 

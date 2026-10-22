@@ -41,8 +41,7 @@ export default function BrainInspector({ node, edges, onClose, onPick, onOpen, c
 
   const openable = isItemKind(node.kind);
   const openDisabled = !canOpen(node);
-  const openLabel =
-    node.kind === 'ghost' ? 'Create ghost' : node.kind === 'tag' ? 'Open' : 'Open';
+  const openLabel = 'Open';
   const openTitle = openDisabled
     ? node.kind === 'ghost' || node.kind === 'tag'
       ? 'not written yet'
