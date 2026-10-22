@@ -885,6 +885,14 @@ li.selected .chip { color: var(--accent-contrast); background: var(--accent-soft
   height: 100%;
   overflow: hidden;
 }
+
+/* REAL-ENGINE pin (WebKitGTK probe): main is a grid container whose row sizes to
+   content (align-content:start), so the bare height:100% above resolves to auto
+   and the brain view collapses to ~112px — the graph canvas rendered a 1168x53
+   sliver. Pin the section height budget (100vh minus main's 16px+16px padding). */
+#app > main > .brain-view {
+  height: calc(100vh - 32px);
+}
 .brain-head {
   display: flex;
   align-items: center;

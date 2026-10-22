@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { act } from 'react';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { useStore, DEFAULT_BRAIN_PREFS } from '../stores/store';
 import type { BrainPrefs } from '../stores/store';
 import BrainView from './BrainView';
@@ -389,5 +392,24 @@ describe('BrainView inspector + legend', () => {
     await waitFor(() => expect(document.querySelector('.brain-inspector-open')).not.toBeNull());
     fireEvent.click(document.querySelector('.brain-inspector-open')!);
     expect(useStore.getState().selectedChecklistId).toBe('c0');
+  });
+});
+
+// REAL-ENGINE LAYOUT CATCH (WebKitGTK probe 2026-10-22): .brain-view is a grid
+// item inside #app > main; main's grid row sizes to CONTENT (align-content:start),
+// so .brain-view height:100% resolved to auto and the whole view collapsed to
+// ~112px — the 2D/3D graph canvas measured a 1168x53 sliver (body 53px, host 0px).
+// The rule pins the same viewport height budget the list sections use
+// (100vh minus main's 16px+16px padding). jsdom + static fences cannot see the
+// collapse; this rule-block fence is the regression tripwire.
+describe('BrainView shell height', () => {
+  it('the route host pins the real viewport height (#app > main > .brain-view)', () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const sel = '#app > main > .brain-view';
+    const i = css.indexOf(sel);
+    expect(i, `${sel} rule exists`).toBeGreaterThan(-1);
+    const block = css.slice(i, css.indexOf('}', i));
+    expect(block).toContain('height: calc(100vh - 32px)');
   });
 });
