@@ -1668,8 +1668,10 @@ pub(crate) async fn brain_fetch_inner(
     match client.fetch_brain(&query).await {
         Ok(resp) => {
             let fetched_at = chrono::Utc::now().to_rfc3339();
-            let conn = state.db.lock().await;
-            brain::brain_snapshot_write(&conn, &key, &resp)?;
+            if resp.status != "building" {
+                let conn = state.db.lock().await;
+                brain::brain_snapshot_write(&conn, &key, &resp)?;
+            }
             Ok(BrainFetchResult { graph: resp, fetched_at, from_cache: false, stale: false })
         }
         Err(e @ AppError::Api { .. }) => Err(e),
@@ -5329,6 +5331,31 @@ mod tests {
             total: 1,
             truncated: false,
         }
+    }
+
+    #[tokio::test]
+    async fn brain_fetch_building_response_never_writes_cache() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let s = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/brain"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "building",
+                "focus": null,
+                "nodes": [],
+                "edges": [],
+                "total": 0,
+                "truncated": false,
+            })))
+            .mount(&s).await;
+        let state = test_state_with_client(&s.uri()).await;
+        let q = brain_sample_query();
+        let key = crate::jotty::brain::brain_cache_key(&q);
+        let res = brain_fetch_inner(&state, q.clone()).await.unwrap();
+        assert_eq!(res.graph.status, "building");
+        let conn = state.db.lock().await;
+        let cached = crate::jotty::brain::brain_snapshot_read(&conn, &key).unwrap();
+        assert!(cached.is_none(), "building response must not write snapshot cache");
     }
 
     #[tokio::test]
