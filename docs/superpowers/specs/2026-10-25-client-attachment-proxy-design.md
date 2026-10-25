@@ -1,6 +1,8 @@
 # Client Attachment Proxy — design (v1.0, 2026-10-25)
 
-Status: WRITTEN-FOR-REVIEW. Scope locked by user 2026-10-25 (all option-1 picks).
+Status: APPROVED — build DEFERRED by user 2026-10-25 ("we will build later").
+Tracker: CAPTUREPIP #21 (Todo) — https://192.168.2.201:8090/jotty (project Capture Pipeline).
+Scope locked by user 2026-10-25 (all option-1 picks).
 Upstream target: jotty 1.29.x attachment serving (`/api/attachment/<itemUuid>/<name>`), prod updated 2026-10-25.
 
 ## 0. Problem
