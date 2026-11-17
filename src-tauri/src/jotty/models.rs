@@ -88,6 +88,21 @@ pub fn creation_board_statuses() -> Vec<ServerStatus> {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct ServerRecurrence {
+    #[serde(default)]
+    pub rrule: Option<String>,
+    #[serde(default)]
+    pub dtstart: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub next_due: Option<String>,
+    #[serde(default)]
+    pub last_completed: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerKanbanItem {
     #[serde(default)] pub id: Option<String>,
     #[serde(default)] pub index: i64,
@@ -98,6 +113,10 @@ pub struct ServerKanbanItem {
     #[serde(default)] pub score: Option<f64>,
     #[serde(default)] pub assignee: Option<String>,
     #[serde(default)] pub reminder: Option<ServerReminder>,
+    // 1.30.0 additive field (upstream PR fccview/jotty#661): top-level cards
+    // carry the recurrence series; sub-items never do (serde(default) keeps
+    // 1.28 payloads parsing unchanged).
+    #[serde(default)] pub recurrence: Option<ServerRecurrence>,
     #[serde(default)] pub children: Vec<ServerKanbanItem>,
 }
 
@@ -149,6 +168,11 @@ pub struct ServerItem {
     pub estimated_time: Option<f64>,
     #[serde(default)]
     pub reminder: Option<crate::jotty::models::ServerReminder>,
+    // 1.30.0 additive field (upstream PR fccview/jotty#661): top-level items
+    // carry the recurrence series with a server-computed nextDue; sub-items
+    // never carry it. serde(default) keeps 1.28 payloads parsing unchanged.
+    #[serde(default)]
+    pub recurrence: Option<ServerRecurrence>,
 }
 
 impl ServerItem {

@@ -92,6 +92,22 @@ pub fn parse(json: &str) -> Option<Recurrence> {
     serde_json::from_str(json).ok()
 }
 
+/// Server-stamp marker (jotty-rec round-trip, 1.30.0): reconcile stores the
+/// server-echoed recurrence JSON on a synced row VERBATIM — including the
+/// `"serverNextDue"` key the pull-side mapper adds. The client sweep must
+/// NEVER roll such a row: once the item carries a server_item_id and the
+/// server's own nextDue value, rolling is the SERVER's job (it rolls on
+/// check/status/board-GET); a local roll here double-rolls the series. Rows
+/// WITHOUT the marker (locally-authored rules, offline-ticked pre-push rows)
+/// keep the device-local engine. `nextDue` alone is NOT the marker — the
+/// local engine stamps nextDue too; only the explicit extra key is.
+fn is_server_stamped(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .map(|v| v.get("serverNextDue").map(|s| !s.is_null()).unwrap_or(false))
+        .unwrap_or(false)
+}
+
 impl Recurrence {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -317,6 +333,16 @@ pub fn sweep(conn: &Connection, now: DateTime<Utc>) -> AppResult<usize> {
             Some(r) => r,
             None => continue,
         };
+        // jotty-rec arbitration (1.30.0): a row whose recurrence JSON carries
+        // the server-stamp has SERVER-owned rolling (the server rolls on
+        // check/status/board-GET). The client sweep skips it entirely — it
+        // mirrors the stored nextDue for display only. Locally-authored rules
+        // (no server_item_id yet, or no server stamp) still roll here.
+        if row.server_item_id.is_some()
+            && row.recurrence.as_deref().map(is_server_stamped).unwrap_or(false)
+        {
+            continue;
+        }
         // R-rec-6 narrow predicate: candidate filter gave completed=1; the roll
         // ALSO requires nextDue <= now (an unparseable nextDue counts as due-now,
         // which also feeds the R-rec-2 delta fallback below)
@@ -634,6 +660,56 @@ mod tests {
         assert_eq!(rolled, 0);
         assert!(items::get(&conn, &a).unwrap().unwrap().completed);
         assert!(!items::get(&conn, &b).unwrap().unwrap().completed);
+    }
+
+    // jotty-rec (1.30.0) arbitration fence: a row whose recurrence JSON carries
+    // the `serverNextDue` STAMP and a server_item_id must NOT roll in the
+    // client sweep — even completed + due-now. The server rolls its own side
+    // (on check/status/board-GET); a client roll here double-rolls the series.
+    // The distinguishing observable: BOTH rows below are completed + due, the
+    // stamped one stays completed with EMPTY outbox, the unstamped one rolls.
+    #[test]
+    fn sweep_skips_server_stamped_rows_and_rolls_unstamped_sibling() {
+        let conn = db();
+        let stamped = kanban_item(&conn, "l1", "Server-owned");
+        items::set_checked(&conn, &stamped, true).unwrap();
+        conn.execute(
+            "UPDATE checklist_items SET server_item_id='srv-77', recurrence=?1 WHERE local_id=?2",
+            [r#"{"rrule":"FREQ=DAILY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-02T00:00:00+00:00","serverNextDue":"2026-10-02T00:00:00+00:00"}"#, stamped.as_str()],
+        ).unwrap();
+        let local = kanban_item(&conn, "l1", "Local-owned");
+        items::set_checked(&conn, &local, true).unwrap();
+        conn.execute(
+            "UPDATE checklist_items SET recurrence=?1 WHERE local_id=?2",
+            [r#"{"rrule":"FREQ=DAILY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-02T00:00:00+00:00"}"#, local.as_str()],
+        ).unwrap();
+        let rolled = sweep(&conn, utc(2026, 10, 5, 0, 0)).unwrap();
+        assert_eq!(rolled, 1, "only the UNSTAMPED sibling rolls");
+        assert!(items::get(&conn, &stamped).unwrap().unwrap().completed, "the server-stamped row must stay completed (sweep defers to the server)");
+        assert!(!items::get(&conn, &local).unwrap().unwrap().completed, "the locally-authored row still rolls device-side");
+        // the stamped row's outbox carries ZERO ops (the rolled sibling's ops pin the count shape)
+        let stamped_ops: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE state='pending' AND entity_id=?1",
+            [stamped.as_str()], |r| r.get(0)).unwrap();
+        assert_eq!(stamped_ops, 0, "no sweep ops may be enqueued for a server-stamped row");
+    }
+
+    // jotty-rec distinction: nextDue ALONE (the local engine stamps it on every
+    // roll) is NOT the marker — a server_item_id row whose recurrence carries a
+    // nextDue but NO serverNextDue (locally-authored, pushed before the stamp
+    // era) still rolls client-side.
+    #[test]
+    fn sweep_marker_is_nextdue_presence_alone_not_nextdue() {
+        let conn = db();
+        let local = kanban_item(&conn, "l1", "Pre-marker");
+        items::set_checked(&conn, &local, true).unwrap();
+        conn.execute(
+            "UPDATE checklist_items SET server_item_id='srv-78', recurrence=?1 WHERE local_id=?2",
+            [r#"{"rrule":"FREQ=DAILY;INTERVAL=1","dtstart":"2026-10-01T00:00:00+00:00","nextDue":"2026-10-02T00:00:00+00:00"}"#, local.as_str()],
+        ).unwrap();
+        let rolled = sweep(&conn, utc(2026, 10, 5, 0, 0)).unwrap();
+        assert_eq!(rolled, 1, "a nextDue without the serverNextDue marker still rolls");
+        assert!(!items::get(&conn, &local).unwrap().unwrap().completed);
     }
 
     #[test]

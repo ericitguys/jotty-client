@@ -373,7 +373,33 @@ impl JottyClient {
         Ok(())
     }
 
-    /// Set/clear a kanban item reminder on the dedicated sub-route:
+    /// Patch /api/checklists/{listId}/items/{indexPath} — recurrence only
+    /// (jotty-rec 1.30.0, upstream PR fccview/jotty#661). The value crosses
+    /// as a PRE-BUILT serde_json::Value: rule = {"rrule","dtstart","until"?} —
+    /// null CLEARS the series (live-verified on 1.30.0) and the server
+    /// recomputes nextDue server-side (the client never sends it).
+    pub async fn update_item_recurrence(&self, list_id: &str, path: &str, recurrence: serde_json::Value) -> AppResult<()> {
+        let mut body = serde_json::json!({});
+        body["recurrence"] = recurrence;
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PATCH, &format!("/api/checklists/{list_id}/items/{path}"),
+            body,
+        ).await?;
+        Ok(())
+    }
+
+    /// PUT /api/kanban/{boardId}/items/{itemId} — recurrence only
+    /// (jotty-rec 1.30.0). Same value semantics as update_item_recurrence
+    /// (object = set, null = clear); the response is the full board.
+    pub async fn set_kanban_item_recurrence(&self, board_id: &str, item_id: &str, recurrence: serde_json::Value) -> AppResult<()> {
+        self.api_send::<serde_json::Value>(
+            reqwest::Method::PUT, &format!("/api/kanban/{board_id}/items/{item_id}"),
+            serde_json::json!({ "recurrence": recurrence }),
+        ).await?;
+        Ok(())
+    }
+
+    /// Set/clear a kanban card's reminder on the dedicated sub-route:
     /// Some(iso) → PUT body {"datetime": iso} (upstream PUT REQUIRES datetime —
     /// 400 without); None → DELETE (same URL, empty body — the upstream DELETE
     /// route appends reminder:"" = cleared).

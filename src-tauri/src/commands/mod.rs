@@ -1460,6 +1460,101 @@ pub async fn set_item_recurrence(
     crate::db::recurrence::set_item_recurrence_inner(&mut conn, &checklist_id, &item_local_id, preset).map_err(|e| e.to_string())
 }
 
+/// Write a card's recurrence to the SERVER and mirror the echo locally
+/// (jotty-rec 1.30.0, CAPTUREPIP #22). `rule` is None (clear -> PATCH/PUT
+/// recurrence:null) or Some(raw rrule string). dtstart anchors to the row's
+/// target date (UTC midnight) else now — the same authoring anchor the local
+/// engine uses. Resolution: checklist family items resolve the index path via
+/// snapshot identity (resolve.rs, identical to the item ops' index-path
+/// resolution); a row carrying a server_item_id on a kanban-family list takes
+/// the kanban PUT-id path when present (isCardRef accepts the stable id).
+/// On success the checklist is re-fetched and the local row takes the
+/// SERVER-echoed recurrence (stamped serverNextDue — local sweep defers).
+/// No outbox op: this write goes to the wire directly (outbox payloads never
+/// carry recurrence); the row is NOT dirtied — server truth lands via the echo.
+#[tauri::command]
+pub async fn set_item_recurrence_remote(
+    state: tauri::State<'_, AppState>,
+    checklist_id: String,
+    item_local_id: String,
+    rule: Option<String>,
+) -> Result<(), String> {
+    let client = state.client.read().await.clone()
+        .ok_or_else(|| AppError::Other("not connected".to_string()))
+        .map_err(|e| e.to_string())?;
+    // one row read drives everything: list-type gate, wire value anchor,
+    // resolution anchors (server_path + text + server_item_id)
+    let (list_type, server_path, server_item_id, row_text, row_target_date) = {
+        let conn_guard = state.db.lock().await;
+        let row = crate::db::items::get(&conn_guard, &item_local_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| AppError::Other(format!("item {item_local_id} not found")))
+            .map_err(|e| e.to_string())?;
+        let lt = crate::db::checklists::get_checklist(&conn_guard, &checklist_id)
+            .map_err(|e| e.to_string())?
+            .map(|c| c.list_type)
+            .unwrap_or_default();
+        (lt, row.server_path.clone(), row.server_item_id.clone(), row.text, row.target_date)
+    };
+    let kanban_family = list_type == "kanban" || list_type == "task";
+    if !kanban_family {
+        return Err("recurrence only works on kanban boards".into());
+    }
+    // wire value: None = null (clear); Some = {"rrule","dtstart","until"?}.
+    // dtstart anchors to the row's target date (UTC midnight) else now — the
+    // same authoring anchor db::recurrence::set_item_recurrence_inner uses.
+    // until is not authored client-side this task.
+    let value: serde_json::Value = match &rule {
+        None => serde_json::Value::Null,
+        Some(raw) => {
+            let now = chrono::Utc::now();
+            let dtstart = row_target_date
+                .as_deref()
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .map(|d| format!("{d}T00:00:00+00:00"))
+                .unwrap_or_else(|| now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+            serde_json::json!({ "rrule": raw, "dtstart": dtstart })
+        }
+    };
+    // target resolution: kanban PUT by STABLE id when the row carries one
+    // (isCardRef accepts the full id — 1.29.1 live-verified); otherwise the
+    // identical index-path resolution every item op uses (fetch_list_snapshot
+    // semantics: resolve over a FRESH server snapshot, stored path first).
+    let resolved_id_or_path: String = match &server_item_id {
+        Some(sid) => sid.clone(),
+        None => {
+            let server_lists = client.get_checklists().await.map_err(|e| e.to_string())?;
+            let Some(list) = server_lists.iter().find(|c| c.id == checklist_id) else {
+                return Err(format!("checklist {checklist_id} absent from server index"));
+            };
+            let mut claimed: Vec<String> = Vec::new();
+            match crate::sync::resolve::resolve(&list.items, server_path.as_deref(), &row_text, &mut claimed) {
+                Some(p) => p,
+                None => return Err(format!("unresolved recurrence op {item_local_id}: target not found on server")),
+            }
+        }
+    };
+    if server_item_id.is_some() {
+        client.set_kanban_item_recurrence(&checklist_id, &resolved_id_or_path, value).await.map_err(|e| e.to_string())?;
+    } else {
+        client.update_item_recurrence(&checklist_id, &resolved_id_or_path, value).await.map_err(|e| e.to_string())?;
+    }
+    // success: re-fetch the checklist and mirror the echo through reconcile's
+    // clean-row passthrough — the row takes the SERVER-echoed recurrence,
+    // stamped serverNextDue (the local sweep defers from here on). A fetch
+    // failure is non-fatal: the server write already landed and the next pull
+    // reconciles the echo.
+    let echo = client.get_checklists().await.ok();
+    if let Some(lists) = echo {
+        if let Some(list) = lists.iter().find(|c| c.id == checklist_id) {
+            let flat = crate::db::items::flatten(&list.items);
+            let mut conn_guard = state.db.lock().await;
+            let _ = crate::db::items::reconcile(&mut conn_guard, &checklist_id, &flat);
+        }
+    }
+    Ok(())
+}
+
 /// Roll every due recurring card (recurrence T3): the device-local sweep over
 /// completed rows whose next slot has passed — reset-in-place, ops ride the
 /// existing outbox kinds (check/status/set_date/set_reminder). The four

@@ -106,6 +106,12 @@ export const moveBoardColumn = (checklistId: string, statusId: string, direction
 // device-local recurrence column, never an outbox op.
 export const setItemRecurrence = (checklistId: string, itemLocalId: string, preset: string | null) =>
   invoke<void>('set_item_recurrence', { checklistId, itemLocalId, preset });
+// jotty-rec 1.30.0 round-trip: write the recurrence to the SERVER (PATCH/PUT)
+// and mirror the server-echoed rule (stamped serverNextDue) onto the local
+// row. rule = the raw RRULE string ('FREQ=...') or null to clear. Requires a
+// live connection; the LOCAL authoring command stays for offline use.
+export const setItemRecurrenceRemote = (checklistId: string, itemLocalId: string, rule: string | null) =>
+  invoke<void>('set_item_recurrence_remote', { checklistId, itemLocalId, rule });
 // Frontend sweep trigger (task 4): rolls every due recurring card; returns the
 // rolled top-level count. RecurrenceSweepTimer rides it (immediate + 60s).
 export const sweepRecurrence = () => invoke<number>('sweep_recurrence');

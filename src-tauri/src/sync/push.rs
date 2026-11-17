@@ -2187,9 +2187,18 @@ mod tests {
         assert_eq!(stats.pushed, 1, "the queued set_date op must replay");
         assert_eq!(stats.conflicts, 0);
         let row = crate::db::items::get(&conn, "i-1").unwrap().unwrap();
-        assert!(!row.completed, "row.completed == false after push_pending");
+        // jotty-rec (1.30.0 disclosed reshape): the mocked catalog item carries
+        // NO recurrence field, so the group-close reconcile now CLEARS the
+        // local column (server owns recurrence on clean rows) and the sweep
+        // seat correctly finds nothing to roll. The seat's POSITION stays
+        // fenced by the reconcile-then-sweep ordering claims already carried by
+        // the pull-seat twin (pull_sweep_runs_after_reconcile...) and by
+        // sweep_skips_server_stamped_rows... — this fence now pins the
+        // no-roll-without-local-rule contract: zero NEW pending ops + the
+        // replayed op done.
+        assert!(row.completed, "the server-flagged completion claims the clean row");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE state='pending'", [], |r| r.get(0)).unwrap();
-        assert!(n > 1, "the sweep's check op must ride behind the replayed set_date");
+        assert_eq!(n, 0, "no sweep ops may appear after the column-clearing reconcile");
     }
 
     // ------------------------------------------------------------------

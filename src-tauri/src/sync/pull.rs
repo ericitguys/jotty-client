@@ -101,11 +101,37 @@ fn flatten_kanban<'a>(prefix: &str, items: &'a [ServerKanbanItem], out: &mut Vec
     }
 }
 
-/// Per-board reminder merge (T3): resolve each ServerKanbanItem to its local
+/// jotty-rec (1.30.0): the kanban mirror's recurrence write shape: the board
+/// item's recurrence flattened to the local column JSON, PLUS the
+/// `serverNextDue` stamp key (the sweep's arbitration marker). The stamp
+/// carries the server nextDue VERBATIM, or "unknown" when absent, so
+/// arbitration always has a token to point at.
+fn kanban_recurrence_write(srv: &ServerKanbanItem) -> Option<String> {
+    let rec = srv.recurrence.as_ref()?;
+    let base = items::server_recurrence_json(&srv.recurrence)?;
+    let stamp = rec.next_due.clone().unwrap_or_else(|| "unknown".into());
+    let v: serde_json::Value = serde_json::from_str(&base).ok()?;
+    let mut obj = match v {
+        serde_json::Value::Object(m) => m,
+        _ => return None,
+    };
+    obj.insert("serverNextDue".into(), serde_json::Value::String(stamp));
+    serde_json::to_string(&serde_json::Value::Object(obj)).ok()
+}
+
+/// Per-board reminder + recurrence mirror (T3 + jotty-rec): resolve each
+/// ServerKanbanItem to its local
 /// row — (a) stable server_item_id, (b) DFS index path, (c) clean same-text
 /// adopt — then mirror srv.reminder onto reminder_datetime/reminder_notified
 /// WITHOUT touching dirty. A pending item is SKIPPED (its in-flight op wins);
 /// siblings on the same board still enrich. ONE tx per board.
+///
+/// jotty-rec rider (1.30.0): the SAME resolved row also stores the board
+/// item's server recurrence echo (verbatim JSON + the `serverNextDue` stamp
+/// the db/recurrence sweep arbitration reads) — ONLY when the item carries
+/// one. The kanban mirror never CLEARS recurrence on its own: a server-null
+/// recurrence object is additive-absent on this path (null clears happen on
+/// the checklist reconcile path + set_item_recurrence_remote).
 fn merge_board_reminders(conn: &mut Connection, board_id: &str, board: &KanbanBoard) -> AppResult<()> {
     let tx = conn.transaction()?;
     let rows = items::list_for_checklist(&tx, board_id)?;
@@ -149,6 +175,13 @@ fn merge_board_reminders(conn: &mut Connection, board_id: &str, board: &KanbanBo
             None => (None, None),
         };
         items::set_reminder_from_server(&tx, &row.local_id, datetime, notified)?;
+        // (f) jotty-rec: store the server recurrence echo when the board item
+        // carries one — verbatim JSON flattened to the local column shape,
+        // PLUS the `serverNextDue` stamp key (the sweep's double-roll guard).
+        // Never clears (no-recurrence items leave any local rule untouched).
+        if let Some(rec_out) = kanban_recurrence_write(srv) {
+            items::set_recurrence_raw(&tx, &row.local_id, Some(&rec_out))?;
+        }
     }
     tx.commit()?;
     Ok(())
@@ -569,8 +602,122 @@ mod tests {
         let client = JottyClient::new(&s.uri(), "ck").unwrap();
         pull_all(&mut conn, &client).await.unwrap();
         let row = crate::db::items::get(&conn, local_id).unwrap().unwrap();
-        assert!(!row.completed, "post-reconcile sweep must reset the just-completed recurring card");
+        // jotty-rec (1.30.0 disclosed reshape): the mocked catalog item carries
+        // NO recurrence field, so the CLEAN claim now CLEARS the column (server
+        // owns recurrence) and the sweep correctly defers (no local rule left to
+        // roll). The seat ORDER discrimination stays: the mock carries
+        // completed=true and the row ends completed=1 WITHOUT any check op —
+        // pre-seat sweeps would have rolled the stale seeded rule (2 pre-seat
+        // sweeps in push_pending + pull would enqueue ops before the claim; with
+        // the seeded rule present they'd enqueue BEFORE reconcile). Fences:
+        // completed reflects the SERVER flag; NO check op enqueued (no local
+        // roll of a stamped/present rule post-import).
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE state='pending' AND op_type='check'", [], |r| r.get(0)).unwrap();
-        assert!(n >= 1, "roll must enqueue a check(false) op");
+        assert_eq!(n, 0, "a 1.28-style catalog without recurrence must not roll (server owns the field now)");
+        // the row still rides the SERVER's completed flag
+        assert!(row.completed, "the server-flagged completion claims the clean row");
+    }
+
+    // ------------------------------------------------------------------
+    // jotty-rec (1.30.0) wire fences: server recurrence lands on the rows.
+
+    #[tokio::test]
+    async fn pull_checklist_recurrence_parses_onto_row_stamped() {
+        // (a) checklist path: the catalog's get_checklists items now carry
+        // `recurrence` (1.30.0 additive). The clean reconcile claim must store
+        // it STAMPED serverNextDue. The mock item deliberately carries NO
+        // reminder field (1.28-style spare payload) to prove additive parsing.
+        let s = server_with_notes_and_lists(
+            serde_json::json!({"notes": []}),
+            serde_json::json!({"checklists": [{
+                "id": "l1", "title": "L", "category": "Home", "type": "kanban",
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-11-01T00:00:00Z",
+                "items": [{ "id": "sid-1", "index": 0, "text": "Weekly", "completed": false,
+                    "recurrence": {"rrule": "FREQ=WEEKLY;INTERVAL=1", "dtstart": "2026-10-01T00:00:00Z",
+                                   "nextDue": "2026-11-02T00:00:00Z"} }]
+            }]}),
+        ).await;
+        Mock::given(method("GET")).and(path("/api/kanban/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(board_envelope("l1", serde_json::json!([
+                {"id": "sid-1", "index": 0, "text": "Weekly", "status": "todo", "completed": false,
+                 "recurrence": {"rrule": "FREQ=WEEKLY;INTERVAL=1", "dtstart": "2026-10-01T00:00:00Z", "nextDue": "2026-11-02T00:00:00Z"}}
+            ]))))
+            .mount(&s).await;
+        let mut conn = crate::db::test_conn();
+        conn.execute(
+            "INSERT INTO checklists (id, title, list_type, created_at, updated_at) VALUES ('l1', 'L', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, text, completed, position, dirty, server_path, server_item_id) VALUES ('i-1','l1','Weekly',0,0,0,'0','sid-1')",
+            [],
+        ).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        pull_all(&mut conn, &client).await.unwrap();
+        let row = crate::db::items::get(&conn, "i-1").unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(row.recurrence.as_deref().expect("recurrence must land from BOTH the catalog reconcile AND the kanban mirror")).unwrap();
+        assert_eq!(v["rrule"], "FREQ=WEEKLY;INTERVAL=1");
+        assert_eq!(v["nextDue"], "2026-11-02T00:00:00Z");
+        assert_eq!(v["serverNextDue"], "2026-11-02T00:00:00Z", "the sweep arbitration stamp rides the wire import");
+    }
+
+    #[tokio::test]
+    async fn pull_kanban_board_recurrence_mirrors_onto_row() {
+        // (a) kanban path: the board GET items carry `recurrence` (1.30.0);
+        // the enrichment mirror resolves the row and stores the echo stamped.
+        let s = server_with_notes_and_lists(
+            serde_json::json!({"notes": []}),
+            serde_json::json!({"checklists": [kanban_catalog_list("l1", serde_json::json!([
+                {"id": "srv-1", "index": 0, "text": "Dentist", "completed": false}
+            ]))]}),
+        ).await;
+        Mock::given(method("GET")).and(path("/api/kanban/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(board_envelope("l1", serde_json::json!([
+                {"id": "srv-1", "index": 0, "text": "Dentist", "status": "todo", "completed": false,
+                 "recurrence": {"rrule": "FREQ=DAILY;INTERVAL=1", "dtstart": "2026-10-01T00:00:00Z", "nextDue": "2026-10-02T00:00:00Z"}}
+            ]))))
+            .mount(&s).await;
+        let mut conn = crate::db::test_conn();
+        seed_kanban_list(&conn, "l1");
+        seed_item(&conn, "l1", "it-1", "Dentist", Some("srv-1"), Some("0"), None);
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        pull_all(&mut conn, &client).await.unwrap();
+        let row = crate::db::items::get(&conn, "it-1").unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(row.recurrence.as_deref().expect("kanban mirror must store the server recurrence echo")).unwrap();
+        assert_eq!(v["rrule"], "FREQ=DAILY;INTERVAL=1");
+        assert_eq!(v["serverNextDue"], "2026-10-02T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn pull_without_recurrence_field_128_fixture_parses_clean() {
+        // (d) 1.28-compat: a server payload WITHOUT the recurrence field must
+        // parse unchanged (serde(default)) AND never fabricate a column value
+        // on a clean row (no data invented where the server sent none).
+        let s = server_with_notes_and_lists(
+            serde_json::json!({"notes": []}),
+            serde_json::json!({"checklists": [{
+                "id": "l1", "title": "L", "category": "Home", "type": "kanban",
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-11-01T00:00:00Z",
+                "items": [{ "id": "sid-1", "index": 0, "text": "Plain", "completed": false }]
+            }]}),
+        ).await;
+        Mock::given(method("GET")).and(path("/api/kanban/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(board_envelope("l1", serde_json::json!([
+                {"id": "sid-1", "index": 0, "text": "Plain", "status": "todo", "completed": false}
+            ]))))
+            .mount(&s).await;
+        let mut conn = crate::db::test_conn();
+        conn.execute(
+            "INSERT INTO checklists (id, title, list_type, created_at, updated_at) VALUES ('l1', 'L', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO checklist_items (local_id, checklist_id, text, completed, position, dirty, server_path, server_item_id) VALUES ('i-1','l1','Plain',0,0,0,'0','sid-1')",
+            [],
+        ).unwrap();
+        let client = JottyClient::new(&s.uri(), "ck").unwrap();
+        pull_all(&mut conn, &client).await.unwrap();
+        let row = crate::db::items::get(&conn, "i-1").unwrap().unwrap();
+        assert!(row.recurrence.is_none(), "a 1.28-style payload without the field must not fabricate a column value");
     }
 }

@@ -47,6 +47,40 @@ pub struct ServerItemFlat {
     pub start_date: Option<String>,
     pub description: Option<String>,
     pub estimated_time: Option<i64>,
+    /// 1.30.0 server recurrence (jotty-rec REST round-trip): the raw wire
+    /// object flattened to the LOCAL column's JSON shape via
+    /// server_recurrence_json — the column parser (db::recurrence::parse)
+    /// accepts nextDue-carrying camelCase JSON already. None when the server
+    /// item carries no recurrence.
+    pub recurrence: Option<String>,
+}
+
+/// Map the server wire object to the shape the local recurrence column stores
+/// (camelCase, optional keys: rrule/dtstart/nextDue/until/lastCompleted). The
+/// client engine's Recurrence skips `None` keys when serializing, so the JSON
+/// is normalized through that struct when it parses (drops server-only noise);
+/// a half-formed object falls back to the raw camelCase fields.
+pub fn server_recurrence_json(s: &Option<crate::jotty::models::ServerRecurrence>) -> Option<String> {
+    let s = s.as_ref()?;
+    let v = serde_json::json!({
+        "rrule": s.rrule, "dtstart": s.dtstart, "until": s.until,
+        "nextDue": s.next_due, "lastCompleted": s.last_completed,
+    });
+    // normalize: if it parses into our Recurrence shape, re-serialize through
+    // it (skip_serializing_if strips the None keys)
+    if let Ok(rec) = serde_json::from_value::<crate::db::recurrence::Recurrence>(v.clone()) {
+        return Some(rec.to_json());
+    }
+    // parse failure: store the raw value verbatim (the wire object itself,
+    // nulls stripped) so the column never carries data it cannot read back
+    if let serde_json::Value::Object(map) = &v {
+        let cleaned: serde_json::Map<String, serde_json::Value> = map.iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        return serde_json::to_string(&serde_json::Value::Object(cleaned)).ok();
+    }
+    None
 }
 
 pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
@@ -66,6 +100,9 @@ pub fn flatten(server_items: &[ServerItem]) -> Vec<ServerItemFlat> {
             // 2.5 -> 2), so the f64 wire value truncates HERE at flatten (R4).
             description: it.description.clone(),
             estimated_time: it.estimated_time.map(|f| f as i64),
+            // sub-items never carry recurrence upstream; flatten maps whatever
+            // arrived (None for children) through the shared JSON mapper.
+            recurrence: server_recurrence_json(&it.recurrence),
         })
         .collect()
 }
@@ -155,6 +192,24 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
         path.rsplit_once('.').map(|(p, _)| p.to_string())
     }
 
+    // jotty-rec (1.30.0): server-stamp key for the sweep's arbitration marker.
+    // Clean-row overwrites (server truth) gain the `serverNextDue` stamp so
+    // recurrence::sweep defers rolling to the server (the server rolls on
+    // check/status/board-GET); a server item without a nextDue still stamps
+    // with "unknown" as the marker token. Locally-authored / dirty-preserved
+    // values never gain the stamp (no "unknown" injection).
+    fn stamp_server_recurrence(json: &Option<String>) -> Option<String> {
+        let base = json.as_ref()?;
+        let v: serde_json::Value = serde_json::from_str(base).ok()?;
+        let mut obj = match v {
+            serde_json::Value::Object(m) => m,
+            _ => return None,
+        };
+        let nd = obj.get("nextDue").cloned().unwrap_or(serde_json::Value::String("unknown".into()));
+        obj.insert("serverNextDue".into(), nd);
+        serde_json::to_string(&serde_json::Value::Object(obj)).ok()
+    }
+
     for (order, s) in server_items.iter().enumerate() {
         // A) stable id WITH drift signature (server truth when the binding agrees).
         let mut target = s.id.as_deref().and_then(|id|
@@ -214,9 +269,23 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
                     (s.description.clone(), s.estimated_time)
                 };
                 let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
+                // Recurrence passthrough (jotty-rec round-trip, 1.30.0): the
+                // claimed-UPDATE write OVERWRITES the column from server truth on
+                // clean rows (server-null = cleared), but a DIRTY row's local
+                // value survives (its queued local edit still owns the row).
+                // Note dirty clears below on claim — read the PRE-claim flag.
+                let rec_write = if l.dirty {
+                    // dirty row: preserve the local recurrence column (keep the
+                    // current value by re-writing it explicitly) — no stamp
+                    // (the pending-op shield keeps the local engine authoritative)
+                    l.recurrence.clone()
+                } else {
+                    // clean row: server truth OVERWRITES, stamped serverNextDue
+                    stamp_server_recurrence(&s.recurrence)
+                };
                 conn.execute(
-                    "UPDATE checklist_items SET position=?2, text=?3, completed=?4, server_path=?5, status=?6, priority=?7, target_date=?8, start_date=?9, server_item_id=?10, parent_id=?11, description=?12, estimated_time=?13, dirty=0 WHERE local_id=?1",
-                    rusqlite::params![l.local_id, order as i64, text, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), parent_local, description, estimated_time],
+                    "UPDATE checklist_items SET position=?2, text=?3, completed=?4, server_path=?5, status=?6, priority=?7, target_date=?8, start_date=?9, server_item_id=?10, parent_id=?11, description=?12, estimated_time=?13, recurrence=?14, dirty=0 WHERE local_id=?1",
+                    rusqlite::params![l.local_id, order as i64, text, s.completed as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), parent_local, description, estimated_time, rec_write],
                 )?;
                 bound.insert(s.path.clone(), l.local_id.clone());
             }
@@ -224,9 +293,9 @@ pub fn reconcile(conn: &Connection, checklist_id: &str, server_items: &[ServerIt
                 let local_id = uuid::Uuid::new_v4().to_string();
                 let parent_local = parent_prefix(&s.path).and_then(|p| bound.get(&p).cloned());
                 conn.execute(
-                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, description, estimated_time)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                    rusqlite::params![local_id, checklist_id, parent_local, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), s.description.clone(), s.estimated_time],
+                    "INSERT INTO checklist_items (local_id, checklist_id, parent_id, text, completed, position, server_path, dirty, status, priority, target_date, start_date, server_item_id, description, estimated_time, recurrence)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    rusqlite::params![local_id, checklist_id, parent_local, s.text, s.completed as i64, order as i64, s.path, s.status.clone(), s.priority.clone(), s.target_date.clone(), s.start_date.clone(), s.id.clone(), s.description.clone(), s.estimated_time, stamp_server_recurrence(&s.recurrence)],
                 )?;
                 bound.insert(s.path.clone(), local_id);
             }
@@ -418,6 +487,7 @@ mod tests {
             target_date: None,
             estimated_time: None,
             reminder: None,
+            recurrence: None,
         }
     }
 
@@ -799,7 +869,10 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_claimed_update_preserves_local_recurrence() {
+    fn reconcile_server_without_recurrence_clears_clean_row_column() {
+        // jotty-rec: a 1.28-STYLE clean claim (server item carries no
+        // recurrence at all) now CLEARS the local column — server owns the
+        // field; absence server-side = no series server-side.
         let conn = db();
         migrations::run(&conn).expect("migrations");
         conn.execute(
@@ -825,19 +898,84 @@ mod tests {
             start_date: None,
             description: None,
             estimated_time: None,
+            recurrence: None,
         };
         items::reconcile(&conn, "l1", &[flat]).unwrap();
         let after = items::get(&conn, &row.local_id).unwrap().unwrap();
-        assert_eq!(after.recurrence.as_deref(), Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}"));
+        assert!(after.recurrence.is_none(), "a clean claim from a recurrence-free server item clears the column");
         assert!(!after.dirty);
     }
 
-    // Task-2 rider (pre-ruled by the Task 1 review): the claimed-UPDATE write must
-    // leave the LOCAL-ONLY recurrence column intact in the DIRTY in-place claim
-    // arm as well — a mid-flight local edit claimed at its path keeps its own
-    // text, and recurrence is preserved by omission from the SET list.
+    // Task-2 rider, jotty-rec rewrite: the claimed-UPDATE write now carries the
+    // recurrence column (clean rows OVERWRITE from server truth, stamped;
+    // dirty in-place claims PRESERVE the local value — see the two fences).
     #[test]
-    fn reconcile_dirty_claim_preserves_recurrence() {
+    fn reconcile_claimed_update_overwrites_recurrence_from_server_on_clean_rows() {
+        // jotty-rec (1.30.0): a CLEAN row's recurrence column is now SERVER
+        // truth — the claimed-UPDATE write OVERWRITES the value from the wire
+        // (previously preserved-by-omission; the REST round-trip changed that
+        // ruling). The stored JSON carries the serverNextDue STAMP (the sweep
+        // arbitration marker) and no longer matches the locally-authored value.
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let row = items::insert_local(
+            &conn,
+            &NewItem { checklist_id: "l1".into(), parent_local_id: None, text: "Groceries".into(), status: None, priority: None, target_date: None },
+        )
+        .unwrap();
+        items::set_recurrence_raw(&conn, &row.local_id, Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\"}")).unwrap();
+        conn.execute("UPDATE checklist_items SET dirty=0, server_item_id='sid-1' WHERE local_id=?1", [&row.local_id]).unwrap();
+        let flat = items::ServerItemFlat {
+            path: "0".into(),
+            id: Some("sid-1".into()),
+            text: "Groceries".into(),
+            completed: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+            description: None,
+            estimated_time: None,
+            recurrence: Some("{\"rrule\":\"FREQ=WEEKLY;INTERVAL=1\",\"dtstart\":\"2026-10-01T00:00:00+00:00\",\"nextDue\":\"2026-10-08T00:00:00+00:00\"}".into()),
+        };
+        items::reconcile(&conn, "l1", &[flat]).unwrap();
+        let after = items::get(&conn, &row.local_id).unwrap().unwrap();
+        let stored = after.recurrence.as_deref().unwrap();
+        let v: serde_json::Value = serde_json::from_str(stored).unwrap();
+        assert_eq!(v["rrule"], "FREQ=WEEKLY;INTERVAL=1", "server truth overwrote the local rule");
+        assert_eq!(v["nextDue"], "2026-10-08T00:00:00+00:00");
+        assert_eq!(v["serverNextDue"], "2026-10-08T00:00:00+00:00", "clean overwrites carry the sweep-stamp");
+        assert!(!after.dirty);
+        // 1.28-style server items WITHOUT recurrence CLEAR the column (server
+        // owns the field now; a server item with no series has no series)
+        items::reconcile(&conn, "l1", &[items::ServerItemFlat {
+            path: "0".into(),
+            id: Some("sid-1".into()),
+            text: "Groceries".into(),
+            completed: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+            description: None,
+            estimated_time: None,
+            recurrence: None,
+        }]).unwrap();
+        let cleared = items::get(&conn, &row.local_id).unwrap().unwrap();
+        assert!(cleared.recurrence.is_none(), "server-null recurrence clears the local column on a clean row");
+    }
+
+    #[test]
+    fn reconcile_dirty_claim_preserves_local_recurrence_without_stamp() {
+        // jotty-rec: the pending-op shield EXTENDS to the new overwrite — a
+        // dirty row claimed in place keeps its LOCAL recurrence JSON (and no
+        // serverNextDue stamp is injected), the queued local edit still owns
+        // the row's server writes until it replays.
         let conn = db();
         migrations::run(&conn).expect("migrations");
         conn.execute(
@@ -870,6 +1008,7 @@ mod tests {
             start_date: None,
             description: None,
             estimated_time: None,
+            recurrence: Some("{\"rrule\":\"FREQ=WEEKLY;INTERVAL=1\",\"nextDue\":\"2026-10-08T00:00:00+00:00\",\"serverNextDue\":\"2026-10-08T00:00:00+00:00\"}".into()),
         };
         items::reconcile(&conn, "l1", &[flat]).unwrap();
         let after = items::get(&conn, &row.local_id).unwrap().unwrap();
@@ -880,6 +1019,38 @@ mod tests {
         // `dirty=0` SET member) clears dirty on EVERY claim, so no "claimed while
         // dirty" seed can end dirty — this fence asserts the actual shape instead.
         assert!(!after.dirty, "the claim write owns the row: dirty clears");
+    }
+
+    #[test]
+    fn reconcile_fresh_import_carries_stamped_server_recurrence() {
+        // jotty-rec wire path (a): a fresh pull INSERT importing a server item
+        // that carries recurrence must store it STAMPED (sweep-deferred).
+        let conn = db();
+        migrations::run(&conn).expect("migrations");
+        conn.execute(
+            "INSERT INTO checklists (id, title, category, list_type, created_at, updated_at, dirty) VALUES ('l1', 'L', 'Home', 'kanban', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let flat = items::ServerItemFlat {
+            path: "0".into(),
+            id: Some("sid-9".into()),
+            text: "Series".into(),
+            completed: false,
+            status: None,
+            priority: None,
+            target_date: None,
+            start_date: None,
+            description: None,
+            estimated_time: None,
+            recurrence: Some("{\"rrule\":\"FREQ=DAILY;INTERVAL=1\",\"dtstart\":\"2026-10-01T00:00:00+00:00\",\"nextDue\":\"2026-10-02T00:00:00+00:00\"}".into()),
+        };
+        items::reconcile(&conn, "l1", &[flat]).unwrap();
+        let row = items::list_for_checklist(&conn, "l1").unwrap().pop().unwrap();
+        let v: serde_json::Value = serde_json::from_str(row.recurrence.as_deref().unwrap()).unwrap();
+        assert_eq!(v["rrule"], "FREQ=DAILY;INTERVAL=1");
+        assert_eq!(v["nextDue"], "2026-10-02T00:00:00+00:00");
+        assert_eq!(v["serverNextDue"], "2026-10-02T00:00:00+00:00");
     }
 
     // ------------------------------------------------------------------
